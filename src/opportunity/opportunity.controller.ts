@@ -15,6 +15,8 @@ import {
   NotFoundException,
   BadRequestException,
   UseGuards,
+  UseInterceptors,
+  UploadedFiles,
 } from '@nestjs/common';
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
@@ -24,9 +26,11 @@ import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { UpdateContactDto } from 'src/contact/dto/update-contact.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { OpportunityFilesInterceptor } from 'src/interceptors/simple-file.interceptor';
+import { Enum_Stage } from './dto/enums';
 
 @UseGuards(JwtAuthGuard)
-@Controller('opportunities')
+@Controller('opportunity')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class OpportunityController {
   constructor(
@@ -58,7 +62,7 @@ export class OpportunityController {
   }
 
   @Get('stage/:stage')
-  async findByStage(@Param('stage') stage: string): Promise<Opportunity[]> {
+  async findByStage(@Param('stage') stage: Enum_Stage): Promise<Opportunity[]> {
     return await this.opportunityService.findByStage(stage);
   }
 
@@ -97,13 +101,24 @@ export class OpportunityController {
   }
 
   @Post('register')
-  async register(@Body() createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
-    return await this.opportunityService.create(createOpportunityDto);
+  @UseInterceptors(OpportunityFilesInterceptor)
+  async register(
+    @Body() body: Omit<CreateOpportunityDto, 'files'>,
+    @UploadedFiles() files: Express.Multer.File[]
+  ): Promise<Opportunity> {
+    
+    const createData: CreateOpportunityDto = {
+      ...body,
+    };
+
+    return await this.opportunityService.create(createData);
   }
 
-  @Get('pagination')
-  async getPagination(@Query('page') page: number, @Query('limit') limit: number): Promise<Opportunity[]> {
-    return await this.opportunityService.getPagination(Number(page), Number(limit));
+  @Get('pagination-by-user/:userId')
+  async getPaginationByUser(@Param('userId') userId: string, @Query('page') page: string, @Query('limit') limit: string): Promise<Opportunity[]> {
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 10;
+    return await this.opportunityService.getPaginationByUser(userId, pageNum, limitNum);
   }
 
   @Get('count-opportunities-assigned/:date')
@@ -122,16 +137,25 @@ export class OpportunityController {
   }
 
   @Put('data/:id')
-  async changeData(@Body() changeDataDto: CreateOpportunityDto, @Param('id') id: string): Promise<Opportunity> {
-      
+  @UseInterceptors(OpportunityFilesInterceptor)
+  async changeData(
+    @Body() body: Omit<CreateOpportunityDto, 'files'>,
+    @Param('id') id: string,
+    @UploadedFiles() files: Express.Multer.File[]
+  ): Promise<Opportunity> {
+            
       const opportunity = await this.opportunityService.findOne(id);
       let newOpportunity: Opportunity | null = null;
   
       if(!opportunity){
         throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
       }
+
+      const changeDataDto: CreateOpportunityDto = {
+        ...body,
+      };
   
-      const payloadOpportunity: Partial<Opportunity> = {
+      const payloadOpportunity: UpdateOpportunityDto = {
         name: changeDataDto.name || opportunity.name,
         cNumeroDeTelefono: changeDataDto.phoneNumber || opportunity.cNumeroDeTelefono,
         cCampaign: changeDataDto.campaignId || opportunity.cCampaign,

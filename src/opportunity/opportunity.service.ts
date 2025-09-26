@@ -11,7 +11,7 @@ import { timeToAssing } from './utils/timeToAssing';
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
-import { Enum_Following } from './dto/enums';
+import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
 import { CAMPAIGNS_IDS } from 'src/user/lib/ids';
 import axios from 'axios';
@@ -22,6 +22,17 @@ export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+
+  // Mutex para evitar ejecuciones concurrentes del cron job de las 3pm
+  private assignmentInProgress = false;
+  private assignmentMutex = new Map<string, boolean>();
+    
+  // Mutex para evitar ejecuciones concurrentes del cron job de updateFactEfective
+  private updateFactEfectiveInProgress = false;
+  
+  // Mutex para evitar ejecuciones concurrentes del cron job de deleteOpportunitiesDontExists
+  private deleteOpportunitiesInProgress = false;
+  
 
   constructor(
     @InjectRepository(Opportunity)
@@ -84,7 +95,7 @@ export class OpportunityService {
         name: contact.firstName + ' ' + contact.lastName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
-        stage: "Gestion Inicial",
+        stage: Enum_Stage.GESTION_INICIAL,
         cCampaign: createOpportunityDto.campaignId,
         cSubCamping: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
@@ -237,7 +248,7 @@ export class OpportunityService {
         name: nextRefName,
         closeDate: new Date(today),
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
-        stage: "Cierre ganado",
+        stage: Enum_Stage.CIERRE_GANADO,
         cCampaign: opportunity.cCampaign,
         cSubCampaignId: opportunity.cSubCampaignId,
         cCanal: opportunity.cCanal,
@@ -265,13 +276,20 @@ export class OpportunityService {
     }
   }
 
-  async getPagination(page: number, limit: number): Promise<Opportunity[]> {
-    return await this.opportunityRepository.find({
-      where: { deleted: false },
-      skip: (page - 1) * limit,
-      take: limit,
-      order: { createdAt: 'DESC' },
-    });
+  async getPaginationByUser(userId: string, page: number, limit: number): Promise<any[]> {
+    return await this.opportunityRepository
+      .createQueryBuilder('o')
+      .leftJoin('user', 'u', 'u.id = o.assigned_user_id')
+      .select([
+        'o.*',
+        'u.user_name as user_name'
+      ])
+      .where('o.deleted = :deleted', { deleted: false })
+      .andWhere('o.assigned_user_id = :userId', { userId })
+      .orderBy('o.created_at', 'DESC')
+      .offset((page - 1) * limit)
+      .limit(limit)
+      .getMany();
   }
 
   async assingManual(opportunityId: string, assignedUserId: string): Promise<Opportunity> {
@@ -353,7 +371,7 @@ export class OpportunityService {
         name: contact.firstName + ' ' + contact.lastName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
-        stage: "Gestion Inicial",
+        stage: Enum_Stage.GESTION_INICIAL,
         cCampaign: createOpportunityDto.campaignId,
         cSubCamping: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
@@ -485,11 +503,19 @@ export class OpportunityService {
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
     const opportunity = await this.findOne(id);
+    console.log('opportunity', opportunity);
     const previousStage = opportunity.stage; // Guardar etapa anterior para comparación
+    console.log('previousStage', previousStage);
     
-    // Actualizar campos con los nuevos valores
-    Object.assign(opportunity, updateOpportunityDto);
+    // Actualizar solo los campos que están presentes en el DTO (no undefined)
+    Object.keys(updateOpportunityDto).forEach(key => {
+      const value = updateOpportunityDto[key as keyof UpdateOpportunityDto];
+      if (value !== undefined) {
+        (opportunity as any)[key] = value;
+      }
+    });
     
+    console.log('updateOpportunityDto', updateOpportunityDto);
     // Actualizar timestamp de modificación
     opportunity.modifiedAt = new Date();
     
@@ -530,7 +556,7 @@ export class OpportunityService {
     });
   }
 
-  async findByStage(stage: string): Promise<Opportunity[]> {
+  async findByStage(stage: Enum_Stage): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
       where: { stage },
       order: { createdAt: 'DESC' },
@@ -558,7 +584,7 @@ export class OpportunityService {
     return await this.opportunityRepository.save(opportunity);
   }
 
-  async getLastOpportunityAssigned(): Promise<OpportunityWithUser> {
+  async getLastOpportunityAssigned(subCampaignId: string): Promise<OpportunityWithUser> {
     const opportunity = await this.opportunityRepository
       .createQueryBuilder('o')
       .select([
@@ -569,6 +595,7 @@ export class OpportunityService {
       ])
       .leftJoin('user', 'u', 'u.id = o.assignedUserId')
       .where('o.assignedUserId IS NOT NULL')
+      .andWhere('o.cSubCampaignId = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
       .andWhere('o.name NOT ILIKE :name', { name: '%REF%' })
       .orderBy('o.createdAt', 'DESC')
@@ -592,4 +619,12 @@ export class OpportunityService {
 
     return opportunities;
   }
+
+  async getOpportunitiesNotAssigned(): Promise<Opportunity[]> {
+    return await this.opportunityRepository.find({
+      where: { assignedUserId: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
 }

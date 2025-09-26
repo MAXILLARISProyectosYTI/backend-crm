@@ -29,4 +29,7 @@ export class CreateOpportunityDto {
   @IsOptional()
   @IsString()
   observation?: string;
+
+  @IsOptional()
+  files?: Express.Multer.File[];
 }

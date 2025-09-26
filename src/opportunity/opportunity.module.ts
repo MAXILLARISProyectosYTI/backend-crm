@@ -7,12 +7,14 @@ import { OpportunityGateway } from './opportunity.gateway';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactModule } from 'src/contact/contact.module';
 import { UserModule } from 'src/user/user.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Opportunity]),
     ContactModule,
     forwardRef(() => UserModule),
+    ScheduleModule.forRoot(),
   ],
   controllers: [OpportunityController],
   providers: [

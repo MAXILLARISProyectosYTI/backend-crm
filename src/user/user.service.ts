@@ -328,7 +328,7 @@ export class UserService {
       return await this.findOne(userSelected.user_id)
     }
 
-    const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned()
+    const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
 
     const nextUser = getNextUserToAssing(listUsers, lastOpportunityAssigned)
 

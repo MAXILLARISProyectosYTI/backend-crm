@@ -1,4 +1,5 @@
 import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
+import { Enum_Following, Enum_Stage } from './dto/enums';
 
 @Entity('opportunity')
 @Index('idx_opportunity_account_id', ['accountId'])
@@ -18,7 +19,7 @@ export class Opportunity {
   amount?: number;
 
   @Column({ type: 'varchar', length: 255, nullable: true, default: 'Gestion Inicial' })
-  stage?: string;
+  stage?: Enum_Stage;
 
   @Column({ type: 'varchar', length: 255, nullable: true, name: 'last_stage' })
   lastStage?: string;
@@ -181,7 +182,7 @@ export class Opportunity {
   cSeguimiento?: boolean;
 
   @Column({ type: 'varchar', length: 100, nullable: true, default: 'Sin Seguimiento', name: 'c_seguimientocliente' })
-  cSeguimientocliente?: string;
+  cSeguimientocliente?: Enum_Following;
 
   @Column({ type: 'text', nullable: true, name: 'c_obs' })
   cObs?: string;
