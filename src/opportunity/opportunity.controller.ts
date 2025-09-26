@@ -10,7 +10,6 @@ import {
   ValidationPipe,
   HttpCode,
   HttpStatus,
-  Query,
   Put,
   NotFoundException,
   BadRequestException,
@@ -112,13 +111,6 @@ export class OpportunityController {
     };
 
     return await this.opportunityService.create(createData);
-  }
-
-  @Get('pagination-by-user/:userId')
-  async getPaginationByUser(@Param('userId') userId: string, @Query('page') page: string, @Query('limit') limit: string): Promise<Opportunity[]> {
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 10;
-    return await this.opportunityService.getPaginationByUser(userId, pageNum, limitNum);
   }
 
   @Get('count-opportunities-assigned/:date')
