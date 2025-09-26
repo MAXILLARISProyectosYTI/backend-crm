@@ -14,6 +14,8 @@ import {
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
+import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
 
 @Controller('user')
@@ -40,6 +42,16 @@ export class UserController {
   @Get('with-opportunities')
   async getUsersWithOpportunities(): Promise<User[]> {
     return await this.userService.getUsersWithOpportunities();
+  }
+
+  @Get('current/:id/assignments')
+  async getCurrentUserAssignments(@Param('id') id: string): Promise<CurrentUserAssignmentsDto> {
+    return await this.userService.getCurrentUserAssignments(id);
+  }
+
+  @Get(':id/assignments')
+  async getUserWithAssignments(@Param('id') id: string): Promise<UserWithAssignmentsDto> {
+    return await this.userService.getUserWithAssignments(id);
   }
 
   @Get('type/:type')
