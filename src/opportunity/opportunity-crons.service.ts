@@ -1,24 +1,15 @@
-import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
-import { CreateOpportunityDto } from './dto/create-opportunity.dto';
-import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
-import { ContactService } from 'src/contact/contact.service';
-import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
-import { timeToAssing } from './utils/timeToAssing';
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
-import { Enum_Following, Enum_Stage } from './dto/enums';
-import { Contact } from 'src/contact/contact.entity';
 import { CAMPAIGNS_IDS, TEAMS_IDS } from 'src/user/lib/ids';
-import axios from 'axios';
-import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { OpportunityService } from './opportunity.service';
 import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { Cron } from '@nestjs/schedule';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class OpportunityCronsService {

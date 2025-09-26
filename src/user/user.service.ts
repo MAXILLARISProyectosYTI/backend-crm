@@ -12,7 +12,7 @@ import { orderListAlphabetic } from './utils/orderListAlphabetic';
 import { UserWithTeam } from './dto/user-with-team';
 import { CAMPAIGNS_IDS, TEAMS_IDS } from './lib/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
-import { getNextUserToAssing } from './utils/getNextUserToAssing';
+import { getNextUser } from './utils/getNextUser';
 
 @Injectable()
 export class UserService {
@@ -330,7 +330,7 @@ export class UserService {
 
     const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
 
-    const nextUser = getNextUserToAssing(listUsers, lastOpportunityAssigned)
+    const nextUser = getNextUser(listUsers, lastOpportunityAssigned)
 
     if(!nextUser){
       throw new BadRequestException('No se encontro el siguiente usuario a asignar')

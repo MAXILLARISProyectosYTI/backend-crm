@@ -8,6 +8,7 @@ import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactModule } from 'src/contact/contact.module';
 import { UserModule } from 'src/user/user.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { OpportunityCronsService } from './opportunity-crons.service';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     OpportunityService,
     OpportunityGateway,
     OpportunityWebSocketService,
+    OpportunityCronsService,
   ],
   exports: [
     OpportunityService, 

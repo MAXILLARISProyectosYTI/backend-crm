@@ -1,7 +1,7 @@
 import { OpportunityWithUser } from "src/opportunity/dto/opportunity-with-user";
 import { User } from "../user.entity";
 
-export const getNextUserToAssing = (listUsers: User[], lastOpportunityAssigned: OpportunityWithUser) => {
+export const getNextUser = (listUsers: User[], lastOpportunityAssigned: OpportunityWithUser) => {
 
   const lastUserAssigned = lastOpportunityAssigned.assigned_user_id;
   const lastUserAssignedName = lastOpportunityAssigned.assigned_user_user_name;

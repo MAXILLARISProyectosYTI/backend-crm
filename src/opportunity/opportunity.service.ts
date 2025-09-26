@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
@@ -22,18 +22,7 @@ export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
-
-  // Mutex para evitar ejecuciones concurrentes del cron job de las 3pm
-  private assignmentInProgress = false;
-  private assignmentMutex = new Map<string, boolean>();
-    
-  // Mutex para evitar ejecuciones concurrentes del cron job de updateFactEfective
-  private updateFactEfectiveInProgress = false;
   
-  // Mutex para evitar ejecuciones concurrentes del cron job de deleteOpportunitiesDontExists
-  private deleteOpportunitiesInProgress = false;
-  
-
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
@@ -51,6 +40,10 @@ export class OpportunityService {
 
       const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
 
+      if(existSamePhoneNumber){
+        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
+      }
+
       const responseClinicHistory = await axios.get<{
         is_new: boolean;
         patient: any;
@@ -63,10 +56,6 @@ export class OpportunityService {
 
       if(!is_new){
         throw new ConflictException('El paciente ya existe en el sistema vertical');
-      }
-
-      if(existSamePhoneNumber){
-        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
       }
 
       // Creamos el contacto
@@ -264,6 +253,12 @@ export class OpportunityService {
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
 
+      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
+        espoId: newOpportunity.id,
+      }
+
+      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);
+
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
@@ -280,16 +275,29 @@ export class OpportunityService {
     return await this.opportunityRepository
       .createQueryBuilder('o')
       .leftJoin('user', 'u', 'u.id = o.assigned_user_id')
-      .select([
+      .select(
         'o.*',
         'u.user_name as user_name'
-      ])
+      )
       .where('o.deleted = :deleted', { deleted: false })
       .andWhere('o.assigned_user_id = :userId', { userId })
       .orderBy('o.created_at', 'DESC')
       .offset((page - 1) * limit)
       .limit(limit)
       .getMany();
+    // return await this.opportunityRepository
+    //   .createQueryBuilder('o')
+    //   .leftJoin('user', 'u', 'u.id = o.assigned_user_id')
+    //   .select([
+    //     'o.*',
+    //     'u.user_name as user_name'
+    //   ])
+    //   .where('o.deleted = :deleted', { deleted: false })
+    //   .andWhere('o.assigned_user_id = :userId', { userId })
+    //   .orderBy('o.created_at', 'DESC')
+    //   .offset((page - 1) * limit)
+    //   .limit(limit)
+    //   .getMany();
   }
 
   async assingManual(opportunityId: string, assignedUserId: string): Promise<Opportunity> {
@@ -473,7 +481,10 @@ export class OpportunityService {
 
   async existSamePhoneNumber(phoneNumber: string): Promise<boolean> {
     const response = await this.opportunityRepository.find({
-      where: { cNumeroDeTelefono: phoneNumber, deleted: false },
+      where: { 
+        cNumeroDeTelefono: ILike(`%${phoneNumber}%`), 
+        deleted: false 
+      },
     });
 
     if(response.length > 0){
