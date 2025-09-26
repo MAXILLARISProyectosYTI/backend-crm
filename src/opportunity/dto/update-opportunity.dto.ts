@@ -1,4 +1,4 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { CreateOpportunityDto } from './create-opportunity.dto';
+import { Opportunity } from '../opportunity.entity';
 
-export class UpdateOpportunityDto extends PartialType(CreateOpportunityDto) {}
+export class UpdateOpportunityDto extends PartialType(Opportunity) {}

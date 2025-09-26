@@ -1,29 +1,104 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
+import { ContactService } from 'src/contact/contact.service';
+import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
+import { timeToAssing } from './utils/timeToAssing';
+import { OpportunityWithUser } from './dto/opportunity-with-user';
+import { User } from 'src/user/user.entity';
+import { UserService } from 'src/user/user.service';
+import { Enum_Following } from './dto/enums';
+import { Contact } from 'src/contact/contact.entity';
 
 @Injectable()
 export class OpportunityService {
+
+  private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
+
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
     private readonly websocketService: OpportunityWebSocketService,
+    private readonly contactService: ContactService,
+    @Inject(forwardRef(() => UserService))
+    private readonly userService: UserService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
-    const opportunity = this.opportunityRepository.create(createOpportunityDto);
-    const savedOpportunity = await this.opportunityRepository.save(opportunity);
-    
-    // Notificar por WebSocket si tiene assignedUserId
-    if (savedOpportunity.assignedUserId) {
-      await this.websocketService.notifyNewOpportunity(savedOpportunity);
+
+    let contact: Contact | null = null;
+
+    try {
+      // Creamos el contacto
+      const payloadContact: CreateContactDto = {
+        name: createOpportunityDto.name,
+        lastName: createOpportunityDto.name,
+        firstName: createOpportunityDto.name,
+        phoneNumber: createOpportunityDto.phoneNumber,
+      }
+
+      contact = await this.contactService.create(payloadContact);
+
+      // Verificamos si es hora de asignar
+      const isTimeToAssign = timeToAssing();
+
+      let userToAssign: User | null = null
+
+      // Asignamos la oportunidad en caso de que sea hora de asignar
+      if (isTimeToAssign) {
+        userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.campaignId);
+      } 
+
+      const today = new Date().toISOString().split("T")[0];
+
+      const payloadOpportunity: Partial<Opportunity> = {
+        name: contact.firstName + ' ' + contact.lastName,
+        cNumeroDeTelefono: createOpportunityDto.phoneNumber,
+        closeDate: new Date(today),
+        stage: "Gestion Inicial",
+        cCampaign: createOpportunityDto.campaignId,
+        cSubCamping: createOpportunityDto.subCampaignId,
+        cCanal: createOpportunityDto.channel,
+        contactId: contact.id,
+        cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
+      }
+
+      // Asignamos el usuario en caso de que sea hora de asignar
+      if (userToAssign) {
+        payloadOpportunity.assignedUserId = userToAssign.id;
+      } 
+
+      // Agregamos la observación en caso de que exista
+      if(createOpportunityDto.observation){
+        payloadOpportunity.cObs = createOpportunityDto.observation;
+      }
+
+      const opportunity = this.opportunityRepository.create(payloadOpportunity);
+      const savedOpportunity = await this.opportunityRepository.save(opportunity);
+
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id}&uuid-opportunity=${savedOpportunity.id}`;
+
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+
+      // Notificar por WebSocket si tiene assignedUserId
+      if (savedOpportunity.assignedUserId) {
+        await this.websocketService.notifyNewOpportunity(savedOpportunity);
+      }
+
+      return newOpportunity;
+
+    } catch (error) {
+      // Eliminamos el contacto en caso de error
+      if(contact){
+        await this.contactService.softDelete(contact.id);
+      }
+
+      throw new BadRequestException(error.message);
     }
-    
-    return savedOpportunity;
   }
 
   async findAll(): Promise<Opportunity[]> {
@@ -117,5 +192,29 @@ export class OpportunityService {
     opportunity.deleted = true;
     opportunity.modifiedAt = new Date();
     return await this.opportunityRepository.save(opportunity);
+  }
+
+  async getLastOpportunityAssigned(): Promise<OpportunityWithUser> {
+    const opportunity = await this.opportunityRepository
+      .createQueryBuilder('o')
+      .select([
+        'o.id as opportunity_id',
+        'o.name as opportunity_name',
+        'o.assignedUserId as assigned_user_id',
+        'u.userName as assigned_user_user_name',
+      ])
+      .leftJoin('user', 'u', 'u.id = o.assignedUserId')
+      .where('o.assignedUserId IS NOT NULL')
+      .andWhere('o.deleted = false')
+      .andWhere('o.name NOT ILIKE :name', { name: '%REF%' })
+      .orderBy('o.createdAt', 'DESC')
+      .getRawOne();
+
+    if (!opportunity) {
+      throw new NotFoundException('No hay oportunidades asignadas');
+    }
+    
+    return opportunity;
+
   }
 }
