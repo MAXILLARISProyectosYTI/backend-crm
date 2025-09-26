@@ -16,8 +16,8 @@ export class ContactService {
     return this.contactRepository.save(createContactDto);
   }
 
-  getById(id: string) {
-    return this.contactRepository.findOne({ where: { id } });
+  async getById(id: string) {
+    return await this.contactRepository.findOne({ where: { id } });
   }
 
   async softDelete(id: string) {
@@ -28,6 +28,18 @@ export class ContactService {
     }
 
     contact.deleted = true;
+    contact.modifiedAt = new Date();
+    return await this.contactRepository.save(contact);
+  }
+
+  async update(id: string, updateContactDto: UpdateContactDto) {
+    const contact = await this.getById(id);
+    if(!contact){
+      throw new NotFoundException(`Contacto con ID ${id} no encontrado`);
+    }
+
+    contact.firstName = updateContactDto.firstName || contact.firstName;
+    contact.lastName = updateContactDto.lastName || contact.lastName;
     contact.modifiedAt = new Date();
     return await this.contactRepository.save(contact);
   }
