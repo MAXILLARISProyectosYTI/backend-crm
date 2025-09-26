@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
@@ -14,11 +14,14 @@ import { UserService } from 'src/user/user.service';
 import { Enum_Following } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
 import { CAMPAIGNS_IDS } from 'src/user/lib/ids';
+import axios from 'axios';
+import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 
 @Injectable()
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
+  private readonly URL_BACK_SV = process.env.URL_BACK_SV;
 
   constructor(
     @InjectRepository(Opportunity)
@@ -34,6 +37,27 @@ export class OpportunityService {
     let contact: Contact | null = null;
 
     try {
+
+      const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
+
+      const responseClinicHistory = await axios.get<{
+        is_new: boolean;
+        patient: any;
+        complete: boolean;
+        dataReservation: any;
+        dataPayment: any
+      }>(`${this.URL_BACK_SV}/clinic-history/patient-is-new/${createOpportunityDto.phoneNumber}`);
+
+      const { is_new, patient, complete, dataReservation, dataPayment } = responseClinicHistory.data;
+
+      if(!is_new){
+        throw new ConflictException('El paciente ya existe en el sistema vertical');
+      }
+
+      if(existSamePhoneNumber){
+        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
+      }
+
       // Creamos el contacto
       const payloadContact: CreateContactDto = {
         name: createOpportunityDto.name,
@@ -84,6 +108,74 @@ export class OpportunityService {
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+
+      // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
+      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
+        espoId: newOpportunity.id,
+      }
+
+      // En caso que el ya exista en la SV y pase como oportunidad nueva, actualizamos la oportunidad con los datos del paciente y agreamos el id del paciente en la tabla intermediaria
+      if(patient && !complete){
+        payloadClinicHistory.patientId = patient.id;
+
+        const rawPayload: UpdateOpportunityDto = {
+          cClinicHistory: patient.history,
+          cLastNameFather: patient.attorney,
+          cCustomerDocumentType: patient.invoise_type_document,
+          cCustomerDocument: patient.invoise_num_document,
+          cPatientsname: patient.name,
+          cPatientsPaternalLastName: patient.lastNameFather,
+          cPatientsMaternalLastName: patient.lastNameMother,
+          cPatientDocument: patient.documentNumber,
+          cPatientDocumentType: 'DNI',
+        };
+      
+        // Filtrar solo atributos con valor
+        const payloadToUpdate = Object.entries(rawPayload)
+          .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+          .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
+      
+        await this.update(newOpportunity.id, payloadToUpdate);
+      }
+
+      // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
+      if(complete){
+
+        // Contruimos el payload para actualizar la oportunidad con los datos del paciente
+        // Construimos con datos de los pagos por que es lo minimo que debe tener
+        const payloadUpdateComplete: UpdateOpportunityDto = {
+          cClinicHistory: patient.history,
+          cLastNameFather: patient.attorney,
+          cCustomerDocumentType: patient.invoise_type_document,
+          cCustomerDocument: patient.invoise_num_document,
+          cPatientsname: patient.name,
+          cPatientsPaternalLastName: patient.lastNameFather,
+          cPatientsMaternalLastName: patient.lastNameMother,
+          cPatientDocument: patient.documentNumber,
+          cPatientDocumentType: 'DNI',
+        }
+
+        // Agregamos el id del pago y el id del paciente en la tabla intermediaria
+        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.patientId = patient.id;
+
+        // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
+        if(dataReservation){
+          payloadUpdateComplete.cAppointment = dataReservation.reservation_appointment;
+          payloadUpdateComplete.cDateReservation = dataReservation.reservation_date;
+          payloadUpdateComplete.cDoctor = dataReservation.doctor_name;
+          payloadUpdateComplete.cEnvironment = dataReservation.environment_name;
+          payloadUpdateComplete.cSpecialty = dataReservation.specialty_name;
+          payloadUpdateComplete.cTariff = dataReservation.tariff_name;
+
+          // Agregamos el id de la reserva en la tabla intermediaria
+          payloadClinicHistory.id_reservation = dataReservation.id;
+        }
+
+        await this.update(newOpportunity.id, payloadUpdateComplete);
+      }
+
+      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);      
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -225,6 +317,26 @@ export class OpportunityService {
     let contact: Contact | null = null;
 
     try {
+      
+      const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
+
+      const responseClinicHistory = await axios.get<{
+        is_new: boolean;
+        patient: any;
+        complete: boolean;
+        dataReservation: any;
+        dataPayment: any
+      }>(`${this.URL_BACK_SV}/clinic-history/patient-is-new/${createOpportunityDto.phoneNumber}`);
+
+      const { is_new, patient, complete, dataReservation, dataPayment } = responseClinicHistory.data;
+
+      if(!is_new){
+        throw new ConflictException('El paciente ya existe en el sistema vertical');
+      }
+
+      if(existSamePhoneNumber){
+        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
+      }
       // Creamos el contacto
       const payloadContact: CreateContactDto = {
         name: createOpportunityDto.name,
@@ -262,6 +374,74 @@ export class OpportunityService {
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
 
+      // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
+      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
+        espoId: newOpportunity.id,
+      }
+
+      // En caso que el ya exista en la SV y pase como oportunidad nueva, actualizamos la oportunidad con los datos del paciente y agreamos el id del paciente en la tabla intermediaria
+      if(patient && !complete){
+        payloadClinicHistory.patientId = patient.id;
+
+        const rawPayload: UpdateOpportunityDto = {
+          cClinicHistory: patient.history,
+          cLastNameFather: patient.attorney,
+          cCustomerDocumentType: patient.invoise_type_document,
+          cCustomerDocument: patient.invoise_num_document,
+          cPatientsname: patient.name,
+          cPatientsPaternalLastName: patient.lastNameFather,
+          cPatientsMaternalLastName: patient.lastNameMother,
+          cPatientDocument: patient.documentNumber,
+          cPatientDocumentType: 'DNI',
+        };
+      
+        // Filtrar solo atributos con valor
+        const payloadToUpdate = Object.entries(rawPayload)
+          .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+          .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
+      
+        await this.update(newOpportunity.id, payloadToUpdate);
+      }
+
+      // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
+      if(complete){
+
+        // Contruimos el payload para actualizar la oportunidad con los datos del paciente
+        // Construimos con datos de los pagos por que es lo minimo que debe tener
+        const payloadUpdateComplete: UpdateOpportunityDto = {
+          cClinicHistory: patient.history,
+          cLastNameFather: patient.attorney,
+          cCustomerDocumentType: patient.invoise_type_document,
+          cCustomerDocument: patient.invoise_num_document,
+          cPatientsname: patient.name,
+          cPatientsPaternalLastName: patient.lastNameFather,
+          cPatientsMaternalLastName: patient.lastNameMother,
+          cPatientDocument: patient.documentNumber,
+          cPatientDocumentType: 'DNI',
+        }
+
+        // Agregamos el id del pago y el id del paciente en la tabla intermediaria
+        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.patientId = patient.id;
+
+        // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
+        if(dataReservation){
+          payloadUpdateComplete.cAppointment = dataReservation.reservation_appointment;
+          payloadUpdateComplete.cDateReservation = dataReservation.reservation_date;
+          payloadUpdateComplete.cDoctor = dataReservation.doctor_name;
+          payloadUpdateComplete.cEnvironment = dataReservation.environment_name;
+          payloadUpdateComplete.cSpecialty = dataReservation.specialty_name;
+          payloadUpdateComplete.cTariff = dataReservation.tariff_name;
+
+          // Agregamos el id de la reserva en la tabla intermediaria
+          payloadClinicHistory.id_reservation = dataReservation.id;
+        }
+
+        await this.update(newOpportunity.id, payloadUpdateComplete);
+      }
+
+      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);
+
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
@@ -271,6 +451,18 @@ export class OpportunityService {
     } catch (error) {
       throw new BadRequestException(error.message);
     }
+  }
+
+  async existSamePhoneNumber(phoneNumber: string): Promise<boolean> {
+    const response = await this.opportunityRepository.find({
+      where: { cNumeroDeTelefono: phoneNumber, deleted: false },
+    });
+
+    if(response.length > 0){
+      return true;
+    }
+
+    return false;
   }
 
   async findAll(): Promise<Opportunity[]> {
