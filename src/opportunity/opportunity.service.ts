@@ -545,7 +545,7 @@ export class OpportunityService {
 
   async findByAssignedUser(assignedUserId: string): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
-      where: { assignedUserId },
+      where: { assignedUserId, deleted: false },
       order: { createdAt: 'DESC' },
     });
   }
