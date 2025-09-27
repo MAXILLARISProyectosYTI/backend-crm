@@ -264,8 +264,8 @@ export class UserService {
   }
 
   async getUserByAllTeams(teams: string[]): Promise<UserWithTeam[]> {
-    const users = await this.userRepository.createQueryBuilder('tu')
-    .leftJoin('user', 'u', 'u.id = tu.user_id')
+    const users = await this.userRepository.createQueryBuilder('u')
+    .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
     .leftJoin('team', 't', 't.id = tu.team_id')
     .select([
       'u.id AS user_id',
