@@ -5,7 +5,6 @@ import { UpdateContactDto } from './dto/update-contact.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
-@UsePipes(new ValidationPipe({ whitelist: true, transform: true })) 
 @Controller('contact')
 export class ContactController {
   constructor(private readonly contactService: ContactService) {}

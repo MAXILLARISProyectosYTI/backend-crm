@@ -10,6 +10,7 @@ import {
   ValidationPipe,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -17,7 +18,9 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
 import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
+import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 
+@UseGuards(JwtAuthGuard)
 @Controller('user')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class UserController {

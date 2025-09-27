@@ -9,7 +9,6 @@ import { UsePipes } from '@nestjs/common';
 import { ValidationPipe } from '@nestjs/common';
 
 @UseGuards(JwtAuthGuard)
-@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('meeting')
 export class MeetingController {
   constructor(private readonly meetingService: MeetingService) {}
