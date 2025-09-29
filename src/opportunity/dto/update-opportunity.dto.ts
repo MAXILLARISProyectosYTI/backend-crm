@@ -1,4 +1,5 @@
 import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString } from 'class-validator';
+import { User } from 'src/user/user.entity';
 
 export class UpdateOpportunityDto {
   @IsOptional()
@@ -55,7 +56,7 @@ export class UpdateOpportunityDto {
 
   @IsOptional()
   @IsString()
-  assignedUserId?: string;
+  assignedUserId?: User;
 
   @IsOptional()
   @IsString()

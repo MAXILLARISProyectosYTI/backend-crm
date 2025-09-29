@@ -240,7 +240,7 @@ export class OpportunityCronsService {
             try {
               // 1. Actualizar la oportunidad en EspoCRM
               await this.opportunityService.update(opportunity.id, {
-                assignedUserId: nextUserAssigned.id,
+                assignedUserId: nextUserAssigned,
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
               });
 
@@ -329,7 +329,7 @@ export class OpportunityCronsService {
 
               // Actualizar la oportunidad en EspoCRM
               await this.opportunityService.update(opportunity.id, {
-                assignedUserId: nextUserAssigned.id,
+                assignedUserId: nextUserAssigned,
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
               });
 

@@ -29,4 +29,10 @@ export class SvServices {
 
     return responseClinicHistory.data;
   }
+
+  async uploadFiles() {
+    const responseUploadFiles = await axios.post(`${this.URL_BACK_SV}/medical-act/upload/os/:group/:id`)
+
+    return responseUploadFiles.data;
+  }
 }

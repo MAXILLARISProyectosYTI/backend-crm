@@ -354,6 +354,8 @@ export class OpportunityService {
         assignedUserId: assignedUser,
       }
 
+      console.log('payloadOpportunity', payloadOpportunity);
+
       // Agregamos la observación en caso de que exista
       if(createOpportunityDto.observation){
         payloadOpportunity.cObs = createOpportunityDto.observation;
@@ -362,10 +364,14 @@ export class OpportunityService {
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
 
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
+
+      console.log('savedOpportunity', savedOpportunity);
       
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+
+      console.log('newOpportunity', newOpportunity);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -435,8 +441,11 @@ export class OpportunityService {
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
 
+      console.log('newOpportunity', newOpportunity);
+
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
+        console.log('entra a notificar, newopportunity', newOpportunity );
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
 
@@ -529,13 +538,15 @@ export class OpportunityService {
     opportunity.modifiedAt = new Date();
     
     const updatedOpportunity = await this.opportunityRepository.save(opportunity);
+
+    const newOpportunity = await this.getOneWithEntity(updatedOpportunity.id);
     
     // Notificar por WebSocket si tiene assignedUserId
-    if (updatedOpportunity.assignedUserId) {
-      await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, previousStage);
+    if (newOpportunity.assignedUserId) {
+      await this.websocketService.notifyOpportunityUpdate(newOpportunity, previousStage);
     }
     
-    return updatedOpportunity;
+    return newOpportunity;
   }
 
   async remove(id: string): Promise<void> {
@@ -662,6 +673,7 @@ export class OpportunityService {
   async getOneWithEntity(id: string): Promise<Opportunity> {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
+      relations: ['assignedUserId'],    
     });
 
     if(!opportunity){
