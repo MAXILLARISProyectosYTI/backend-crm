@@ -1,4 +1,6 @@
-import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
+import { Entity, PrimaryColumn, Column, Index, JoinColumn, ManyToOne } from 'typeorm';
+import { Enum_Following, Enum_Stage } from './dto/enums';
+import { User } from 'src/user/user.entity';
 
 @Entity('opportunity')
 @Index('idx_opportunity_account_id', ['accountId'])
@@ -18,7 +20,7 @@ export class Opportunity {
   amount?: number;
 
   @Column({ type: 'varchar', length: 255, nullable: true, default: 'Gestion Inicial' })
-  stage?: string;
+  stage?: Enum_Stage;
 
   @Column({ type: 'varchar', length: 255, nullable: true, name: 'last_stage' })
   lastStage?: string;
@@ -35,10 +37,10 @@ export class Opportunity {
   @Column({ type: 'text', nullable: true })
   description?: string;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'created_at' })
+  @Column({ type: 'timestamp with time zone', nullable: true, name: 'created_at' })
   createdAt?: Date;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'modified_at' })
+  @Column({ type: 'timestamp with time zone', nullable: true, name: 'modified_at' })
   modifiedAt?: Date;
 
   @Column({ type: 'varchar', length: 3, nullable: true, name: 'amount_currency' })
@@ -62,8 +64,9 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 17, nullable: true, name: 'modified_by_id' })
   modifiedById?: string;
 
-  @Column({ type: 'varchar', length: 17, nullable: true, name: 'assigned_user_id' })
-  assignedUserId?: string;
+  @ManyToOne(() => User, (user) => user.id)
+  @JoinColumn({ name: 'assigned_user_id' })
+  assignedUserId?: User;
 
   @Column({ type: 'bigint', nullable: true, name: 'version_number' })
   versionNumber?: number;
@@ -153,8 +156,8 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_environment' })
   cEnvironment?: string;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'c_appointment' })
-  cAppointment?: Date;
+  @Column({ type: 'text', nullable: true, name: 'c_appointment' })
+  cAppointment?: string;
 
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_doctor' })
   cDoctor?: string;
@@ -181,7 +184,7 @@ export class Opportunity {
   cSeguimiento?: boolean;
 
   @Column({ type: 'varchar', length: 100, nullable: true, default: 'Sin Seguimiento', name: 'c_seguimientocliente' })
-  cSeguimientocliente?: string;
+  cSeguimientocliente?: Enum_Following;
 
   @Column({ type: 'text', nullable: true, name: 'c_obs' })
   cObs?: string;

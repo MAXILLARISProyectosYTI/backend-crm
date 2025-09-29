@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { User } from './user.entity';
@@ -7,6 +7,12 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
 import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { Opportunity } from '../opportunity/opportunity.entity';
+import { getTeamsBySubCampaing } from './utils/getTeamsBySubCampaing';
+import { orderListAlphabetic } from './utils/orderListAlphabetic';
+import { UserWithTeam } from './dto/user-with-team';
+import { CAMPAIGNS_IDS, TEAMS_IDS } from '../globals/ids';
+import { OpportunityService } from 'src/opportunity/opportunity.service';
+import { getNextUser } from './utils/getNextUser';
 
 @Injectable()
 export class UserService {
@@ -15,6 +21,8 @@ export class UserService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
+    @Inject(forwardRef(() => OpportunityService))
+    private readonly opportunityService: OpportunityService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -138,7 +146,7 @@ export class UserService {
     
     // Obtener todas las oportunidades asignadas a este usuario
     const assignedOpportunities = await this.opportunityRepository.find({
-      where: { assignedUserId: userId, deleted: false },
+      where: { assignedUserId: { id: userId }, deleted: false },
       select: ['id', 'assignedUserId', 'name', 'amount', 'stage', 'createdAt']
     });
 
@@ -156,7 +164,7 @@ export class UserService {
     // Contar oportunidades por usuario asignado
     const opportunitiesByUser = assignedOpportunities.reduce((acc, opp) => {
       if (opp.assignedUserId) {
-        acc[opp.assignedUserId] = (acc[opp.assignedUserId] || 0) + 1;
+        acc[opp.assignedUserId.id] = (acc[opp.assignedUserId.id] || 0) + 1;
       }
       return acc;
     }, {} as Record<string, number>);
@@ -195,7 +203,7 @@ export class UserService {
     
     // Obtener oportunidades asignadas directamente a este usuario
     const myOpportunities = await this.opportunityRepository.find({
-      where: { assignedUserId: userId, deleted: false },
+      where: { assignedUserId: { id: userId }, deleted: false },
       select: ['id', 'name', 'amount', 'stage', 'createdAt'],
       order: { createdAt: 'DESC' }
     });
@@ -220,7 +228,7 @@ export class UserService {
     // Contar oportunidades por usuario gestionado
     const opportunitiesByManagedUser = managedOpportunities.reduce((acc, opp) => {
       if (opp.assignedUserId) {
-        acc[opp.assignedUserId] = (acc[opp.assignedUserId] || 0) + 1;
+        acc[opp.assignedUserId.id] = (acc[opp.assignedUserId.id] || 0) + 1;
       }
       return acc;
     }, {} as Record<string, number>);
@@ -254,4 +262,97 @@ export class UserService {
       totalMyOpportunities: myOpportunities.length
     };
   }
+
+  async getUserByAllTeams(teams: string[]): Promise<UserWithTeam[]> {
+    const users = await this.userRepository.createQueryBuilder('u')
+    .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
+    .leftJoin('team', 't', 't.id = tu.team_id')
+    .select([
+      'u.id AS user_id',
+      'u.user_name AS user_name', 
+      't.name AS team_name'
+    ])
+    .where('t.id IN (:...teamIds)', { teamIds: teams })
+    .getRawMany();
+    return users
+  }
+
+  async getUsersBySubCampaignId(subCampaignId: string): Promise<User[]> {
+    const usersActives = await this.findActiveUsers()
+
+    if(usersActives.length === 0){
+      console.log('No hay usuarios activos, asignando por defecto')
+      return []
+    }
+
+    const teams = getTeamsBySubCampaing(subCampaignId)
+    
+    if(teams.length === 0){
+      throw new BadRequestException('No hay equipos asignados a esta subcampaña')
+    }
+
+    const usersByAllTeams = await this.getUserByAllTeams(teams)
+
+    // Filtrar usuarios que estén tanto en usersActives como en usersByAllTeams basándose en user.id
+    const teamUserIds = usersByAllTeams.map(teamUser => teamUser.user_id)
+    
+    // Obtener usuarios activos que también estén en los equipos
+    const filteredUsers = usersActives.filter(user => 
+      teamUserIds.includes(user.id)
+    )
+
+    return orderListAlphabetic(filteredUsers)
+  }
+
+  async getNextUserToAssign(subCampaignId: string): Promise<User> {
+    const listUsers = await this.getUsersBySubCampaignId(subCampaignId)
+    let listUsersDefault: UserWithTeam[]
+
+    // Si no hay usuarios activos, asignar por defecto
+    if(listUsers.length === 0){
+      switch(subCampaignId) {
+        case CAMPAIGNS_IDS.OI:
+          listUsersDefault = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL_OI]);
+          break;
+        case CAMPAIGNS_IDS.OFM:
+          listUsersDefault = await this.getUserByAllTeams([TEAMS_IDS.TEAM_LEADERS_COMERCIALES]);
+          break;
+        case CAMPAIGNS_IDS.APNEA:
+          listUsersDefault = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL_APNEA]);
+          break;
+        default:
+          throw new BadRequestException('Subcampaña no reconocida para asignación por defecto')
+      }
+
+      const userSelected = listUsersDefault[Math.floor(Math.random() * listUsersDefault.length)];
+      return await this.findOne(userSelected.user_id)
+    }
+
+    const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
+
+    const nextUser = getNextUser(listUsers, lastOpportunityAssigned)
+
+    if(!nextUser){
+      throw new BadRequestException('No se encontro el siguiente usuario a asignar')
+    }
+
+    return nextUser
+  }
+
+  async getAllTeamsByUser(userId: string): Promise<{team_id: string, team_name: string}[]> {
+    const teams = await this.userRepository
+      .createQueryBuilder('u')
+      .select([
+        't.id AS team_id',
+        't.name AS team_name'
+      ])
+      .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
+      .leftJoin('team', 't', 't.id = tu.team_id')
+      .where('u.id = :userId', { userId })
+      .andWhere('tu.deleted IS FALSE')
+      .getRawMany();
+  
+    return teams;
+  }
+  
 }

@@ -1,4 +1,272 @@
-import { PartialType } from '@nestjs/mapped-types';
-import { CreateOpportunityDto } from './create-opportunity.dto';
+import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString } from 'class-validator';
+import { User } from 'src/user/user.entity';
 
-export class UpdateOpportunityDto extends PartialType(CreateOpportunityDto) {}
+export class UpdateOpportunityDto {
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  deleted?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  amount?: number;
+
+  @IsOptional()
+  @IsString()
+  stage?: string;
+
+  @IsOptional()
+  @IsString()
+  lastStage?: string;
+
+  @IsOptional()
+  @IsNumber()
+  probability?: number;
+
+  @IsOptional()
+  @IsString()
+  leadSource?: string;
+
+  @IsOptional()
+  @IsDateString()
+  closeDate?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  amountCurrency?: string;
+
+  @IsOptional()
+  @IsString()
+  accountId?: string;
+
+  @IsOptional()
+  @IsString()
+  contactId?: string;
+
+  @IsOptional()
+  @IsString()
+  campaignId?: string;
+
+  @IsOptional()
+  @IsString()
+  assignedUserId?: User;
+
+  @IsOptional()
+  @IsString()
+  cPhoneNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  cCampaign?: string;
+
+  @IsOptional()
+  @IsString()
+  cChannel?: string;
+
+  @IsOptional()
+  @IsString()
+  cCanal?: string;
+
+  @IsOptional()
+  @IsString()
+  cNumeroDeTelefono?: string;
+
+  @IsOptional()
+  @IsString()
+  cSubCamping?: string;
+
+  @IsOptional()
+  @IsString()
+  cLastNameFather?: string;
+
+  @IsOptional()
+  @IsString()
+  cLastNameMother?: string;
+
+  @IsOptional()
+  @IsString()
+  cPatientsname?: string;
+
+  @IsOptional()
+  @IsString()
+  cSubCampaignId?: string;
+
+  @IsOptional()
+  @IsString()
+  cPatientsPaternalLastName?: string;
+
+  @IsOptional()
+  @IsString()
+  cPatientsMaternalLastName?: string;
+
+  @IsOptional()
+  @IsString()
+  cCustomerDocumentType?: string;
+
+  @IsOptional()
+  @IsString()
+  cPatientDocumentType?: string;
+
+  @IsOptional()
+  @IsString()
+  cPatientDocument?: string;
+
+  @IsOptional()
+  @IsString()
+  cCustomerDocument?: string;
+
+  @IsOptional()
+  @IsString()
+  cTagsOI?: string;
+
+  @IsOptional()
+  @IsString()
+  cTagsLeads?: string;
+
+  @IsOptional()
+  @IsString()
+  cTagsSales?: string;
+
+  @IsOptional()
+  @IsString()
+  cClinicHistory?: string;
+
+  @IsOptional()
+  @IsString()
+  cTesturl?: string;
+
+  @IsOptional()
+  @IsString()
+  cConctionSv?: string;
+
+  @IsOptional()
+  @IsDateString()
+  cFechaDeReservacion?: string;
+
+  @IsOptional()
+  @IsString()
+  cAmbiente?: string;
+
+  @IsOptional()
+  @IsString()
+  cDoctorAsignado?: string;
+
+  @IsOptional()
+  @IsString()
+  cEspecialidadDeLaAtencion?: string;
+
+  @IsOptional()
+  @IsString()
+  cTratamiento?: string;
+
+  @IsOptional()
+  @IsString()
+  cEnvironment?: string;
+
+  @IsOptional()
+  @IsDateString()
+  cAppointment?: string;
+
+  @IsOptional()
+  @IsString()
+  cDoctor?: string;
+
+  @IsOptional()
+  @IsString()
+  cSpecialty?: string;
+
+  @IsOptional()
+  @IsString()
+  cTariff?: string;
+
+  @IsOptional()
+  @IsString()
+  cDateReservation?: string;
+
+  @IsOptional()
+  @IsString()
+  cOportunidadCerradoraId?: string;
+
+  @IsOptional()
+  @IsString()
+  cTreatmentPlan?: string;
+
+  @IsOptional()
+  @IsString()
+  cCClinicHistory?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  cSeguimiento?: boolean;
+
+  @IsOptional()
+  @IsString()
+  cSeguimientocliente?: string;
+
+  @IsOptional()
+  @IsString()
+  cObs?: string;
+
+  @IsOptional()
+  @IsString()
+  cEstadosDeLaGestionInicial?: string;
+
+  @IsOptional()
+  @IsString()
+  cSeTrasfOtroServi?: string;
+
+  @IsOptional()
+  @IsString()
+  cNODESEAseRViCiO?: string;
+
+  @IsOptional()
+  @IsString()
+  cGEstiOnReContActo?: string;
+
+  @IsOptional()
+  @IsString()
+  cGRtransServ?: string;
+
+  @IsOptional()
+  @IsString()
+  cSEGuImIeNto?: string;
+
+  @IsOptional()
+  @IsString()
+  cNsegOdesEaseRViCiO?: string;
+
+  @IsOptional()
+  @IsString()
+  cGEstiOnDeCiTas?: string;
+
+  @IsOptional()
+  @IsString()
+  cCIeRRegAnAdo?: string;
+
+  @IsOptional()
+  @IsString()
+  cCConctionSv?: string;
+
+  @IsOptional()
+  @IsString()
+  cCPatientsname?: string;
+
+  @IsOptional()
+  @IsString()
+  cCPatientDocument?: string;
+
+  @IsOptional()
+  @IsString()
+  cCAppointment?: string;
+
+  @IsOptional()
+  @IsString()
+  cCampaign1Id?: string;
+}

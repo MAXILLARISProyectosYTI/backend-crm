@@ -8,6 +8,10 @@ import { UserModule } from './user/user.module';
 import { RoleModule } from './role/role.module';
 import databaseConfig from './config/database.config';
 import { AuthModule } from './auth/auth.module';
+import { ContactModule } from './contact/contact.module';
+import { MeetingModule } from './meeting/meeting.module';
+import { CommonModule } from './common/common.module';
+import { ActionHistoryModule } from './action-history/action-history.module';
 
 @Module({
   imports: [
@@ -26,10 +30,14 @@ import { AuthModule } from './auth/auth.module';
       },
       inject: [ConfigService],
     }),
+    CommonModule,
     OpportunityModule,
     UserModule,
     RoleModule,
     AuthModule,
+    ContactModule,
+    MeetingModule,
+    ActionHistoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
