@@ -536,7 +536,11 @@ export class OpportunityService {
 
     const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory };
+    const tokenSv = await this.svServices.getTokenSv(userAssigned.cUsersv!, userAssigned.cContraseaSv!);
+
+    const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -748,6 +752,35 @@ export class OpportunityService {
     }
 
     return opportunity;
+  }
+
+  async getPatientSV(opportunityId: string) {
+    const opportunity = await this.getOneWithEntity(opportunityId);
+
+    if(!opportunity) {
+      throw new NotFoundException("No se encontró la oportunidad");
+    }
+
+    const user = await this.userService.findOne(opportunity.assignedUserId!.id);
+
+    if(!opportunity.cClinicHistory) {
+      throw new NotFoundException("No se encontró el historial clinica");
+    }
+
+    const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+
+    const dataPatient = await this.svServices.getPatientSV(opportunity.cClinicHistory, tokenSv);
+
+    return {
+      type: "init_data",
+      token: tokenSv,
+      id_user: user.id,
+      username: user.cUsersv,
+      doctorID: null,
+      clinicHistory: opportunity.cClinicHistory,
+      patientId: dataPatient.id,
+    }
+
   }
 
 }

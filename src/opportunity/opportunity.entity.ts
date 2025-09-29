@@ -37,10 +37,10 @@ export class Opportunity {
   @Column({ type: 'text', nullable: true })
   description?: string;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'created_at' })
+  @Column({ type: 'timestamp with time zone', nullable: true, name: 'created_at' })
   createdAt?: Date;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'modified_at' })
+  @Column({ type: 'timestamp with time zone', nullable: true, name: 'modified_at' })
   modifiedAt?: Date;
 
   @Column({ type: 'varchar', length: 3, nullable: true, name: 'amount_currency' })

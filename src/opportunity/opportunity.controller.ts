@@ -179,4 +179,9 @@ export class OpportunityController {
       return newOpportunity;
     }
 
+  @Get('patient-sv/:id')
+  async getPatientSV(@Param('id') id: string) {
+    return this.opportunityService.getPatientSV(id);
+  }
+
 }

@@ -53,12 +53,33 @@ export class SvServices {
   }
 
   async getStatusClient(opportunityId: string, tokenSv: string) {
-    const responseStatusClient = await axios.get(`${this.URL_BACK_SV}/opportunities/status-client/${opportunityId}`, {
+    const responseStatusClient: { data: { 
+      espoId: string;
+      id_payment?: number;
+      id_reservation?: number;
+      patientId?: number;}} = await axios.get(`${this.URL_BACK_SV}/opportunities/status-patient-crm/${opportunityId}`, {
       headers: {
         Authorization: `Bearer ${tokenSv}`
       }
     })
 
-    
+    const data = responseStatusClient.data;
+
+   if(data.id_payment && data.id_reservation && data.patientId && data.espoId) {
+    return true
+   }  else {
+    return false;
+   }
+
+  }
+
+  async getPatientSV(clinicHistory: string, tokenSv: string) {
+    const responsePatientSV = await axios.get(`${this.URL_BACK_SV}/clinic-history-v2/data-by-clinic-history/${clinicHistory}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
   }
 }
