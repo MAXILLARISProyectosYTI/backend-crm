@@ -14,7 +14,6 @@ import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
 import { CAMPAIGNS_IDS } from 'src/globals/ids';
-import axios from 'axios';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -24,7 +23,6 @@ import { IdGeneratorService } from 'src/common/services/id-generator.service';
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
-  // private readonly URL_BACK_SV = process.env.URL_BACK_SV;
   
   constructor(
     @InjectRepository(Opportunity)
@@ -79,7 +77,7 @@ export class OpportunityService {
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
-        name: contact.firstName + ' ' + contact.lastName,
+        name: contact.firstName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
         stage: Enum_Stage.GESTION_INICIAL,
@@ -173,7 +171,9 @@ export class OpportunityService {
         await this.update(newOpportunity.id, payloadUpdateComplete);
       }
 
-      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);      
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);   
+      
+      await this.svServices.uploadFiles(newOpportunity.id, 'os',  files);
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -194,7 +194,7 @@ export class OpportunityService {
 
   async createWithSamePhoneNumber(opportunityId: string){
     try {
-      const opportunity = await this.findOne(opportunityId);
+      const opportunity = await this.getOneWithEntity(opportunityId);
 
       if(!opportunity){
         throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
@@ -272,7 +272,7 @@ export class OpportunityService {
 
   async assingManual(opportunityId: string, assignedUserId: string): Promise<Opportunity> {
 
-    const opportunity = await this.findOne(opportunityId);
+    const opportunity = await this.getOneWithEntity(opportunityId);
 
     if(!opportunity){
       throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
@@ -342,7 +342,7 @@ export class OpportunityService {
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
-        name: contact.firstName + ' ' + contact.lastName,
+        name: contact.firstName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
         stage: Enum_Stage.GESTION_INICIAL,
@@ -476,7 +476,7 @@ export class OpportunityService {
     });
   }
 
-  async findOne(id: string) {
+  async findOneWithDetails(id: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -517,7 +517,9 @@ export class OpportunityService {
         break;
     }
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName };
+    const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -586,10 +588,40 @@ export class OpportunityService {
   async findByAssignedUser(
     assignedUserId: string, 
     page: number = 1, 
-    limit: number = 10
+    limit: number = 10,
+    search?: string
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
+    let whereCondition: any;
+
+    if (search && search.trim()) {
+      // Si hay búsqueda, crear un array de condiciones OR
+      whereCondition = [
+        { 
+          assignedUserId: { id: assignedUserId }, 
+          deleted: false,
+          name: ILike(`%${search.trim()}%`) 
+        },
+        { 
+          assignedUserId: { id: assignedUserId }, 
+          deleted: false,
+          cNumeroDeTelefono: ILike(`%${search.trim()}%`) 
+        },
+        { 
+          assignedUserId: { id: assignedUserId }, 
+          deleted: false,
+          cClinicHistory: ILike(`%${search.trim()}%`) 
+        }
+      ];
+    } else {
+      // Si no hay búsqueda, usar condición normal
+      whereCondition = { 
+        assignedUserId: { id: assignedUserId }, 
+        deleted: false 
+      };
+    }
+
     const [opportunities, total] = await this.opportunityRepository.findAndCount({
-      where: { assignedUserId: { id: assignedUserId }, deleted: false },
+      where: whereCondition,
       order: { createdAt: 'DESC' },
       relations: ['assignedUserId'],
       skip: (page - 1) * limit,
@@ -614,7 +646,7 @@ export class OpportunityService {
   }
 
   async softDelete(id: string): Promise<Opportunity> {
-    const opportunity = await this.findOne(id);
+    const opportunity = await this.getOneWithEntity(id);
     opportunity.deleted = true;
     opportunity.modifiedAt = new Date();
     return await this.opportunityRepository.save(opportunity);

@@ -338,4 +338,21 @@ export class UserService {
 
     return nextUser
   }
+
+  async getAllTeamsByUser(userId: string) {
+    const teams = await this.userRepository
+      .createQueryBuilder('u')
+      .select([
+        't.id AS team_id',
+        't.name AS team_name'
+      ])
+      .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
+      .leftJoin('team', 't', 't.id = tu.team_id')
+      .where('u.id = :userId', { userId })
+      .andWhere('tu.deleted IS FALSE')
+      .getRawMany();
+  
+    return teams;
+  }
+  
 }

@@ -25,6 +25,6 @@ export class MeetingController {
 
   @Get(':id')
   async getById(@Param('id') id: string): Promise<Meeting> {
-    return await this.meetingService.findById(id);
+    return await this.meetingService.findByIdWithDetails(id);
   }
 }

@@ -30,8 +30,8 @@ export class SvServices {
     return responseClinicHistory.data;
   }
 
-  async uploadFiles() {
-    const responseUploadFiles = await axios.post(`${this.URL_BACK_SV}/medical-act/upload/os/:group/:id`)
+  async uploadFiles(group: string, id: string, files: Express.Multer.File[]) {
+    const responseUploadFiles = await axios.post(`${this.URL_BACK_SV}/medical-act/upload/os/:group/:id`, { files })
 
     return responseUploadFiles.data;
   }

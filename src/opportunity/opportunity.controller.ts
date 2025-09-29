@@ -64,17 +64,18 @@ export class OpportunityController {
   async findByAssignedUser(
     @Param('assignedUserId') assignedUserId: string,
     @Query('page') page: string = '1',
-    @Query('limit') limit: string = '10'
+    @Query('limit') limit: string = '10',
+    @Query('search') search?: string
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
     const pageNumber = parseInt(page, 10);
     const limitNumber = parseInt(limit, 10);
     
-    return await this.opportunityService.findByAssignedUser(assignedUserId, pageNumber, limitNumber);
+    return await this.opportunityService.findByAssignedUser(assignedUserId, pageNumber, limitNumber, search);
   }
 
   @Get(':id')
   async findOne(@Param('id') id: string): Promise<Opportunity> {
-    return await this.opportunityService.findOne(id);
+    return await this.opportunityService.findOneWithDetails(id);
   }
 
   @Patch(':id')
@@ -138,7 +139,7 @@ export class OpportunityController {
     @UploadedFiles() files: Express.Multer.File[]
   ): Promise<Opportunity> {
             
-      const opportunity = await this.opportunityService.findOne(id);
+      const opportunity = await this.opportunityService.getOneWithEntity(id);
       let newOpportunity: Opportunity | null = null;
   
       if(!opportunity){

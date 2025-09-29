@@ -38,7 +38,7 @@ export class MeetingService {
     .getRawOne();
   }
 
-  async findById(id: string) {
+  async findByIdWithDetails(id: string) {
     const meeting = await this.meetingRepository.findOne({ where: { id } });
     if (!meeting) {
       throw new NotFoundException('Meeting not found');
@@ -46,6 +46,8 @@ export class MeetingService {
 
     const userAssigned = await this.userService.findOne(meeting.assignedUserId!);
 
-    return { ...meeting, userAssigned: userAssigned.userName };
+    const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+
+    return { ...meeting, userAssigned: userAssigned.userName, teams: teams };
   }
 }
