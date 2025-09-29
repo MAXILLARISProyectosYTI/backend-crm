@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Meeting } from './meeting.entity';
 import { UpdateMeetingDto } from './dto/update.dto';
+import { UserService } from 'src/user/user.service';
 
 @Injectable()
 export class MeetingService {
@@ -10,6 +11,7 @@ export class MeetingService {
   constructor(
     @InjectRepository(Meeting)
     private readonly meetingRepository: Repository<Meeting>,
+    private readonly userService: UserService,
   ) {}
 
   async getByParentId(parentId: string): Promise<Meeting[]> {
@@ -41,6 +43,9 @@ export class MeetingService {
     if (!meeting) {
       throw new NotFoundException('Meeting not found');
     }
-    return meeting;
+
+    const userAssigned = await this.userService.findOne(meeting.assignedUserId!);
+
+    return { ...meeting, userAssigned: userAssigned.userName };
   }
 }

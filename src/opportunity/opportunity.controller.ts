@@ -16,6 +16,7 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFiles,
+  Query,
 } from '@nestjs/common';
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
@@ -60,8 +61,15 @@ export class OpportunityController {
   }
 
   @Get('assigned/:assignedUserId')
-  async findByAssignedUser(@Param('assignedUserId') assignedUserId: string): Promise<Opportunity[]> {
-    return await this.opportunityService.findByAssignedUser(assignedUserId);
+  async findByAssignedUser(
+    @Param('assignedUserId') assignedUserId: string,
+    @Query('page') page: string = '1',
+    @Query('limit') limit: string = '10'
+  ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
+    const pageNumber = parseInt(page, 10);
+    const limitNumber = parseInt(limit, 10);
+    
+    return await this.opportunityService.findByAssignedUser(assignedUserId, pageNumber, limitNumber);
   }
 
   @Get(':id')

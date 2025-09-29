@@ -92,7 +92,7 @@ export class OpportunityService {
 
       // Asignamos el usuario en caso de que sea hora de asignar
       if (userToAssign) {
-        payloadOpportunity.assignedUserId = userToAssign.id;
+        payloadOpportunity.assignedUserId = userToAssign;
       } 
 
       // Agregamos la observación en caso de que exista
@@ -278,9 +278,11 @@ export class OpportunityService {
       throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
     }
 
+    const user = await this.userService.findOne(assignedUserId);
+
     await this.websocketService.notifyOpportunityUpdate(opportunity, opportunity.stage);
 
-    opportunity.assignedUserId = assignedUserId;
+    opportunity.assignedUserId = user;
     opportunity.modifiedAt = new Date();
     opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assignedUserId}&uuid-opportunity=${opportunityId}`;
     return await this.opportunityRepository.save(opportunity);
@@ -331,8 +333,10 @@ export class OpportunityService {
         lastName: createOpportunityDto.name,
         phoneNumber: createOpportunityDto.phoneNumber,
       }
-
       contact = await this.contactService.create(payloadContact);
+
+      // Obtenemos el usuario asignado
+      const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId!);
 
       const today = new Date().toISOString().split("T")[0];
 
@@ -347,7 +351,7 @@ export class OpportunityService {
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
-        assignedUserId: createOpportunityDto.assignedUserId,
+        assignedUserId: assignedUser,
       }
 
       // Agregamos la observación en caso de que exista
@@ -358,12 +362,10 @@ export class OpportunityService {
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
 
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
-
+      
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
-
-      console.log('SAVED OPPORTUNITY', newOpportunity);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -433,8 +435,6 @@ export class OpportunityService {
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
 
-      console.log('SALIO DE LA TABLA INTERMEDIA');
-
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
@@ -470,13 +470,14 @@ export class OpportunityService {
   async findOne(id: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
+      relations: ['assignedUserId'],
     });
 
     if (!opportunity) {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
 
-    const userAssigned = await this.userService.findOne(opportunity.assignedUserId!);
+    const userAssigned = await this.userService.findOne(opportunity.assignedUserId!.id);
 
     const meeting = await this.meetingService.findOneByparentIdLess(opportunity.id);
 
@@ -511,7 +512,9 @@ export class OpportunityService {
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
-    const opportunity = await this.findOne(id);
+
+    const opportunity = await this.getOneWithEntity(id);
+
     const previousStage = opportunity.stage; // Guardar etapa anterior para comparación
 
     // Actualizar solo los campos que están presentes en el DTO (no undefined)
@@ -550,7 +553,7 @@ export class OpportunityService {
     
     // Notificar por WebSocket si tenía assignedUserId
     if (opportunity?.assignedUserId) {
-      await this.websocketService.notifyOpportunityDeleted(opportunity.assignedUserId, id);
+      await this.websocketService.notifyOpportunityDeleted(opportunity.assignedUserId.id, id);
     }
   }
 
@@ -569,11 +572,27 @@ export class OpportunityService {
     });
   }
 
-  async findByAssignedUser(assignedUserId: string): Promise<Opportunity[]> {
-    return await this.opportunityRepository.find({
-      where: { assignedUserId, deleted: false },
+  async findByAssignedUser(
+    assignedUserId: string, 
+    page: number = 1, 
+    limit: number = 10
+  ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
+    const [opportunities, total] = await this.opportunityRepository.findAndCount({
+      where: { assignedUserId: { id: assignedUserId }, deleted: false },
       order: { createdAt: 'DESC' },
+      relations: ['assignedUserId'],
+      skip: (page - 1) * limit,
+      take: limit,
     });
+
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      opportunities,
+      total,
+      page,
+      totalPages,
+    };
   }
 
   async findActiveOpportunities(): Promise<Opportunity[]> {
@@ -638,6 +657,18 @@ export class OpportunityService {
       where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()) },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  async getOneWithEntity(id: string): Promise<Opportunity> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id },
+    });
+
+    if(!opportunity){
+      throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
+    }
+
+    return opportunity;
   }
 
 }

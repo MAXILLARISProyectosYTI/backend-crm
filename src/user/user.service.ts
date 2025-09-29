@@ -146,7 +146,7 @@ export class UserService {
     
     // Obtener todas las oportunidades asignadas a este usuario
     const assignedOpportunities = await this.opportunityRepository.find({
-      where: { assignedUserId: userId, deleted: false },
+      where: { assignedUserId: { id: userId }, deleted: false },
       select: ['id', 'assignedUserId', 'name', 'amount', 'stage', 'createdAt']
     });
 
@@ -164,7 +164,7 @@ export class UserService {
     // Contar oportunidades por usuario asignado
     const opportunitiesByUser = assignedOpportunities.reduce((acc, opp) => {
       if (opp.assignedUserId) {
-        acc[opp.assignedUserId] = (acc[opp.assignedUserId] || 0) + 1;
+        acc[opp.assignedUserId.id] = (acc[opp.assignedUserId.id] || 0) + 1;
       }
       return acc;
     }, {} as Record<string, number>);
@@ -203,7 +203,7 @@ export class UserService {
     
     // Obtener oportunidades asignadas directamente a este usuario
     const myOpportunities = await this.opportunityRepository.find({
-      where: { assignedUserId: userId, deleted: false },
+      where: { assignedUserId: { id: userId }, deleted: false },
       select: ['id', 'name', 'amount', 'stage', 'createdAt'],
       order: { createdAt: 'DESC' }
     });
@@ -228,7 +228,7 @@ export class UserService {
     // Contar oportunidades por usuario gestionado
     const opportunitiesByManagedUser = managedOpportunities.reduce((acc, opp) => {
       if (opp.assignedUserId) {
-        acc[opp.assignedUserId] = (acc[opp.assignedUserId] || 0) + 1;
+        acc[opp.assignedUserId.id] = (acc[opp.assignedUserId.id] || 0) + 1;
       }
       return acc;
     }, {} as Record<string, number>);

@@ -1,5 +1,6 @@
-import { Entity, PrimaryColumn, Column, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { Entity, PrimaryColumn, Column, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { Enum_Following, Enum_Stage } from './dto/enums';
+import { User } from 'src/user/user.entity';
 
 @Entity('opportunity')
 @Index('idx_opportunity_account_id', ['accountId'])
@@ -63,8 +64,9 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 17, nullable: true, name: 'modified_by_id' })
   modifiedById?: string;
 
-  @Column({ type: 'varchar', length: 17, nullable: true, name: 'assigned_user_id' })
-  assignedUserId?: string;
+  @ManyToOne(() => User, (user) => user.id)
+  @JoinColumn({ name: 'assigned_user_id' })
+  assignedUserId?: User;
 
   @Column({ type: 'bigint', nullable: true, name: 'version_number' })
   versionNumber?: number;

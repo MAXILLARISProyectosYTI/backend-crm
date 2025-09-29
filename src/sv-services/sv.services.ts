@@ -25,7 +25,7 @@ export class SvServices {
   }
 
   async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto){
-    const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory)
+    const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-patient-crm/`, payloadClinicHistory)
 
     return responseClinicHistory.data;
   }

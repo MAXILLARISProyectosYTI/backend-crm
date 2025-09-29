@@ -32,7 +32,7 @@ export class OpportunityWebSocketService {
     }
 
     try {
-      const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId);
+      const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId.id);
       
       if (!isConnected) {
         this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
@@ -42,14 +42,14 @@ export class OpportunityWebSocketService {
       // Determinar prioridad basada en el monto y etapa
       const priority = this.determinePriority(opportunity);
       
-      this.opportunityGateway.notifyNewOpportunity(opportunity.assignedUserId, opportunity);
+      this.opportunityGateway.notifyNewOpportunity(opportunity.assignedUserId.id, opportunity);
       
       this.logger.log(`Notificación de nueva oportunidad enviada al usuario ${opportunity.assignedUserId} (prioridad: ${priority})`);
       
       // Log para auditoría
       await this.logNotification({
         type: 'NEW_OPPORTUNITY',
-        assignedUserId: opportunity.assignedUserId,
+        assignedUserId: opportunity.assignedUserId.id,
         opportunity,
         timestamp: new Date().toISOString(),
         metadata: {
@@ -74,7 +74,7 @@ export class OpportunityWebSocketService {
     }
 
     try {
-      const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId);
+      const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId.id);
       
       if (!isConnected) {
         this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
@@ -91,14 +91,14 @@ export class OpportunityWebSocketService {
 
       const priority = this.determinePriority(opportunity);
       
-      this.opportunityGateway.notifyOpportunityUpdate(opportunity.assignedUserId, opportunity);
+      this.opportunityGateway.notifyOpportunityUpdate(opportunity.assignedUserId.id, opportunity);
       
       this.logger.log(`Notificación de actualización enviada al usuario ${opportunity.assignedUserId} (prioridad: ${priority})`);
       
       // Log para auditoría
       await this.logNotification({
         type: 'OPPORTUNITY_UPDATED',
-        assignedUserId: opportunity.assignedUserId,
+        assignedUserId: opportunity.assignedUserId.id,
         opportunity,
         timestamp: new Date().toISOString(),
         metadata: {
@@ -153,7 +153,7 @@ export class OpportunityWebSocketService {
    */
   async notifyMultipleUsers(userIds: string[], opportunity: Opportunity): Promise<void> {
     const promises = userIds.map(userId => 
-      this.notifyNewOpportunity({ ...opportunity, assignedUserId: userId })
+      this.notifyNewOpportunity({ ...opportunity, assignedUserId: { id: userId } })
     );
     
     await Promise.allSettled(promises);
