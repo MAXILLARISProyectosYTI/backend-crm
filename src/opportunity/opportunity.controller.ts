@@ -38,12 +38,6 @@ export class OpportunityController {
     private readonly contactService: ContactService,
   ) {}
 
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  async create(@Body() createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
-    return await this.opportunityService.create(createOpportunityDto);
-  }
-
   @Get()
   async findAll(): Promise<Opportunity[]> {
     return await this.opportunityService.findAll();
@@ -110,7 +104,7 @@ export class OpportunityController {
       ...body,
     };
 
-    return await this.opportunityService.create(createData);
+    return await this.opportunityService.create(createData, files);
   }
 
   @Get('count-opportunities-assigned/:date')

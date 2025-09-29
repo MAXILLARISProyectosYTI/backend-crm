@@ -10,6 +10,7 @@ import databaseConfig from './config/database.config';
 import { AuthModule } from './auth/auth.module';
 import { ContactModule } from './contact/contact.module';
 import { MeetingModule } from './meeting/meeting.module';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { MeetingModule } from './meeting/meeting.module';
       },
       inject: [ConfigService],
     }),
+    CommonModule,
     OpportunityModule,
     UserModule,
     RoleModule,

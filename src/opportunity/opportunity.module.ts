@@ -9,11 +9,14 @@ import { ContactModule } from 'src/contact/contact.module';
 import { UserModule } from 'src/user/user.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { OpportunityCronsService } from './opportunity-crons.service';
+import { MeetingModule } from 'src/meeting/meeting.module';
+import { SvServices } from 'src/sv-services/sv.services';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Opportunity]),
     ContactModule,
+    MeetingModule,
     forwardRef(() => UserModule),
     ScheduleModule.forRoot(),
   ],
@@ -23,6 +26,7 @@ import { OpportunityCronsService } from './opportunity-crons.service';
     OpportunityGateway,
     OpportunityWebSocketService,
     OpportunityCronsService,
+    SvServices
   ],
   exports: [
     OpportunityService, 

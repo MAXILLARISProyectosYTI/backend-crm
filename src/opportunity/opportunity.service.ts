@@ -13,15 +13,18 @@ import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
-import { CAMPAIGNS_IDS } from 'src/user/lib/ids';
+import { CAMPAIGNS_IDS } from 'src/globals/ids';
 import axios from 'axios';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
+import { MeetingService } from 'src/meeting/meeting.service';
+import { SvServices } from 'src/sv-services/sv.services';
+import { IdGeneratorService } from 'src/common/services/id-generator.service';
 
 @Injectable()
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
-  private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  // private readonly URL_BACK_SV = process.env.URL_BACK_SV;
   
   constructor(
     @InjectRepository(Opportunity)
@@ -30,9 +33,12 @@ export class OpportunityService {
     private readonly contactService: ContactService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    private readonly meetingService: MeetingService,
+    private readonly svServices: SvServices,
+    private readonly idGeneratorService: IdGeneratorService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
 
     let contact: Contact | null = null;
 
@@ -44,15 +50,7 @@ export class OpportunityService {
         throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
       }
 
-      const responseClinicHistory = await axios.get<{
-        is_new: boolean;
-        patient: any;
-        complete: boolean;
-        dataReservation: any;
-        dataPayment: any
-      }>(`${this.URL_BACK_SV}/clinic-history/patient-is-new/${createOpportunityDto.phoneNumber}`);
-
-      const { is_new, patient, complete, dataReservation, dataPayment } = responseClinicHistory.data;
+      const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber);
 
       if(!is_new){
         throw new ConflictException('El paciente ya existe en el sistema vertical');
@@ -60,9 +58,8 @@ export class OpportunityService {
 
       // Creamos el contacto
       const payloadContact: CreateContactDto = {
-        name: createOpportunityDto.name,
-        lastName: createOpportunityDto.name,
         firstName: createOpportunityDto.name,
+        lastName: createOpportunityDto.name,
         phoneNumber: createOpportunityDto.phoneNumber,
       }
 
@@ -81,6 +78,7 @@ export class OpportunityService {
       const today = new Date().toISOString().split("T")[0];
 
       const payloadOpportunity: Partial<Opportunity> = {
+        id: this.idGeneratorService.generateId(),
         name: contact.firstName + ' ' + contact.lastName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
@@ -175,7 +173,7 @@ export class OpportunityService {
         await this.update(newOpportunity.id, payloadUpdateComplete);
       }
 
-      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);      
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);      
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -234,6 +232,7 @@ export class OpportunityService {
       const today = new Date().toISOString().split("T")[0];
 
       const payloadOpportunity: Partial<Opportunity> = {
+        id: this.idGeneratorService.generateId(),
         name: nextRefName,
         closeDate: new Date(today),
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
@@ -257,7 +256,7 @@ export class OpportunityService {
         espoId: newOpportunity.id,
       }
 
-      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -317,15 +316,7 @@ export class OpportunityService {
       
       const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
 
-      const responseClinicHistory = await axios.get<{
-        is_new: boolean;
-        patient: any;
-        complete: boolean;
-        dataReservation: any;
-        dataPayment: any
-      }>(`${this.URL_BACK_SV}/clinic-history/patient-is-new/${createOpportunityDto.phoneNumber}`);
-
-      const { is_new, patient, complete, dataReservation, dataPayment } = responseClinicHistory.data;
+      const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber);
 
       if(!is_new){
         throw new ConflictException('El paciente ya existe en el sistema vertical');
@@ -336,9 +327,8 @@ export class OpportunityService {
       }
       // Creamos el contacto
       const payloadContact: CreateContactDto = {
-        name: createOpportunityDto.name,
-        lastName: createOpportunityDto.name,
         firstName: createOpportunityDto.name,
+        lastName: createOpportunityDto.name,
         phoneNumber: createOpportunityDto.phoneNumber,
       }
 
@@ -347,6 +337,7 @@ export class OpportunityService {
       const today = new Date().toISOString().split("T")[0];
 
       const payloadOpportunity: Partial<Opportunity> = {
+        id: this.idGeneratorService.generateId(),
         name: contact.firstName + ' ' + contact.lastName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: new Date(today),
@@ -365,11 +356,14 @@ export class OpportunityService {
       }
 
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
+
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
 
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+
+      console.log('SAVED OPPORTUNITY', newOpportunity);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -437,7 +431,9 @@ export class OpportunityService {
         await this.update(newOpportunity.id, payloadUpdateComplete);
       }
 
-      await axios.post(`${this.URL_BACK_SV}/opportunities/create-clinic-history-crm/`, payloadClinicHistory);
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
+
+      console.log('SALIO DE LA TABLA INTERMEDIA');
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -471,7 +467,7 @@ export class OpportunityService {
     });
   }
 
-  async findOne(id: string): Promise<Opportunity> {
+  async findOne(id: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
     });
@@ -480,7 +476,38 @@ export class OpportunityService {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
 
-    return opportunity;
+    const userAssigned = await this.userService.findOne(opportunity.assignedUserId!);
+
+    const meeting = await this.meetingService.findOneByparentIdLess(opportunity.id);
+
+    let campainName: string = '';
+    let subCampaignName: string = '';
+
+    switch(opportunity.cSubCampaignId){
+      case CAMPAIGNS_IDS.APNEA:
+        subCampaignName = 'APNEA';
+        break;
+      case CAMPAIGNS_IDS.OFM:
+        subCampaignName = 'OFM';
+        break;
+      case CAMPAIGNS_IDS.OI:
+        subCampaignName = 'OI';
+        break;
+    }
+
+    switch(opportunity.campaignId){
+      case CAMPAIGNS_IDS.APNEA:
+        campainName = 'APNEA';
+        break;
+      case CAMPAIGNS_IDS.OFM:
+        campainName = 'OFM';
+        break;
+      case CAMPAIGNS_IDS.OI:
+        campainName = 'OI';
+        break;
+    }
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -495,7 +522,6 @@ export class OpportunityService {
       }
     });
     
-    console.log('updateOpportunityDto', updateOpportunityDto);
     // Actualizar timestamp de modificación
     opportunity.modifiedAt = new Date();
     

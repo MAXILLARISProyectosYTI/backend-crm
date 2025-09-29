@@ -8,5 +8,6 @@ import { Meeting } from './meeting.entity';
   imports: [TypeOrmModule.forFeature([Meeting])],
   controllers: [MeetingController],
   providers: [MeetingService],
+  exports: [MeetingService],
 })
 export class MeetingModule {}

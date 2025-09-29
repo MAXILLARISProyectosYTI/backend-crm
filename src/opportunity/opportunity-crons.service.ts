@@ -5,7 +5,7 @@ import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
-import { CAMPAIGNS_IDS, TEAMS_IDS } from 'src/user/lib/ids';
+import { CAMPAIGNS_IDS, TEAMS_IDS } from 'src/globals/ids';
 import { OpportunityService } from './opportunity.service';
 import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { Cron } from '@nestjs/schedule';
@@ -43,7 +43,7 @@ export class OpportunityCronsService {
     return this.assignUnassignedOpportunitiesDaily();
   }  
 
-  @Cron('*/2 * * * * *')
+  // @Cron('*/2 * * * * *')
   async runReassignUser() {
     console.log('cron de reasignación');
     const now = new Date();

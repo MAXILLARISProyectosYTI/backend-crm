@@ -4,16 +4,35 @@ import { UpdateContactDto } from './dto/update-contact.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Contact } from './contact.entity';
+import { IdGeneratorService } from '../common/services/id-generator.service';
 
 @Injectable()
 export class ContactService {
   constructor(
     @InjectRepository(Contact)
     private readonly contactRepository: Repository<Contact>,
+    private readonly idGeneratorService: IdGeneratorService,
   ) {}
 
-  create(createContactDto: CreateContactDto) {
-    return this.contactRepository.save(createContactDto);
+  async create(createContactDto: CreateContactDto): Promise<Contact> {
+    // Crear una nueva instancia del contacto con ID generado por el servicio
+    const contact = this.contactRepository.create({
+      id: this.idGeneratorService.generateId(),
+      firstName: createContactDto.firstName,
+      lastName: createContactDto.lastName,
+      salutationName: createContactDto.salutationName,
+      description: createContactDto.description,
+      middleName: createContactDto.middleName,
+      addressStreet: createContactDto.addressStreet,
+      addressCity: createContactDto.addressCity,
+      addressState: createContactDto.addressState,
+      addressCountry: createContactDto.addressCountry,
+      addressPostalCode: createContactDto.addressPostalCode,
+      deleted: false,
+      doNotCall: false,
+    });
+
+    return await this.contactRepository.save(contact);
   }
 
   async getById(id: string) {

@@ -1,4 +1,4 @@
-import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
+import { Entity, PrimaryColumn, Column, Index, PrimaryGeneratedColumn } from 'typeorm';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 
 @Entity('opportunity')
@@ -154,8 +154,8 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_environment' })
   cEnvironment?: string;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'c_appointment' })
-  cAppointment?: Date;
+  @Column({ type: 'text', nullable: true, name: 'c_appointment' })
+  cAppointment?: string;
 
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_doctor' })
   cDoctor?: string;

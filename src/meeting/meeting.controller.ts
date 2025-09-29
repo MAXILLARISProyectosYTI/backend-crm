@@ -22,4 +22,9 @@ export class MeetingController {
   async getByParentId(@Param('id') id: string): Promise<Meeting[]> {
     return await this.meetingService.getByParentId(id);
   }
+
+  @Get(':id')
+  async getById(@Param('id') id: string): Promise<Meeting> {
+    return await this.meetingService.findById(id);
+  }
 }

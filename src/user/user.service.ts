@@ -10,7 +10,7 @@ import { Opportunity } from '../opportunity/opportunity.entity';
 import { getTeamsBySubCampaing } from './utils/getTeamsBySubCampaing';
 import { orderListAlphabetic } from './utils/orderListAlphabetic';
 import { UserWithTeam } from './dto/user-with-team';
-import { CAMPAIGNS_IDS, TEAMS_IDS } from './lib/ids';
+import { CAMPAIGNS_IDS, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 

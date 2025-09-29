@@ -1,4 +1,4 @@
-import { CAMPAIGNS_IDS, TEAMS_IDS } from "../lib/ids";
+import { CAMPAIGNS_IDS, TEAMS_IDS } from "../../globals/ids";
 
 export const getTeamsBySubCampaing = (subCampaignId: string): string[] => {
   if(subCampaignId === CAMPAIGNS_IDS.OI){
