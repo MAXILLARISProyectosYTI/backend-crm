@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { ContactModule } from './contact/contact.module';
 import { MeetingModule } from './meeting/meeting.module';
 import { CommonModule } from './common/common.module';
+import { ActionHistoryModule } from './action-history/action-history.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { CommonModule } from './common/common.module';
     AuthModule,
     ContactModule,
     MeetingModule,
+    ActionHistoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

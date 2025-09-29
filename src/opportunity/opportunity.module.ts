@@ -11,6 +11,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { OpportunityCronsService } from './opportunity-crons.service';
 import { MeetingModule } from 'src/meeting/meeting.module';
 import { SvServices } from 'src/sv-services/sv.services';
+import { ActionHistoryModule } from 'src/action-history/action-history.module';
 
 @Module({
   imports: [
@@ -19,8 +20,9 @@ import { SvServices } from 'src/sv-services/sv.services';
     MeetingModule,
     forwardRef(() => UserModule),
     ScheduleModule.forRoot(),
+    ActionHistoryModule,
   ],
-  controllers: [OpportunityController],
+  controllers: [OpportunityController],  
   providers: [
     OpportunityService,
     OpportunityGateway,

@@ -13,11 +13,14 @@ import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
-import { CAMPAIGNS_IDS } from 'src/globals/ids';
+import { CAMPAIGNS_IDS, TEAMS_IDS } from 'src/globals/ids';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
+import { ActionHistoryService } from 'src/action-history/action-history.service';
+import { UserWithTeam } from 'src/user/dto/user-with-team';
+import { DateTime } from 'luxon';
 
 @Injectable()
 export class OpportunityService {
@@ -34,6 +37,7 @@ export class OpportunityService {
     private readonly meetingService: MeetingService,
     private readonly svServices: SvServices,
     private readonly idGeneratorService: IdGeneratorService,
+    private readonly actionHistoryService: ActionHistoryService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
@@ -48,7 +52,9 @@ export class OpportunityService {
         throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
       }
 
-      const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber);
+      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+
+      const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
       if(!is_new){
         throw new ConflictException('El paciente ya existe en el sistema vertical');
@@ -73,13 +79,14 @@ export class OpportunityService {
         userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.campaignId);
       } 
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
         name: contact.firstName,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
-        closeDate: new Date(today),
+        closeDate: today,
+        createdAt: today,
         stage: Enum_Stage.GESTION_INICIAL,
         cCampaign: createOpportunityDto.campaignId,
         cSubCamping: createOpportunityDto.subCampaignId,
@@ -171,9 +178,10 @@ export class OpportunityService {
         await this.update(newOpportunity.id, payloadUpdateComplete);
       }
 
-      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);   
+
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);   
       
-      await this.svServices.uploadFiles(newOpportunity.id, 'os',  files);
+      await this.svServices.uploadFiles(newOpportunity.id, 'os',  files, tokenSv);
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -229,12 +237,13 @@ export class OpportunityService {
         nextRefName = `${baseName} REF${nextRef}`;
       }
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
         name: nextRefName,
-        closeDate: new Date(today),
+        closeDate: today,
+        createdAt: today,
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
         stage: Enum_Stage.CIERRE_GANADO,
         cCampaign: opportunity.cCampaign,
@@ -248,7 +257,7 @@ export class OpportunityService {
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
       const savedOpportunity = await this.opportunityRepository.save(opportunityCreated);
 
-      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${opportunity.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${opportunity.assignedUserId!.id}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
 
@@ -256,7 +265,9 @@ export class OpportunityService {
         espoId: newOpportunity.id,
       }
 
-      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
+      const tokenSv = await this.svServices.getTokenSv(opportunity.assignedUserId!.cUsersv!, opportunity.assignedUserId!.cContraseaSv!);
+
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -313,12 +324,15 @@ export class OpportunityService {
 
   async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     let contact: Contact | null = null;
-
+      
     try {
       
       const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
 
-      const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber);
+
+      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+
+      const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
       if(!is_new){
         throw new ConflictException('El paciente ya existe en el sistema vertical');
@@ -338,13 +352,14 @@ export class OpportunityService {
       // Obtenemos el usuario asignado
       const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId!);
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
         name: contact.firstName,
+        createdAt: today,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
-        closeDate: new Date(today),
+        closeDate: today,
         stage: Enum_Stage.GESTION_INICIAL,
         cCampaign: createOpportunityDto.campaignId,
         cSubCamping: createOpportunityDto.subCampaignId,
@@ -439,7 +454,7 @@ export class OpportunityService {
         await this.update(newOpportunity.id, payloadUpdateComplete);
       }
 
-      await this.svServices.createClinicHistoryCrm(payloadClinicHistory);
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
       console.log('newOpportunity', newOpportunity);
 
@@ -519,7 +534,9 @@ export class OpportunityService {
 
     const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams };
+    const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -591,42 +608,60 @@ export class OpportunityService {
     limit: number = 10,
     search?: string
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
-    let whereCondition: any;
 
-    if (search && search.trim()) {
-      // Si hay búsqueda, crear un array de condiciones OR
-      whereCondition = [
-        { 
-          assignedUserId: { id: assignedUserId }, 
-          deleted: false,
-          name: ILike(`%${search.trim()}%`) 
-        },
-        { 
-          assignedUserId: { id: assignedUserId }, 
-          deleted: false,
-          cNumeroDeTelefono: ILike(`%${search.trim()}%`) 
-        },
-        { 
-          assignedUserId: { id: assignedUserId }, 
-          deleted: false,
-          cClinicHistory: ILike(`%${search.trim()}%`) 
-        }
-      ];
-    } else {
-      // Si no hay búsqueda, usar condición normal
-      whereCondition = { 
-        assignedUserId: { id: assignedUserId }, 
-        deleted: false 
-      };
+    const teamsUser = await this.userService.getAllTeamsByUser(assignedUserId);
+
+    const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
+    
+    const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    let team: string = '';
+    let users: UserWithTeam[] = []
+    
+    if(isTeamLeader){
+      if(teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_FIORELLA)){
+        team = TEAMS_IDS.TEAM_FIORELLA;
+      } else if(teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_MICHELL)){
+        team = TEAMS_IDS.TEAM_MICHELL;
+      } else if (teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_VERONICA)){
+        team = TEAMS_IDS.TEAM_VERONICA;
+      }
+
+      users = await this.userService.getUserByAllTeams([team]);
     }
 
-    const [opportunities, total] = await this.opportunityRepository.findAndCount({
-      where: whereCondition,
-      order: { createdAt: 'DESC' },
-      relations: ['assignedUserId'],
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+
+    const queryBuilder = this.opportunityRepository
+      .createQueryBuilder('opportunity')
+      .leftJoinAndSelect('opportunity.assignedUserId', 'user')
+      .andWhere('opportunity.deleted = :deleted', { deleted: false });
+
+    if (isTIorOwner) {
+      // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
+      // Solo mantiene el filtro de deleted = false que ya está aplicado
+    } else if (isTeamLeader && users.length > 0) {
+      // Si es team leader, buscar oportunidades de todos los usuarios de su equipo
+      const userIds = users.map(user => user.user_id);
+      queryBuilder.andWhere('opportunity.assignedUserId IN (:...userIds)', { userIds });
+    } else {
+      // Si no es team leader ni TI/Owner, solo ver sus propias oportunidades
+      queryBuilder.andWhere('opportunity.assignedUserId = :assignedUserId', { assignedUserId });
+    }
+
+    if (search && search.trim()) {
+      // Si hay búsqueda, agregar condiciones OR para búsqueda
+      queryBuilder.andWhere(
+        '(opportunity.name ILIKE :search OR opportunity.cNumeroDeTelefono ILIKE :search OR opportunity.cClinicHistory ILIKE :search OR user.user_name ILIKE :search)',
+        { search: `%${search.trim()}%` }
+      );
+    }
+
+    // Usar ordenamiento con dos campos: primero por seguimiento (DESC para que "Sin Seguimiento" venga primero), luego por fecha
+    const [opportunities, total] = await queryBuilder
+      .addOrderBy('opportunity.cSeguimientocliente', 'DESC') // "Sin Seguimiento" viene antes que "En seguimiento" al ordenar DESC
+      .addOrderBy('opportunity.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
 
     const totalPages = Math.ceil(total / limit);
 

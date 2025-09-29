@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Meeting } from './meeting.entity';
 import { UpdateMeetingDto } from './dto/update.dto';
 import { UserService } from 'src/user/user.service';
+import { ActionHistoryService } from 'src/action-history/action-history.service';
 
 @Injectable()
 export class MeetingService {
@@ -12,6 +13,7 @@ export class MeetingService {
     @InjectRepository(Meeting)
     private readonly meetingRepository: Repository<Meeting>,
     private readonly userService: UserService,
+    private readonly actionHistoryService: ActionHistoryService,
   ) {}
 
   async getByParentId(parentId: string): Promise<Meeting[]> {
@@ -48,6 +50,8 @@ export class MeetingService {
 
     const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
 
-    return { ...meeting, userAssigned: userAssigned.userName, teams: teams };
+    const history = await this.actionHistoryService.getRecordByTargetId(meeting.id);
+
+    return { ...meeting, userAssigned: userAssigned.userName, teams: teams, history: history };
   }
 }

@@ -339,7 +339,7 @@ export class UserService {
     return nextUser
   }
 
-  async getAllTeamsByUser(userId: string) {
+  async getAllTeamsByUser(userId: string): Promise<{team_id: string, team_name: string}[]> {
     const teams = await this.userRepository
       .createQueryBuilder('u')
       .select([
