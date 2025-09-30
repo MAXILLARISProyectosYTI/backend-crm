@@ -30,7 +30,7 @@ import { FilesModule } from 'src/files/files.module';
     OpportunityGateway,
     OpportunityWebSocketService,
     OpportunityCronsService,
-    SvServices
+    SvServices,
   ],
   exports: [
     OpportunityService, 

@@ -23,7 +23,7 @@ import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { DateTime } from 'luxon';
 import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
-import { FileManagerService, FileType, DirectoryType } from 'src/common/services/file-manager.service';
+import { FilesService } from 'src/files/files.service';
 
 @Injectable()
 export class OpportunityService {
@@ -41,7 +41,7 @@ export class OpportunityService {
     private readonly svServices: SvServices,
     private readonly idGeneratorService: IdGeneratorService,
     private readonly actionHistoryService: ActionHistoryService,
-    private readonly fileManagerService: FileManagerService,
+    private readonly filesService: FilesService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
@@ -535,7 +535,9 @@ export class OpportunityService {
 
     const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient };
+    const files = await this.filesService.findByParentId(opportunity.id);
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -793,26 +795,22 @@ export class OpportunityService {
     try {
       // Descargar comprobante en soles si existe
       if (cFacturas.comprobante_soles) {
-        const result = await this.fileManagerService.uploadFile({
-          url: cFacturas.comprobante_soles,
-          fileType: FileType.PDF,
-          directory: DirectoryType.OPPORTUNITIES,
-          customFileName: `comprobante_soles_${opportunityId}.pdf`,
-          entityId: opportunityId,
-        });
-        downloadedFiles.comprobante_soles = result.filePath;
+        const result = await this.filesService.createFileRecord(
+          opportunityId,
+          'opportunity',
+          `comprobante_soles_${opportunityId}.pdf`
+        );
+        downloadedFiles.comprobante_soles = `uploads/opportunities/comprobante_soles_${opportunityId}.pdf`;
       }
 
       // Descargar comprobante en dólares si existe
       if (cFacturas.comprobante_dolares) {
-        const result = await this.fileManagerService.uploadFile({
-          url: cFacturas.comprobante_dolares,
-          fileType: FileType.PDF,
-          directory: DirectoryType.OPPORTUNITIES,
-          customFileName: `comprobante_dolares_${opportunityId}.pdf`,
-          entityId: opportunityId,
-        });
-        downloadedFiles.comprobante_dolares = result.filePath;
+        const result = await this.filesService.createFileRecord(
+          opportunityId,
+          'opportunity',
+          `comprobante_dolares_${opportunityId}.pdf`
+        );
+        downloadedFiles.comprobante_dolares = `uploads/opportunities/comprobante_dolares_${opportunityId}.pdf`;
       }
 
       return downloadedFiles;

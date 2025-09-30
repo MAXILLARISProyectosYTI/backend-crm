@@ -28,8 +28,10 @@ import { ContactService } from 'src/contact/contact.service';
 import { UpdateContactDto } from 'src/contact/dto/update-contact.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { OpportunityFilesInterceptor } from 'src/interceptors/simple-file.interceptor';
-import { FileUploadService } from 'src/files/file-upload.service';
 import { Enum_Stage } from './dto/enums';
+import { FilesService } from 'src/files/files.service';
+import { FileUploadService } from 'src/files/file-upload.service';
+import { FileType, DirectoryType } from 'src/files/dto/files.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -39,6 +41,7 @@ export class OpportunityController {
     private readonly opportunityService: OpportunityService,
     private readonly websocketService: OpportunityWebSocketService,
     private readonly contactService: ContactService,
+    private readonly filesService: FilesService,
     private readonly fileUploadService: FileUploadService,
   ) {}
 
@@ -120,10 +123,12 @@ export class OpportunityController {
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
-      await this.fileUploadService.saveFilesToDatabase(
+      await this.fileUploadService.uploadFiles(
         files,
         opportunity.id.toString(),
-        'opportunity'
+        'opportunity',
+        FileType.ALL,
+        DirectoryType.OPPORTUNITIES
       );
     }
 
@@ -147,11 +152,13 @@ export class OpportunityController {
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
-      await this.fileUploadService.saveFilesToDatabase(
-        files,
-        opportunity.id.toString(),
-        'opportunity'
-      );
+      for (const file of files) {
+        await this.filesService.createFileRecord(
+          opportunity.id.toString(),
+          'opportunity',
+          file.filename
+        );
+      }
     }
 
     return opportunity;
@@ -209,10 +216,12 @@ export class OpportunityController {
 
       // Guardar archivos en la base de datos
       if (files && files.length > 0) {
-        await this.fileUploadService.saveFilesToDatabase(
+        await this.fileUploadService.uploadFiles(
           files,
           id,
-          'opportunity'
+          'opportunity',
+          FileType.ALL,
+          DirectoryType.OPPORTUNITIES
         );
       }
   
@@ -222,16 +231,6 @@ export class OpportunityController {
   @Get('patient-sv/:id')
   async getPatientSV(@Param('id') id: string) {
     return this.opportunityService.getPatientSV(id);
-  }
-
-  @Get(':id/images')
-  async getOpportunityImages(@Param('id') id: string) {
-    return await this.fileUploadService.getImagesByParent(id, 'opportunity');
-  }
-
-  @Get(':id/files')
-  async getOpportunityFiles(@Param('id') id: string) {
-    return await this.fileUploadService.getFilesByParent(id, 'opportunity');
   }
 
 }

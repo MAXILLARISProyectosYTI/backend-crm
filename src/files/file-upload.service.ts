@@ -1,25 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { FilesService } from './files.service';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { FileType, DirectoryType } from './dto/files.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import { existsSync, mkdirSync } from 'fs';
 
 @Injectable()
 export class FileUploadService {
   constructor(private readonly filesService: FilesService) {}
 
   /**
-   * Crea un interceptor de archivos para un tipo específico de entidad
+   * Crea un interceptor de archivos con configuración dinámica
    */
   createFileInterceptor(
-    parentType: string,
     fieldName: string = 'files',
+    destination: string = 'opportunities',
     maxCount: number = 10,
-    destination: string = './uploads'
+    basePath: string = './uploads'
   ) {
+    const fullDestination = join(basePath, destination);
+    
+    // Crear directorio si no existe
+    if (!existsSync(fullDestination)) {
+      mkdirSync(fullDestination, { recursive: true });
+    }
+
     return FilesInterceptor(fieldName, maxCount, {
       storage: diskStorage({
-        destination,
+        destination: fullDestination,
         filename: (req, file, callback) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
           const ext = extname(file.originalname);
@@ -45,122 +54,95 @@ export class FileUploadService {
   }
 
   /**
-   * Guarda los archivos subidos en la base de datos
+   * Sube archivos y los guarda en la base de datos
    */
-  async saveFilesToDatabase(
+  async uploadFiles(
     files: Express.Multer.File[],
     parentId: string,
-    parentType: string
-  ): Promise<void> {
-    if (!files || files.length === 0) {
-      return;
-    }
+    parentType: string,
+    fileType: FileType = FileType.ALL,
+    directory: DirectoryType = DirectoryType.OPPORTUNITIES
+  ) {
+    const results: any[] = [];
 
     for (const file of files) {
       try {
-        await this.filesService.createFileRecord(
+        // Crear registro en la base de datos
+        const fileRecord = await this.filesService.createFileRecord(
           parentId,
           parentType,
           file.filename
         );
-        console.log(`Archivo guardado: ${file.filename} para ${parentType}:${parentId}`);
+
+        results.push({
+          id: fileRecord.id,
+          fileName: file.filename,
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          path: file.path,
+          parentId,
+          parentType,
+          createdAt: fileRecord.created_at
+        });
       } catch (error) {
         console.error(`Error al guardar archivo ${file.filename}:`, error);
-        throw error;
+        results.push({
+          error: `Error al guardar archivo ${file.filename}`,
+          fileName: file.filename
+        });
       }
     }
+
+    return {
+      message: `${results.length} archivo(s) procesado(s)`,
+      files: results
+    };
+  }
+
+
+  /**
+   * Obtiene todas las imágenes de una entidad específica
+   */
+  async getImagesByParent(parentId: string, parentType: string) {
+    const files = await this.filesService.findByParentId(parentId);
+    return files.filter(file => 
+      file.file_name.match(/\.(jpg|jpeg|png|gif)$/i)
+    );
   }
 
   /**
    * Obtiene todos los archivos de una entidad específica
    */
-  async getFilesByParent(parentId: string, parentType: string) {
+  async getFilesByParent(parentId: string) {
     return await this.filesService.findByParentId(parentId);
   }
 
   /**
-   * Obtiene todas las imágenes de una entidad específica con información completa
-   */
-  async getImagesByParent(parentId: string, parentType: string) {
-    const files = await this.filesService.findByParentId(parentId);
-    
-    // Filtrar solo imágenes
-    const imageFiles = files.filter(file => {
-      const extension = file.file_name.split('.').pop()?.toLowerCase();
-      return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension || '');
-    });
-
-    // Agregar información adicional para el frontend
-    return imageFiles.map(file => ({
-      id: file.id,
-      fileName: file.file_name,
-      originalName: file.file_name, // Podrías guardar el nombre original en la BD
-      parentId: file.parent_id,
-      parentType: file.parent_type,
-      createdAt: file.created_at,
-      url: this.getFileUrl(file.file_name, parentType),
-      path: this.getFilePath(file.file_name, parentType)
-    }));
-  }
-
-  /**
-   * Obtiene la URL pública del archivo
-   */
-  private getFileUrl(fileName: string, parentType: string): string {
-    const baseUrl = process.env.API_URL || 'http://localhost:3000';
-    return `${baseUrl}/files/${parentType}/${fileName}`;
-  }
-
-  /**
-   * Obtiene la ruta física del archivo
-   */
-  private getFilePath(fileName: string, parentType: string): string {
-    return `./uploads/${parentType}s/${fileName}`;
-  }
-
-  /**
-   * Verifica si un archivo existe físicamente
-   */
-  async fileExists(fileName: string, parentType: string): Promise<boolean> {
-    const fs = require('fs').promises;
-    const path = this.getFilePath(fileName, parentType);
-    
-    try {
-      await fs.access(path);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Obtiene información de un archivo específico
+   * Obtiene información de un archivo específico por ID
    */
   async getFileInfo(fileId: number) {
+    return await this.filesService.findOne(fileId);
+  }
+
+  /**
+   * Elimina un archivo
+   */
+  async deleteFile(fileId: number) {
     const file = await this.filesService.findOne(fileId);
     if (!file) {
       throw new Error('Archivo no encontrado');
     }
 
-    const exists = await this.fileExists(file.file_name, file.parent_type);
-    
-    return {
-      id: file.id,
-      fileName: file.file_name,
-      parentId: file.parent_id,
-      parentType: file.parent_type,
-      createdAt: file.created_at,
-      url: this.getFileUrl(file.file_name, file.parent_type),
-      path: this.getFilePath(file.file_name, file.parent_type),
-      exists
-    };
-  }
+    // Eliminar archivo físico (opcional)
+    // const filePath = join('./uploads', file.parent_type, file.file_name);
+    // if (existsSync(filePath)) {
+    //   unlinkSync(filePath);
+    // }
 
-  /**
-   * Elimina un archivo de la base de datos
-   */
-  async deleteFileRecord(fileId: number): Promise<void> {
-    // Aquí podrías implementar la lógica para eliminar el archivo físico también
-    // await this.filesService.delete(fileId);
+    // Eliminar registro de la base de datos
+    await this.filesService.delete(fileId);
+    
+    return { message: 'Archivo eliminado correctamente' };
   }
 }

@@ -6,6 +6,8 @@ import { Repository } from 'typeorm';
 @Injectable()
 export class FilesService {
 
+  private readonly FILE_PATH = process.env.URL_FILES;
+
   constructor(
     @InjectRepository(Files)
     private readonly filesRepository: Repository<Files>,
@@ -16,7 +18,13 @@ export class FilesService {
   }
 
   async findByParentId(parentId: string): Promise<Files[]> {
-    return await this.filesRepository.find({ where: { parent_id: parentId } });
+    const files = await this.filesRepository.find({ where: { parent_id: parentId } });
+    
+    // Construir la ruta completa para cada archivo
+    return files.map(file => ({
+      ...file,
+      file_path: `${this.FILE_PATH}uploads/${file.parent_type}s/${file.file_name}`
+    }));
   }
 
   async findOne(id: number): Promise<Files | null> {
@@ -31,5 +39,8 @@ export class FilesService {
     });
     return await this.filesRepository.save(fileRecord);
   }
-  
+
+  async delete(id: number): Promise<void> {
+    await this.filesRepository.delete(id);
+  } 
 }
