@@ -82,4 +82,44 @@ export class SvServices {
 
     return responsePatientSV.data;
   }
+
+  async getPatientSVByEspoId(espoId: string, tokenSv: string) {
+    const responsePatientSV = await axios.get(`${this.URL_BACK_SV}/opportunities/clinic-history-crm-by-espo-id/${espoId}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
+  }
+
+  async updateClinicHistoryCrm(espoId: string, tokenSv: string, payload: Partial<CreateClinicHistoryCrmDto>) {
+    const responsePatientSV = await axios.put(`${this.URL_BACK_SV}/opportunities/update-clinic-history-crm/${espoId}`, payload, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
+  }
+
+  async getPatientByClinicHistory(clinicHistory: string, tokenSv: string) {
+    const responsePatientSV = await axios.get(`${this.URL_BACK_SV}/clinic-history/get-by-clinic-history/${clinicHistory}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
+  }
+
+  async getIRHByComprobante(comprobante: string, tokenSv: string) {
+    const responsePatientSV = await axios.get(`${this.URL_BACK_SV}/service_billing_payments01/get-irh-by-comprobante/${comprobante}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
+  }
 }

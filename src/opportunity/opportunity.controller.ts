@@ -21,6 +21,7 @@ import {
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
+import type { UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { Opportunity } from './opportunity.entity';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
@@ -103,7 +104,7 @@ export class OpportunityController {
   }
 
   @Post('register')
-  @UseInterceptors(OpportunityFilesInterceptor)
+  @UseInterceptors(OpportunityFilesInterceptor) 
   async register(
     @Body() body: Omit<CreateOpportunityDto, 'files'>,
     @UploadedFiles() files: Express.Multer.File[]
@@ -113,7 +114,7 @@ export class OpportunityController {
       ...body,
     };
 
-    return await this.opportunityService.create(createData, files);
+    return await this.opportunityService.create(createData);
   }
 
   @Get('count-opportunities-assigned/:date')
@@ -127,8 +128,14 @@ export class OpportunityController {
   }
 
   @Post('create-opportunity-with-manual-assign')
-  async createOpportunityWithManualAssign(@Body() body: CreateOpportunityDto) {
-    return this.opportunityService.createWithManualAssign(body);
+  @UseInterceptors(OpportunityFilesInterceptor)
+  async createOpportunityWithManualAssign(@Body()  body: Omit<CreateOpportunityDto, 'files'>, @UploadedFiles() files: Express.Multer.File[]) {
+    return this.opportunityService.createWithManualAssign(body, files);
+  }
+
+  @Put('update-opportunity-procces/:id')
+  async updateOpportunityWithProcces(@Param('id') id: string, @Body() body: UpdateOpportunityProcces) {
+    return this.opportunityService.updateOpportunityWithFacturas(id, body);
   }
 
   @Put('data/:id')

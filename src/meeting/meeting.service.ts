@@ -54,4 +54,9 @@ export class MeetingService {
 
     return { ...meeting, userAssigned: userAssigned.userName, teams: teams, history: history };
   }
+
+  async create(createMeetingDto: Partial<Meeting>): Promise<Meeting> {
+    const meeting = this.meetingRepository.create(createMeetingDto);
+    return await this.meetingRepository.save(meeting);
+  }
 }

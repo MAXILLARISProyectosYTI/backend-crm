@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString } from 'class-validator';
+import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString, IsIn } from 'class-validator';
 import { User } from 'src/user/user.entity';
 
 export class UpdateOpportunityDto {
@@ -269,4 +269,34 @@ export class UpdateOpportunityDto {
   @IsOptional()
   @IsString()
   cCampaign1Id?: string;
+}
+
+
+
+export interface UpdateOpportunityProcces {
+  // DATOS CLIENTE
+  cLastNameFather?: string;
+  cLastNameMother?: string;
+  cCustomerDocumentType?: string;
+  cCustomerDocument?: string;
+  // DATOS PACIENTE
+  cPatientsname?: string;
+  cPatientsPaternalLastName?: string;
+  cPatientsMaternalLastName?: string;
+  cPatientDocument?: string;
+  cPatientDocumentType?: string;
+  cClinicHistory?: string;
+  // FACTURAS
+  cFacturas?: {
+    comprobante_soles: string | null;
+    comprobante_dolares: string | null;
+  };
+  // DATOS DE LA CITA
+  cAppointment?: string | null;
+  cDateReservation?: string | null;
+  cDoctor?: string;
+  cEnvironment?: string;
+  cSpecialty?: string;
+  cTariff?: string;  
+  reservationId?: number; // ------> Este campo no existe en el CRM, pero se usa para guardar el id de la reserva en el flujo principal
 }
