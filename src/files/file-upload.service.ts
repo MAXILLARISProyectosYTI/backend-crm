@@ -2,9 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { FilesService } from './files.service';
 import { FileType, DirectoryType } from './dto/files.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { memoryStorage } from 'multer';
+import { extname } from 'path';
 
 @Injectable()
 export class FileUploadService {
@@ -19,23 +18,9 @@ export class FileUploadService {
     maxCount: number = 10,
     basePath: string = './uploads'
   ) {
-    const fullDestination = join(basePath, destination);
-    
-    // Crear directorio si no existe
-    if (!existsSync(fullDestination)) {
-      mkdirSync(fullDestination, { recursive: true });
-    }
-
+    // Usar memoryStorage para mantener el buffer en memoria
     return FilesInterceptor(fieldName, maxCount, {
-      storage: diskStorage({
-        destination: fullDestination,
-        filename: (req, file, callback) => {
-          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname);
-          const filename = `${file.fieldname}-${uniqueSuffix}${ext}`;
-          callback(null, filename);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: (req, file, callback) => {
         const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|xlsx|xls/;
         const fileExtension = allowedTypes.test(extname(file.originalname).toLowerCase());
@@ -54,6 +39,15 @@ export class FileUploadService {
   }
 
   /**
+   * Genera un nombre de archivo único
+   */
+  private generateUniqueFileName(originalName: string): string {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const ext = extname(originalName);
+    return `file-${uniqueSuffix}${ext}`;
+  }
+
+  /**
    * Sube archivos y los guarda en la base de datos
    */
   async uploadFiles(
@@ -67,29 +61,32 @@ export class FileUploadService {
 
     for (const file of files) {
       try {
-        // Crear registro en la base de datos
+        // Generar nombre único para el archivo
+        const fileName = this.generateUniqueFileName(file.originalname);
+        
+        // Crear registro en la base de datos con el contenido del archivo (buffer)
         const fileRecord = await this.filesService.createFileRecord(
           parentId,
           parentType,
-          file.filename
+          fileName,
+          file.buffer
         );
 
         results.push({
           id: fileRecord.id,
-          fileName: file.filename,
+          fileName: fileName,
           originalName: file.originalname,
           mimeType: file.mimetype,
           size: file.size,
-          path: file.path,
           parentId,
           parentType,
           createdAt: fileRecord.created_at
         });
       } catch (error) {
-        console.error(`Error al guardar archivo ${file.filename}:`, error);
+        console.error(`Error al guardar archivo ${file.originalname}:`, error);
         results.push({
-          error: `Error al guardar archivo ${file.filename}`,
-          fileName: file.filename
+          error: `Error al guardar archivo ${file.originalname}`,
+          fileName: file.originalname
         });
       }
     }
@@ -99,7 +96,6 @@ export class FileUploadService {
       files: results
     };
   }
-
 
   /**
    * Obtiene todas las imágenes de una entidad específica
@@ -126,7 +122,7 @@ export class FileUploadService {
   }
 
   /**
-   * Elimina un archivo
+   * Elimina un archivo de la base de datos
    */
   async deleteFile(fileId: number) {
     const file = await this.filesService.findOne(fileId);
@@ -134,15 +130,25 @@ export class FileUploadService {
       throw new Error('Archivo no encontrado');
     }
 
-    // Eliminar archivo físico (opcional)
-    // const filePath = join('./uploads', file.parent_type, file.file_name);
-    // if (existsSync(filePath)) {
-    //   unlinkSync(filePath);
-    // }
-
     // Eliminar registro de la base de datos
     await this.filesService.delete(fileId);
     
     return { message: 'Archivo eliminado correctamente' };
+  }
+
+  /**
+   * Obtiene el contenido de un archivo directamente desde la base de datos
+   */
+  async getFileContent(fileId: number) {
+    const result = await this.filesService.getFileContent(fileId);
+    if (!result.file) {
+      throw new Error('Archivo no encontrado');
+    }
+    
+    return {
+      file: result.file,
+      content: result.content,
+      hasContent: !!result.content
+    };
   }
 }

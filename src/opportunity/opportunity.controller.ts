@@ -152,13 +152,13 @@ export class OpportunityController {
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
-      for (const file of files) {
-        await this.filesService.createFileRecord(
-          opportunity.id.toString(),
-          'opportunities',
-          file.filename
-        );
-      }
+      await this.fileUploadService.uploadFiles(
+        files,
+        opportunity.id.toString(),
+        'opportunities',
+        FileType.ALL,
+        DirectoryType.OPPORTUNITIES
+      );
     }
 
     return opportunity;

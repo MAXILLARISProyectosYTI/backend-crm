@@ -1,23 +1,14 @@
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { memoryStorage } from 'multer';
 import { extname } from 'path';
 
-// Interceptor simple para archivos usando FilesInterceptor
+// Interceptor simple para archivos usando FilesInterceptor con memoryStorage
 export function createSimpleFileInterceptor(
   fieldName: string = 'files',
-  maxCount?: number,
-  destination: string = './uploads/opportunities'
+  maxCount?: number
 ) {
   return FilesInterceptor(fieldName, maxCount, {
-    storage: diskStorage({
-      destination,
-      filename: (req, file, callback) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = extname(file.originalname);
-        const filename = `${file.fieldname}-${uniqueSuffix}${ext}`;
-        callback(null, filename);
-      },
-    }),
+    storage: memoryStorage(),
     fileFilter: (req, file, callback) => {
       const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|xlsx|xls/;
       const fileExtension = allowedTypes.test(extname(file.originalname).toLowerCase());
@@ -36,10 +27,10 @@ export function createSimpleFileInterceptor(
 }
 
 // Interceptor predefinido para oportunidades
-export const OpportunityFilesInterceptor = createSimpleFileInterceptor('files', 10, './uploads/opportunities');
+export const OpportunityFilesInterceptor = createSimpleFileInterceptor('files', 10);
 
 // Interceptor predefinido para usuarios
-export const UserFilesInterceptor = createSimpleFileInterceptor('files', 5, './uploads/users');
+export const UserFilesInterceptor = createSimpleFileInterceptor('files', 5);
 
 // Interceptor predefinido para contactos  
-export const ContactFilesInterceptor = createSimpleFileInterceptor('files', 3, './uploads/contacts');
+export const ContactFilesInterceptor = createSimpleFileInterceptor('files', 3);

@@ -1,9 +1,8 @@
 import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { memoryStorage } from 'multer';
+import { extname } from 'path';
 
 @Injectable()
 export class ParamBasedFileInterceptor implements NestInterceptor {
@@ -12,23 +11,11 @@ export class ParamBasedFileInterceptor implements NestInterceptor {
     const parentType = request.params.parentType;
     const directory = request.body.directory || parentType + 's'; // Por defecto usa el parentType + 's'
     
-    const fullDestination = join('./uploads', directory);
-    
-    // Crear directorio si no existe
-    if (!existsSync(fullDestination)) {
-      mkdirSync(fullDestination, { recursive: true });
-    }
+    // Agregar información del directorio a la request para uso posterior
+    request.uploadDirectory = directory;
 
     const interceptor = new (FilesInterceptor('files', 10, {
-      storage: diskStorage({
-        destination: fullDestination,
-        filename: (req, file, callback) => {
-          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname);
-          const filename = `${file.fieldname}-${uniqueSuffix}${ext}`;
-          callback(null, filename);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: (req, file, callback) => {
         const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|xlsx|xls/;
         const fileExtension = allowedTypes.test(extname(file.originalname).toLowerCase());

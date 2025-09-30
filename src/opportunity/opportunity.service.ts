@@ -781,36 +781,48 @@ export class OpportunityService {
   }
 
   /**
-   * Descarga las facturas desde URLs y las guarda usando el FileManagerService
+   * Descarga las facturas desde URLs y las guarda en la base de datos
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
-   * @returns Array con las rutas de los archivos descargados
+   * @returns Array con los IDs de los archivos guardados
    */
   private async downloadFacturasFromURLs(
     opportunityId: string,
     cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
-  ): Promise<{ comprobante_soles?: string; comprobante_dolares?: string }> {
-    const downloadedFiles: { comprobante_soles?: string; comprobante_dolares?: string } = {};
+  ): Promise<{ comprobante_soles?: number; comprobante_dolares?: number }> {
+    const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
 
     try {
       // Descargar comprobante en soles si existe
       if (cFacturas.comprobante_soles) {
+        const response = await fetch(cFacturas.comprobante_soles);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        const fileName = `comprobante_soles_${opportunityId}.pdf`;
         const result = await this.filesService.createFileRecord(
           opportunityId,
-          'opportunity',
-          `comprobante_soles_${opportunityId}.pdf`
+          'opportunities',
+          fileName,
+          buffer
         );
-        downloadedFiles.comprobante_soles = `uploads/opportunities/comprobante_soles_${opportunityId}.pdf`;
+        downloadedFiles.comprobante_soles = result.id;
       }
 
       // Descargar comprobante en dólares si existe
       if (cFacturas.comprobante_dolares) {
+        const response = await fetch(cFacturas.comprobante_dolares);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        const fileName = `comprobante_dolares_${opportunityId}.pdf`;
         const result = await this.filesService.createFileRecord(
           opportunityId,
-          'opportunity',
-          `comprobante_dolares_${opportunityId}.pdf`
+          'opportunities',
+          fileName,
+          buffer
         );
-        downloadedFiles.comprobante_dolares = `uploads/opportunities/comprobante_dolares_${opportunityId}.pdf`;
+        downloadedFiles.comprobante_dolares = result.id;
       }
 
       return downloadedFiles;
