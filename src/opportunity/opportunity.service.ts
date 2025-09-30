@@ -326,7 +326,7 @@ export class OpportunityService {
     });
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     let contact: Contact | null = null;
       
     try {

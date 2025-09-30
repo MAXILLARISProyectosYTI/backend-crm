@@ -126,7 +126,7 @@ export class OpportunityController {
       await this.fileUploadService.uploadFiles(
         files,
         opportunity.id.toString(),
-        'opportunity',
+        'opportunities',
         FileType.ALL,
         DirectoryType.OPPORTUNITIES
       );
@@ -148,14 +148,14 @@ export class OpportunityController {
   @Post('create-opportunity-with-manual-assign')
   @UseInterceptors(OpportunityFilesInterceptor)
   async createOpportunityWithManualAssign(@Body()  body: Omit<CreateOpportunityDto, 'files'>, @UploadedFiles() files: Express.Multer.File[]) {
-    const opportunity = await this.opportunityService.createWithManualAssign(body, files);
+    const opportunity = await this.opportunityService.createWithManualAssign(body);
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
       for (const file of files) {
         await this.filesService.createFileRecord(
           opportunity.id.toString(),
-          'opportunity',
+          'opportunities',
           file.filename
         );
       }
@@ -219,7 +219,7 @@ export class OpportunityController {
         await this.fileUploadService.uploadFiles(
           files,
           id,
-          'opportunity',
+          'opportunities',
           FileType.ALL,
           DirectoryType.OPPORTUNITIES
         );

@@ -23,7 +23,7 @@ export class FilesService {
     // Construir la ruta completa para cada archivo
     return files.map(file => ({
       ...file,
-      file_path: `${this.FILE_PATH}uploads/${file.parent_type}s/${file.file_name}`
+      file_path: `${this.FILE_PATH}/${file.parent_type}/${file.file_name}`
     }));
   }
 
