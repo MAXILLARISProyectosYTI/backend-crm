@@ -110,4 +110,9 @@ export class UserController {
   async remove(@Param('id') id: string): Promise<void> {
     return await this.userService.remove(id);
   }
+
+  @Get('commercial')
+  async getUsersCommercials(): Promise<User[]> {
+    return await this.userService.getUsersCommercials();
+  }
 }

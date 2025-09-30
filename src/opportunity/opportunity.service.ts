@@ -486,7 +486,7 @@ export class OpportunityService {
     });
   }
 
-  async findOneWithDetails(id: string) {
+  async findOneWithDetails(id: string, userId: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -497,6 +497,7 @@ export class OpportunityService {
     }
 
     const userAssigned = await this.userService.findOne(opportunity.assignedUserId!.id);
+    const user = await this.userService.findOne(userId);
 
     const meeting = await this.meetingService.findOneByparentIdLess(opportunity.id);
 
@@ -531,7 +532,7 @@ export class OpportunityService {
 
     const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
 
-    const tokenSv = await this.svServices.getTokenSv(userAssigned.cUsersv!, userAssigned.cContraseaSv!);
+    const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
     const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
 

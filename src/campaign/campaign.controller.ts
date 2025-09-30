@@ -9,7 +9,11 @@ export class CampaignController {
   constructor(private readonly campaignService: CampaignService) {}
 
   @Get('get-all')
-  async findAll(): Promise<Campaign[]> {
-    return await this.campaignService.findAll();
+  async findAll() {
+    const campaigns = await this.campaignService.findAll();
+    return {
+      'total': campaigns.length,
+      'list': campaigns,
+    };
   }
 }

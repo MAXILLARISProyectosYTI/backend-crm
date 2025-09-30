@@ -264,6 +264,8 @@ export class UserService {
   }
 
   async getUserByAllTeams(teams: string[]): Promise<UserWithTeam[]> {
+
+    console.log('teams', teams)
     const users = await this.userRepository.createQueryBuilder('u')
     .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
     .leftJoin('team', 't', 't.id = tu.team_id')
@@ -358,6 +360,31 @@ export class UserService {
   async isAdmin(userId: string): Promise<boolean> {
     const user = await this.findOne(userId);
     return user.type === 'admin';
+  }
+
+  async getUsersCommercials(): Promise<any[]> {
+    let users: User[] = []
+    const teams = [
+      TEAMS_IDS.TEAM_LEADERS_COMERCIALES, 
+      TEAMS_IDS.EJ_COMERCIAL_APNEA, 
+      TEAMS_IDS.EJ_COMERCIAL_OI,
+      TEAMS_IDS.EJ_COMERCIAL,
+      TEAMS_IDS.TEAM_FIORELLA,
+      TEAMS_IDS.TEAM_MICHELL,
+      TEAMS_IDS.TEAM_VERONICA
+    ];
+    
+    return teams
+    const allUsers = await this.getUserByAllTeams(teams)
+
+    return allUsers
+
+    for(const user of allUsers) {
+      const userFound = await this.findOne(user.user_id)
+      users.push(userFound)
+    } 
+
+    return orderListAlphabetic(users);
   }
   
 }

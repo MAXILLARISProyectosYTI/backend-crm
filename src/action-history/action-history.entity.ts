@@ -58,9 +58,6 @@ export class ActionHistory {
   @Column('varchar', { length: 17, nullable: true, name: 'auth_log_record_id' })
   authLogRecordId: string;
 
-  @Column('varchar', { length: 250, nullable: true, name: 'message' })
-  message: string;
-
   // Relación con User
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'user_id' })
