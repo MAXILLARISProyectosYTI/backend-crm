@@ -23,6 +23,7 @@ import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { DateTime } from 'luxon';
 import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
+import { FileManagerService, FileType, DirectoryType } from 'src/common/services/file-manager.service';
 
 @Injectable()
 export class OpportunityService {
@@ -40,9 +41,10 @@ export class OpportunityService {
     private readonly svServices: SvServices,
     private readonly idGeneratorService: IdGeneratorService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly fileManagerService: FileManagerService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
 
     let contact: Contact | null = null;
 
@@ -183,7 +185,7 @@ export class OpportunityService {
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);   
       
-      await this.svServices.uploadFiles(newOpportunity.id, 'os',  files, tokenSv);
+      // await this.svServices.uploadFiles(newOpportunity.id, 'os',  files, tokenSv);
 
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
@@ -776,6 +778,50 @@ export class OpportunityService {
 
   }
 
+  /**
+   * Descarga las facturas desde URLs y las guarda usando el FileManagerService
+   * @param opportunityId ID de la oportunidad
+   * @param cFacturas Objeto con las URLs de las facturas
+   * @returns Array con las rutas de los archivos descargados
+   */
+  private async downloadFacturasFromURLs(
+    opportunityId: string,
+    cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
+  ): Promise<{ comprobante_soles?: string; comprobante_dolares?: string }> {
+    const downloadedFiles: { comprobante_soles?: string; comprobante_dolares?: string } = {};
+
+    try {
+      // Descargar comprobante en soles si existe
+      if (cFacturas.comprobante_soles) {
+        const result = await this.fileManagerService.uploadFile({
+          url: cFacturas.comprobante_soles,
+          fileType: FileType.PDF,
+          directory: DirectoryType.OPPORTUNITIES,
+          customFileName: `comprobante_soles_${opportunityId}.pdf`,
+          entityId: opportunityId,
+        });
+        downloadedFiles.comprobante_soles = result.filePath;
+      }
+
+      // Descargar comprobante en dólares si existe
+      if (cFacturas.comprobante_dolares) {
+        const result = await this.fileManagerService.uploadFile({
+          url: cFacturas.comprobante_dolares,
+          fileType: FileType.PDF,
+          directory: DirectoryType.OPPORTUNITIES,
+          customFileName: `comprobante_dolares_${opportunityId}.pdf`,
+          entityId: opportunityId,
+        });
+        downloadedFiles.comprobante_dolares = result.filePath;
+      }
+
+      return downloadedFiles;
+    } catch (error) {
+      console.error('Error al descargar facturas:', error);
+      throw error;
+    }
+  }
+
   async updateOpportunityWithFacturas(
     opportunityId: string,
     body: UpdateOpportunityProcces,
@@ -863,7 +909,7 @@ export class OpportunityService {
     }
 
     if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
-      // await this.uploadDocumentWithURL(opportunityId, body.cFacturas, newOpportunity);
+      // await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
     }
 
     const tokenSv = await this.svServices.getTokenSv(newOpportunity.assignedUserId!.cUsersv!, newOpportunity.assignedUserId!.cContraseaSv!);

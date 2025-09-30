@@ -31,7 +31,7 @@ export class ActionHistoryService {
       .getMany();
   }
 
-  async addRecord(actionHistory: CreateActionDto): Promise<ActionHistory> {
+  async addRecord(actionHistory: CreateActionDto, files: Express.Multer.File[]): Promise<ActionHistory> {
 
     const payload: Partial<ActionHistory> = {
       id: this.idGeneratorService.generateId(),

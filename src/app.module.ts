@@ -12,6 +12,7 @@ import { ContactModule } from './contact/contact.module';
 import { MeetingModule } from './meeting/meeting.module';
 import { CommonModule } from './common/common.module';
 import { ActionHistoryModule } from './action-history/action-history.module';
+import { FilesModule } from './files/files.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { ActionHistoryModule } from './action-history/action-history.module';
     ContactModule,
     MeetingModule,
     ActionHistoryModule,
+    FilesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
