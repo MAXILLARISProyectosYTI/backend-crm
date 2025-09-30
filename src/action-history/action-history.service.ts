@@ -40,7 +40,6 @@ export class ActionHistoryService {
       userId: actionHistory.userId,   
       action: 'update',
       targetType: actionHistory.target_type,
-      message: actionHistory.message,
     }
 
     return await this.actionHistoryRepository.save(payload);

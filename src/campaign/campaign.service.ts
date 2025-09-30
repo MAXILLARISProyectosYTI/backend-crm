@@ -11,9 +11,18 @@ export class CampaignService {
     private readonly campaignRepository: Repository<Campaign>,
   ) {}
 
-  async findAll(): Promise<Campaign[]> {
-    return (await this.campaignRepository.find({
-      where: { deleted: false },
-    }));
+  async findAll() {
+    return await this.campaignRepository.createQueryBuilder('c')
+      .select([
+        'c.id as id',
+        'c.name as name',
+        'c.status as status',
+        'c.type as type',
+        'c.createdAt as "createdAt"',
+        'c.createdById as "createdById"',
+        'c.assignedUserId as "assignedUserId"',
+      ])
+      .where('c.deleted = :deleted', { deleted: false })
+      .getRawMany();
   }
 }

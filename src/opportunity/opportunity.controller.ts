@@ -17,6 +17,7 @@ import {
   UseInterceptors,
   UploadedFiles,
   Query,
+  Req,
 } from '@nestjs/common';
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
@@ -80,8 +81,12 @@ export class OpportunityController {
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string): Promise<Opportunity> {
-    return await this.opportunityService.findOneWithDetails(id);
+  async findOne(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ): Promise<Opportunity> {
+    const userId = req.user.userId;
+    return await this.opportunityService.findOneWithDetails(id, userId);
   }
 
   @Patch(':id')
