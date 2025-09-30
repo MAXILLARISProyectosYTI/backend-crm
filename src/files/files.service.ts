@@ -6,6 +6,8 @@ import { Repository } from 'typeorm';
 @Injectable()
 export class FilesService {
 
+  private readonly BASE_URL = process.env.URL_FILES;
+
   constructor(
     @InjectRepository(Files)
     private readonly filesRepository: Repository<Files>,
@@ -15,11 +17,18 @@ export class FilesService {
     return await this.filesRepository.save(files);
   }
 
-  async findByParentId(parentId: string): Promise<Files[]> {
-    return await this.filesRepository.find({ 
+  async findByParentId(parentId: string): Promise<any[]> {
+    const files = await this.filesRepository.find({ 
       where: { parent_id: parentId },
       select: ['id', 'parent_id', 'parent_type', 'file_name', 'created_at']
     });
+    
+    // Construir URLs completas para cada archivo
+    return files.map(file => ({
+      ...file,
+      url: `${this.BASE_URL}/files/${file.id}/view`,
+      downloadUrl: `${this.BASE_URL}/files/${file.id}/download`
+    }));
   }
 
   async findOne(id: number): Promise<Files | null> {
