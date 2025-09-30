@@ -354,5 +354,10 @@ export class UserService {
   
     return teams;
   }
+
+  async isAdmin(userId: string): Promise<boolean> {
+    const user = await this.findOne(userId);
+    return user.type === 'admin';
+  }
   
 }

@@ -29,6 +29,9 @@ import { UpdateContactDto } from 'src/contact/dto/update-contact.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { OpportunityFilesInterceptor } from 'src/interceptors/simple-file.interceptor';
 import { Enum_Stage } from './dto/enums';
+import { FilesService } from 'src/files/files.service';
+import { FileUploadService } from 'src/files/file-upload.service';
+import { FileType, DirectoryType } from 'src/files/dto/files.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -38,6 +41,8 @@ export class OpportunityController {
     private readonly opportunityService: OpportunityService,
     private readonly websocketService: OpportunityWebSocketService,
     private readonly contactService: ContactService,
+    private readonly filesService: FilesService,
+    private readonly fileUploadService: FileUploadService,
   ) {}
 
   @Get()
@@ -114,7 +119,20 @@ export class OpportunityController {
       ...body,
     };
 
-    return await this.opportunityService.create(createData);
+    const opportunity = await this.opportunityService.create(createData);
+    
+    // Guardar archivos en la base de datos
+    if (files && files.length > 0) {
+      await this.fileUploadService.uploadFiles(
+        files,
+        opportunity.id.toString(),
+        'opportunities',
+        FileType.ALL,
+        DirectoryType.OPPORTUNITIES
+      );
+    }
+
+    return opportunity;
   }
 
   @Get('count-opportunities-assigned/:date')
@@ -130,7 +148,20 @@ export class OpportunityController {
   @Post('create-opportunity-with-manual-assign')
   @UseInterceptors(OpportunityFilesInterceptor)
   async createOpportunityWithManualAssign(@Body()  body: Omit<CreateOpportunityDto, 'files'>, @UploadedFiles() files: Express.Multer.File[]) {
-    return this.opportunityService.createWithManualAssign(body, files);
+    const opportunity = await this.opportunityService.createWithManualAssign(body);
+    
+    // Guardar archivos en la base de datos
+    if (files && files.length > 0) {
+      await this.fileUploadService.uploadFiles(
+        files,
+        opportunity.id.toString(),
+        'opportunities',
+        FileType.ALL,
+        DirectoryType.OPPORTUNITIES
+      );
+    }
+
+    return opportunity;
   }
 
   @Put('update-opportunity-procces/:id')
@@ -181,6 +212,17 @@ export class OpportunityController {
         await this.contactService.update(opportunity.contactId!, payloadContact);
       } catch (error) {
         throw new BadRequestException('Ocurrio un error al actualizar el contacto');
+      }
+
+      // Guardar archivos en la base de datos
+      if (files && files.length > 0) {
+        await this.fileUploadService.uploadFiles(
+          files,
+          id,
+          'opportunities',
+          FileType.ALL,
+          DirectoryType.OPPORTUNITIES
+        );
       }
   
       return newOpportunity;

@@ -5,6 +5,7 @@ import { Meeting } from './meeting.entity';
 import { UpdateMeetingDto } from './dto/update.dto';
 import { UserService } from 'src/user/user.service';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
+import { FilesService } from 'src/files/files.service';
 
 @Injectable()
 export class MeetingService {
@@ -14,6 +15,7 @@ export class MeetingService {
     private readonly meetingRepository: Repository<Meeting>,
     private readonly userService: UserService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly filesService: FilesService,
   ) {}
 
   async getByParentId(parentId: string): Promise<Meeting[]> {
@@ -52,7 +54,9 @@ export class MeetingService {
 
     const history = await this.actionHistoryService.getRecordByTargetId(meeting.id);
 
-    return { ...meeting, userAssigned: userAssigned.userName, teams: teams, history: history };
+    const files = await this.filesService.findByParentId(meeting.id);
+
+    return { ...meeting, userAssigned: userAssigned.userName, teams: teams, history: history, files: files };
   }
 
   async create(createMeetingDto: Partial<Meeting>): Promise<Meeting> {

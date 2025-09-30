@@ -23,7 +23,7 @@ import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { DateTime } from 'luxon';
 import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
-import { FileManagerService, FileType, DirectoryType } from 'src/common/services/file-manager.service';
+import { FilesService } from 'src/files/files.service';
 
 @Injectable()
 export class OpportunityService {
@@ -41,7 +41,7 @@ export class OpportunityService {
     private readonly svServices: SvServices,
     private readonly idGeneratorService: IdGeneratorService,
     private readonly actionHistoryService: ActionHistoryService,
-    private readonly fileManagerService: FileManagerService,
+    private readonly filesService: FilesService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
@@ -326,7 +326,7 @@ export class OpportunityService {
     });
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     let contact: Contact | null = null;
       
     try {
@@ -535,7 +535,9 @@ export class OpportunityService {
 
     const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient };
+    const files = await this.filesService.findByParentId(opportunity.id);
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -610,6 +612,8 @@ export class OpportunityService {
 
     const teamsUser = await this.userService.getAllTeamsByUser(assignedUserId);
 
+    const isAdmin = await this.userService.isAdmin(assignedUserId);
+
     const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
@@ -634,7 +638,7 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwner) {
+    if (isTIorOwner || isAdmin) {
       // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
       // Solo mantiene el filtro de deleted = false que ya está aplicado
     } else if (isTeamLeader && users.length > 0) {
@@ -779,40 +783,48 @@ export class OpportunityService {
   }
 
   /**
-   * Descarga las facturas desde URLs y las guarda usando el FileManagerService
+   * Descarga las facturas desde URLs y las guarda en la base de datos
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
-   * @returns Array con las rutas de los archivos descargados
+   * @returns Array con los IDs de los archivos guardados
    */
   private async downloadFacturasFromURLs(
     opportunityId: string,
     cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
-  ): Promise<{ comprobante_soles?: string; comprobante_dolares?: string }> {
-    const downloadedFiles: { comprobante_soles?: string; comprobante_dolares?: string } = {};
+  ): Promise<{ comprobante_soles?: number; comprobante_dolares?: number }> {
+    const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
 
     try {
       // Descargar comprobante en soles si existe
       if (cFacturas.comprobante_soles) {
-        const result = await this.fileManagerService.uploadFile({
-          url: cFacturas.comprobante_soles,
-          fileType: FileType.PDF,
-          directory: DirectoryType.OPPORTUNITIES,
-          customFileName: `comprobante_soles_${opportunityId}.pdf`,
-          entityId: opportunityId,
-        });
-        downloadedFiles.comprobante_soles = result.filePath;
+        const response = await fetch(cFacturas.comprobante_soles);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        const fileName = `comprobante_soles_${opportunityId}.pdf`;
+        const result = await this.filesService.createFileRecord(
+          opportunityId,
+          'opportunities',
+          fileName,
+          buffer
+        );
+        downloadedFiles.comprobante_soles = result.id;
       }
 
       // Descargar comprobante en dólares si existe
       if (cFacturas.comprobante_dolares) {
-        const result = await this.fileManagerService.uploadFile({
-          url: cFacturas.comprobante_dolares,
-          fileType: FileType.PDF,
-          directory: DirectoryType.OPPORTUNITIES,
-          customFileName: `comprobante_dolares_${opportunityId}.pdf`,
-          entityId: opportunityId,
-        });
-        downloadedFiles.comprobante_dolares = result.filePath;
+        const response = await fetch(cFacturas.comprobante_dolares);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        const fileName = `comprobante_dolares_${opportunityId}.pdf`;
+        const result = await this.filesService.createFileRecord(
+          opportunityId,
+          'opportunities',
+          fileName,
+          buffer
+        );
+        downloadedFiles.comprobante_dolares = result.id;
       }
 
       return downloadedFiles;
@@ -960,6 +972,32 @@ export class OpportunityService {
       success: true,
       message: "Opportunity updated successfully",
       opportunity: newOpportunity,
+    };
+  }
+
+  async countOpBySubcampaign(date: string): Promise<any> {
+    const opportunities = await this.opportunityRepository.find({
+      where: { deleted: false, cSubCampaignId: Not(IsNull()), createdAt: MoreThanOrEqual(new Date(date)) },
+    });
+
+    let OF = 0;
+    let APNEA = 0;
+    let OI = 0;
+
+    for(const opportunity of opportunities) {
+      if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OFM) {
+        OF++;
+      } else if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.APNEA) {
+        APNEA++;
+      } else if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI) {
+        OI++;
+      }
+    }
+
+    return {
+      'OF': OF,
+      'APNEA': APNEA,
+      'OI': OI,
     };
   }
 }

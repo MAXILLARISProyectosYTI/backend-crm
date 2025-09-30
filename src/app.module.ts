@@ -13,6 +13,7 @@ import { MeetingModule } from './meeting/meeting.module';
 import { CommonModule } from './common/common.module';
 import { ActionHistoryModule } from './action-history/action-history.module';
 import { FilesModule } from './files/files.module';
+import { CampaignModule } from './campaign/campaign.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { FilesModule } from './files/files.module';
     MeetingModule,
     ActionHistoryModule,
     FilesModule,
+    CampaignModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -14,6 +14,9 @@ export class Files {
   @Column({ type: 'varchar', length: 255 })
   file_name: string;
 
+  @Column({ type: 'bytea', nullable: false })
+  file_content: Buffer;
+
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;
 }
