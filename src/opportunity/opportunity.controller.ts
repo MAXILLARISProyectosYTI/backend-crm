@@ -28,6 +28,7 @@ import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { UpdateContactDto } from 'src/contact/dto/update-contact.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
 import { OpportunityFilesInterceptor } from 'src/interceptors/simple-file.interceptor';
 import { Enum_Stage } from './dto/enums';
 import { FilesService } from 'src/files/files.service';
@@ -45,6 +46,7 @@ export class OpportunityController {
     private readonly filesService: FilesService,
     private readonly fileUploadService: FileUploadService,
   ) {}
+  
 
   @Get()
   async findAll(): Promise<Opportunity[]> {
@@ -238,4 +240,9 @@ export class OpportunityController {
     return this.opportunityService.getPatientSV(id);
   }
 
+  @Public()
+  @Get('with-entity/:id')
+  async getOneWithEntity(@Param('id') id: string) {
+    return this.opportunityService.getOneWithEntity(id);
+  }
 }

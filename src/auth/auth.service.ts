@@ -92,4 +92,30 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
   }
+
+  async byUserId(id: string): Promise<any> {
+    const user = await this.userRepository.findOne({
+      where: { id: id },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+
+    const payload = { sub: user.id, userName: user.userName };
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = this.jwtService.sign(
+      { sub: user.id, type: 'refresh' },
+      {
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+      }
+    );
+
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user: user,
+    };
+  }
 }

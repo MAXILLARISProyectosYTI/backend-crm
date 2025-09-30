@@ -275,6 +275,7 @@ export class UserService {
       't.name AS team_name'
     ])
     .where('t.id IN (:...teamIds)', { teamIds: teams })
+    .andWhere('u.deleted = :deleted', { deleted: false })
     .getRawMany();
     return users
   }
@@ -362,22 +363,17 @@ export class UserService {
     return user.type === 'admin';
   }
 
-  async getUsersCommercials(): Promise<any[]> {
+  async getUsersCommercials(): Promise<User[]> {
     let users: User[] = []
     const teams = [
       TEAMS_IDS.TEAM_LEADERS_COMERCIALES, 
-      TEAMS_IDS.EJ_COMERCIAL_APNEA, 
-      TEAMS_IDS.EJ_COMERCIAL_OI,
       TEAMS_IDS.EJ_COMERCIAL,
       TEAMS_IDS.TEAM_FIORELLA,
       TEAMS_IDS.TEAM_MICHELL,
       TEAMS_IDS.TEAM_VERONICA
     ];
     
-    return teams
     const allUsers = await this.getUserByAllTeams(teams)
-
-    return allUsers
 
     for(const user of allUsers) {
       const userFound = await this.findOne(user.user_id)

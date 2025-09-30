@@ -26,6 +26,11 @@ import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
+  @Get('commercial')
+  async getUsersCommercials(): Promise<User[]> {
+    return await this.userService.getUsersCommercials();
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() createUserDto: CreateUserDto): Promise<User> {
@@ -109,10 +114,5 @@ export class UserController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(@Param('id') id: string): Promise<void> {
     return await this.userService.remove(id);
-  }
-
-  @Get('commercial')
-  async getUsersCommercials(): Promise<User[]> {
-    return await this.userService.getUsersCommercials();
   }
 }

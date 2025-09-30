@@ -83,7 +83,7 @@ export class OpportunityService {
         userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.campaignId);
       } 
 
-      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -241,7 +241,7 @@ export class OpportunityService {
         nextRefName = `${baseName} REF${nextRef}`;
       }
 
-      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
