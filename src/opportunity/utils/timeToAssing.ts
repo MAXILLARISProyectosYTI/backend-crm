@@ -1,4 +1,3 @@
-// Helper para verificar si la hora actual está dentro de un rango
 const isBetween = (
   hours: number,
   minutes: number,

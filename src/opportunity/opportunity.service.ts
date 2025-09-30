@@ -7,7 +7,7 @@ import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
-import { timeToAssing } from './utils/timeToAssing';
+import { timeToAssing } from './utils/timeToAssing'; 
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
