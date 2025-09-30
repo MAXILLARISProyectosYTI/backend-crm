@@ -7,7 +7,7 @@ import { UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opp
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
-import { timeToAssing } from './utils/timeToAssing';
+import { timeToAssing } from './utils/timeToAssing'; 
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
@@ -356,7 +356,7 @@ export class OpportunityService {
       // Obtenemos el usuario asignado
       const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId!);
 
-      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),

@@ -3,10 +3,15 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { AppModule } from './app.module';
+import { DateTimezoneInterceptor } from './interceptors/date-timezone.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   
+  // Configurar interceptador de fecha
+
+  app.useGlobalInterceptors(new DateTimezoneInterceptor());
+
   // Configurar archivos estáticos
   app.useStaticAssets(join(__dirname, '..', 'public'));
   app.setBaseViewsDir(join(__dirname, '..', 'views'));
