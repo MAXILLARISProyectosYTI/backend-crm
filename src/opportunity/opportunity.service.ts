@@ -612,6 +612,8 @@ export class OpportunityService {
 
     const teamsUser = await this.userService.getAllTeamsByUser(assignedUserId);
 
+    const isAdmin = await this.userService.isAdmin(assignedUserId);
+
     const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
@@ -636,7 +638,7 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwner) {
+    if (isTIorOwner || isAdmin) {
       // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
       // Solo mantiene el filtro de deleted = false que ya está aplicado
     } else if (isTeamLeader && users.length > 0) {
@@ -970,6 +972,32 @@ export class OpportunityService {
       success: true,
       message: "Opportunity updated successfully",
       opportunity: newOpportunity,
+    };
+  }
+
+  async countOpBySubcampaign(date: string): Promise<any> {
+    const opportunities = await this.opportunityRepository.find({
+      where: { deleted: false, cSubCampaignId: Not(IsNull()), createdAt: MoreThanOrEqual(new Date(date)) },
+    });
+
+    let OF = 0;
+    let APNEA = 0;
+    let OI = 0;
+
+    for(const opportunity of opportunities) {
+      if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OFM) {
+        OF++;
+      } else if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.APNEA) {
+        APNEA++;
+      } else if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI) {
+        OI++;
+      }
+    }
+
+    return {
+      'OF': OF,
+      'APNEA': APNEA,
+      'OI': OI,
     };
   }
 }
