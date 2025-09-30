@@ -12,6 +12,7 @@ import { OpportunityCronsService } from './opportunity-crons.service';
 import { MeetingModule } from 'src/meeting/meeting.module';
 import { SvServices } from 'src/sv-services/sv.services';
 import { ActionHistoryModule } from 'src/action-history/action-history.module';
+import { FilesModule } from 'src/files/files.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { ActionHistoryModule } from 'src/action-history/action-history.module';
     forwardRef(() => UserModule),
     ScheduleModule.forRoot(),
     ActionHistoryModule,
+    FilesModule,
   ],
   controllers: [OpportunityController],  
   providers: [
