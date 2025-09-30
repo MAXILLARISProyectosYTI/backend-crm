@@ -9,7 +9,7 @@ import { CreateActionDto } from './dto/create-action.dto';
 export class ActionHistoryController {
   constructor(private readonly actionHistoryService: ActionHistoryService) {}
 
-  @Post('add-opportunity')
+  @Post('record')
   async addRecord(@Body() actionHistory: CreateActionDto): Promise<ActionHistory> {
     return await this.actionHistoryService.addRecord(actionHistory);
   }

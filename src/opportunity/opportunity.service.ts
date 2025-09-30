@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
-import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
+import { UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
@@ -21,6 +21,8 @@ import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
 import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { DateTime } from 'luxon';
+import { addHours, hasFields, pickFields } from './utils/hasFields';
+import { Meeting } from 'src/meeting/meeting.entity';
 
 @Injectable()
 export class OpportunityService {
@@ -322,7 +324,7 @@ export class OpportunityService {
     });
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, files: Express.Multer.File[]): Promise<Opportunity> {
     let contact: Contact | null = null;
       
     try {
@@ -369,8 +371,6 @@ export class OpportunityService {
         assignedUserId: assignedUser,
       }
 
-      console.log('payloadOpportunity', payloadOpportunity);
-
       // Agregamos la observación en caso de que exista
       if(createOpportunityDto.observation){
         payloadOpportunity.cObs = createOpportunityDto.observation;
@@ -379,14 +379,10 @@ export class OpportunityService {
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
 
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
-
-      console.log('savedOpportunity', savedOpportunity);
       
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
       const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
-
-      console.log('newOpportunity', newOpportunity);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -456,11 +452,8 @@ export class OpportunityService {
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
-      console.log('newOpportunity', newOpportunity);
-
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
-        console.log('entra a notificar, newopportunity', newOpportunity );
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
 
@@ -783,4 +776,144 @@ export class OpportunityService {
 
   }
 
+  async updateOpportunityWithFacturas(
+    opportunityId: string,
+    body: UpdateOpportunityProcces,
+  ) {
+
+    // --- Configuración de campos ---
+    const mainFields = [
+      "cLastNameFather",
+      "cLastNameMother",
+      "cCustomerDocumentType",
+      "cCustomerDocument",
+      "cPatientsname",
+      "cPatientsPaternalLastName",
+      "cPatientsMaternalLastName",
+      "cPatientDocument",
+      "cPatientDocumentType",
+      "cClinicHistory"
+    ];
+
+    const appointmentFields = [
+      "cAppointment",
+      "cDoctor",
+      "cEnvironment",
+      "cSpecialty",
+      "cTariff",
+      "cDateReservation",
+    ];
+
+    // --- Detectar casos ---
+    const onlyAppointment =
+      hasFields(appointmentFields, body) && !hasFields(mainFields, body);
+    const hasMainData = hasFields(mainFields, body);
+    const hasAppointmentData = hasFields(appointmentFields, body);
+
+    // --- Construir payload ---
+    let payload: Record<string, any> = {};
+
+    if (onlyAppointment) {
+      payload = pickFields(appointmentFields, body);
+    } else if (hasMainData && !hasAppointmentData) {
+      payload = pickFields(mainFields, body);
+    } else if (hasMainData && hasAppointmentData) {
+      payload = {
+        ...pickFields(mainFields, body),
+        ...pickFields(appointmentFields, body),
+      };
+    } else {
+      payload = { ...body }; // Fallback
+    }
+
+    const newOpportunity = (await this.update(
+      opportunityId,
+      payload,       
+    )) as Opportunity;
+
+    if (onlyAppointment || hasAppointmentData) {
+      let dateStart = newOpportunity.cDateReservation;
+      let dateEnd = newOpportunity.cDateReservation;
+      let duration = 60;
+      const [startTime, endTime] = newOpportunity.cAppointment!
+        .split("-")
+        .map((s) => s.trim());
+      dateStart = `${newOpportunity.cDateReservation} ${startTime}:00`;
+      dateEnd = `${newOpportunity.cDateReservation} ${endTime}:00`;
+      // Calcular duración en minutos
+      const [startHour, startMinute] = startTime.split(":").map(Number);
+      const [endHour, endMinute] = endTime.split(":").map(Number);
+      duration = endHour * 60 + endMinute - (startHour * 60 + startMinute);
+
+      dateStart = addHours(dateStart, 5);
+      dateEnd = addHours(dateEnd, 5);
+
+      const payload: Partial<Meeting> = {
+        name: 'Creacion de reserva',
+        status: 'Planned',
+        description: 'Creacion de reserva',
+        parentId: opportunityId,
+        parentType: 'Opportunity',
+        dateStart: new Date(dateStart),
+        dateEnd: new Date(dateEnd),
+        assignedUserId: newOpportunity.assignedUserId!.id,
+      };
+
+      await this.meetingService.create(payload);
+    }
+
+    if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
+      // await this.uploadDocumentWithURL(opportunityId, body.cFacturas, newOpportunity);
+    }
+
+    const tokenSv = await this.svServices.getTokenSv(newOpportunity.assignedUserId!.cUsersv!, newOpportunity.assignedUserId!.cContraseaSv!);
+
+    const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);  
+
+    if(clinicHistoryCrm) {
+      let payloadUpdateClinicHistoryCrm: Partial<CreateClinicHistoryCrmDto> = {};
+  
+      if (onlyAppointment) {
+  
+        if(!body.reservationId) {
+          throw new BadRequestException('El campo reservationId no puede estar vacío');
+        }
+        // Solo datos de cita
+        payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
+  
+      } else if (hasMainData && !hasAppointmentData) {
+        // Solo datos principales
+  
+        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
+        const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
+  
+        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
+  
+      } else if (hasMainData && hasAppointmentData) {
+  
+        if(!body.reservationId) {
+          throw new BadRequestException('El campo reservationId no puede estar vacío');
+        }
+        // Ambos tipos de datos
+        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
+        const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
+  
+        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
+        payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
+      }
+  
+      // Solo actualizar si hay campos en el payload
+      if (Object.keys(payloadUpdateClinicHistoryCrm).length > 0) {
+        await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, payloadUpdateClinicHistoryCrm);
+      }
+    }
+
+    return {
+      success: true,
+      message: "Opportunity updated successfully",
+      opportunity: newOpportunity,
+    };
+  }
 }

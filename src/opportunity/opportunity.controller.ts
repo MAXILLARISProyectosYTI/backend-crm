@@ -127,8 +127,9 @@ export class OpportunityController {
   }
 
   @Post('create-opportunity-with-manual-assign')
-  async createOpportunityWithManualAssign(@Body() body: CreateOpportunityDto) {
-    return this.opportunityService.createWithManualAssign(body);
+  @UseInterceptors(OpportunityFilesInterceptor)
+  async createOpportunityWithManualAssign(@Body()  body: Omit<CreateOpportunityDto, 'files'>, @UploadedFiles() files: Express.Multer.File[]) {
+    return this.opportunityService.createWithManualAssign(body, files);
   }
 
   @Put('data/:id')
