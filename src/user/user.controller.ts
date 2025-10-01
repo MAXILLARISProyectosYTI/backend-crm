@@ -20,6 +20,8 @@ import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { Public } from 'src/auth/decorators/public.decorator';
+import { TEAMS_IDS } from 'src/globals/ids';
+import { orderListAlphabetic } from './utils/orderListAlphabetic';
 
 @UseGuards(JwtAuthGuard)
 @Controller('user')
@@ -27,10 +29,23 @@ import { Public } from 'src/auth/decorators/public.decorator';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
-  @Public()
-  @Get('next-user/:subCampaignId')
-  async getNextUserToAssign(@Param('subCampaignId') subCampaignId: string): Promise<User> {
-    return await this.userService.getNextUserToAssign(subCampaignId);
+  @Get('commercial')
+  async getUsersCommercial() {
+    
+    const teams = [
+      TEAMS_IDS.EJ_COMERCIAL,
+      TEAMS_IDS.TEAM_FIORELLA,
+      TEAMS_IDS.TEAM_VERONICA,
+      TEAMS_IDS.TEAM_MICHELL,
+      TEAMS_IDS.EJ_COMERCIAL_OI,
+      TEAMS_IDS.EJ_COMERCIAL_APNEA,
+    ]
+
+    const users = await this.userService.getUserByAllTeams(teams)
+
+    const usersEntity = users.map(user => this.userService.findOne(user.user_id))
+
+    return orderListAlphabetic(await Promise.all(usersEntity))
   }
 
   @Get('users-active')

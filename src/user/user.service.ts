@@ -267,14 +267,14 @@ export class UserService {
 
   async getUserByAllTeams(teams: string[]): Promise<UserWithTeam[]> {
 
-    console.log('teams', teams)
     const users = await this.userRepository.createQueryBuilder('u')
     .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
     .leftJoin('team', 't', 't.id = tu.team_id')
     .select([
       'u.id AS user_id',
       'u.user_name AS user_name', 
-      't.name AS team_name'
+      't.name AS team_name',
+      't.id AS team_id'
     ])
     .where('t.id IN (:...teamIds)', { teamIds: teams })
     .andWhere('u.deleted = :deleted', { deleted: false })
@@ -336,7 +336,7 @@ export class UserService {
     }
 
     const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
-
+    
     const nextUser = getNextUser(listUsers, lastOpportunityAssigned)
 
     if(!nextUser){
@@ -403,4 +403,40 @@ export class UserService {
     return orderListAlphabetic(users);
   }
   
+  async getUsersByTeamLeader(userId: string) {
+    const teams = await this.getAllTeamsByUser(userId);
+
+    const isOwnerOrTI = teams.some(team => team.team_id === TEAMS_IDS.TEAM_OWNER || team.team_id === TEAMS_IDS.TEAM_TI);
+    const isTeamLeaderFiorella = teams.some(team => team.team_id === TEAMS_IDS.TEAM_FIORELLA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isTeamLeaderVeronica = teams.some(team => team.team_id === TEAMS_IDS.TEAM_VERONICA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isTeamLeaderMichel = teams.some(team => team.team_id === TEAMS_IDS.TEAM_MICHELL) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isUserApneas = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
+    const isUserOi = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
+    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL]);
+
+    if(isOwnerOrTI) {
+      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL];
+      const usersByTeam = allUsers.filter(user => teamsUsers.some(team => user.team_id === team));
+      return usersByTeam;
+    }
+    
+    if(isTeamLeaderFiorella) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_FIORELLA);
+    }
+
+    if(isTeamLeaderVeronica) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_VERONICA);
+    }
+
+    if(isTeamLeaderMichel) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_MICHELL);
+    }
+    if(isUserApneas) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
+    }
+    if(isUserOi) {
+        return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
+    }
+    return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+  }
 }

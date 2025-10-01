@@ -30,7 +30,7 @@ export class MeetingService {
     return await this.meetingRepository.save({ ...meeting, ...updateMeetingDto });
   }
 
-  async findOneByparentIdLess(parentId: string) {
+  async findByparentIdLess(parentId: string) {
 
     return await this.meetingRepository.createQueryBuilder('m')
     .select([
@@ -39,7 +39,7 @@ export class MeetingService {
       'TO_CHAR(m.date_start, \'YYYY-MM-DD HH24:MI:SS\') as date_start'
     ])
     .where('m.parent_id = :parentId', { parentId })
-    .getRawOne();
+    .getRawMany();
   }
 
   async findByIdWithDetails(id: string) {
@@ -62,5 +62,9 @@ export class MeetingService {
   async create(createMeetingDto: Partial<Meeting>): Promise<Meeting> {
     const meeting = this.meetingRepository.create(createMeetingDto);
     return await this.meetingRepository.save(meeting);
+  }
+
+  async getByParentName(parentName: string) {
+    return await this.meetingRepository.findOne({ where: { name: parentName } });
   }
 }

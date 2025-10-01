@@ -24,6 +24,7 @@ import { DateTime } from 'luxon';
 import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
+import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
 
 @Injectable()
 export class OpportunityService {
@@ -506,10 +507,18 @@ export class OpportunityService {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
 
-    const userAssigned = await this.userService.findOne(opportunity.assignedUserId!.id);
+    let userAssigned: User | null = null;
+    let teams: { team_id: string; team_name: string }[] = [];
+
+    if(opportunity.assignedUserId){
+      userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
+      teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+
+    }
+  
     const user = await this.userService.findOne(userId);
 
-    const meeting = await this.meetingService.findOneByparentIdLess(opportunity.id);
+    const meeting = await this.meetingService.findByparentIdLess(opportunity.id);
 
     let campainName: string = '';
     let subCampaignName: string = '';
@@ -538,7 +547,6 @@ export class OpportunityService {
         break;
     }
 
-    const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
 
     const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
 
@@ -548,7 +556,7 @@ export class OpportunityService {
 
     const files = await this.filesService.findByParentId(opportunity.id);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
@@ -718,9 +726,6 @@ export class OpportunityService {
       .orderBy('o.createdAt', 'DESC')
       .getRawOne();
 
-    if (!opportunity) {
-      throw new NotFoundException('No hay oportunidades asignadas');
-    }
     
     return opportunity;
   }
@@ -1086,5 +1091,83 @@ export class OpportunityService {
       message: opportunity.campaignId === CAMPAIGNS_IDS.OI ? "URL cambiada correctamente" : "URL no cambiada",
       opportunity,
     };
+  }
+
+  async reprograminReservation(opportunityId: string, dataReservation: ReprogramingReservationDto, userId: string) {
+
+    try {
+
+      const user = await this.userService.findOne(userId);
+
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+
+      const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
+
+      if(clinicHistoryCrm) {
+        await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, {
+          id_reservation: dataReservation.newReservationId,
+        });
+      }
+
+      const payload: UpdateOpportunityDto = {
+        cAppointment: dataReservation.cAppointment,
+        cDateReservation: dataReservation.cDateReservation,
+        cDoctor: dataReservation.cDoctor,
+        cEnvironment: dataReservation.cEnvironment,
+        cSpecialty: dataReservation.cSpecialty,
+        cTariff: dataReservation.cTariff,
+      }
+
+      const opportunityEspo = await this.update(opportunityId, payload);
+
+      const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
+        
+      if(!meeting) {
+        throw new NotFoundException("No se encontró la actividad");
+      }
+
+      let dateStart = opportunityEspo.cDateReservation;
+      let dateEnd = opportunityEspo.cDateReservation;
+
+      const [startTime, endTime] = opportunityEspo.cAppointment!
+        .split("-")
+        .map((s) => s.trim());
+      dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
+      dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
+
+      dateStart = addHours(dateStart, 5);
+      dateEnd = addHours(dateEnd, 5);
+  
+      const payloadUpdateMetting: UpdateMeetingDto = {
+        dateStart: new Date(dateStart),
+        dateEnd: new Date(dateEnd),
+        description: "Reprogramación de reserva",
+      }
+      
+      const updateActivity = await this.meetingService.updateByParentId(opportunityEspo.id, payloadUpdateMetting);
+
+      return {
+        message: "Reserva reprogramada exitosamente",
+        newMeeting: updateActivity,
+        newOpportunity: opportunityEspo,
+      }
+      
+    } catch (error) {
+      console.error('Error en reprogramingReservation:', error);
+      throw new Error('Error al reprogramar la reserva');
+    }
+  }
+
+  async isForRefer(userId: string) {
+  
+    const validTeams = [
+      TEAMS_IDS.TEAM_LEADERS_COMERCIALES,
+      TEAMS_IDS.TEAM_OWNER,
+      TEAMS_IDS.TEAM_TI,
+    ];
+
+    const teams = await this.userService.getAllTeamsByUser(userId);
+  
+    return validTeams.some(validTeam => teams.some(team => team.team_id === validTeam));
   }
 }

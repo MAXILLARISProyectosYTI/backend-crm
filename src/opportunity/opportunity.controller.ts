@@ -268,4 +268,19 @@ export class OpportunityController {
     return this.opportunityService.changeURLOI(opportunityId);
   }
 
+  
+  @Put('reprogramin-reservation/:opportunityId')
+  async reprograminReservation(
+    @Param('opportunityId') opportunityId: string, 
+    @Body() body: ReprogramingReservationDto,
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    const userId = req.user.userId;
+    return this.opportunityService.reprograminReservation(opportunityId, body, userId);
+  }
+
+  @Get('is-for-refer/:userId')
+  async isForRefer(@Param('userId') userId: string) {
+    return this.opportunityService.isForRefer(userId);
+  }
 }
