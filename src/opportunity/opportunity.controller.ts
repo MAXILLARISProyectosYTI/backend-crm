@@ -22,7 +22,8 @@ import {
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
-import type { ReprogramingReservationDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
+import { ReprogramingReservationDto } from './dto/update-opportunity.dto';
+import type { UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { Opportunity } from './opportunity.entity';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
@@ -47,6 +48,27 @@ export class OpportunityController {
     private readonly fileUploadService: FileUploadService,
   ) {}
   
+
+  @Put('reassign-opportunity-manual/:opportunityId')
+  async reassignOpportunityManual(@Param('opportunityId') opportunityId: string, @Body() body: { newUserId: string }) {
+    return this.opportunityService.reassignOpportunitiesManual(opportunityId, body.newUserId);
+  }
+
+  @Put('change-url-oi/:opportunityId')
+  async changeURLOI(@Param('opportunityId') opportunityId: string) {
+    return this.opportunityService.changeURLOI(opportunityId);
+  }
+
+  
+  @Put('reprograming-reservation/:opportunityId')
+  async reprograminReservation(
+    @Param('opportunityId') opportunityId: string, 
+    @Body() body: ReprogramingReservationDto,
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    const userId = req.user.userId;
+    return this.opportunityService.reprograminReservation(opportunityId, body, userId);
+  }
 
   @Get()
   async findAll(): Promise<Opportunity[]> {
@@ -256,27 +278,6 @@ export class OpportunityController {
   @Get('with-entity/:id')
   async getOneWithEntity(@Param('id') id: string) {
     return this.opportunityService.getOneWithEntity(id);
-  }
-
-  @Put('reassign-opportunity-manual/:opportunityId')
-  async reassignOpportunityManual(@Param('opportunityId') opportunityId: string, @Body() body: { newUserId: string }) {
-    return this.opportunityService.reassignOpportunitiesManual(opportunityId, body.newUserId);
-  }
-
-  @Put('change-url-oi/:opportunityId')
-  async changeURLOI(@Param('opportunityId') opportunityId: string) {
-    return this.opportunityService.changeURLOI(opportunityId);
-  }
-
-  
-  @Put('reprogramin-reservation/:opportunityId')
-  async reprograminReservation(
-    @Param('opportunityId') opportunityId: string, 
-    @Body() body: ReprogramingReservationDto,
-    @Req() req: Request & { user: { userId: string; userName: string } }
-  ) {
-    const userId = req.user.userId;
-    return this.opportunityService.reprograminReservation(opportunityId, body, userId);
   }
 
   @Get('is-for-refer/:userId')

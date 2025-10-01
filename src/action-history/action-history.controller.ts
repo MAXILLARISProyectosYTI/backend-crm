@@ -27,7 +27,7 @@ export class ActionHistoryController {
     if (files && files.length > 0) {
       await this.fileUploadService.uploadFiles(
         files,
-        actionHistory.id.toString(),
+        body.targetId,
         body.target_type,
         FileType.ALL,
         DirectoryType.ACTION_HISTORY
