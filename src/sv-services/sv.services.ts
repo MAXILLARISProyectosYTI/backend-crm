@@ -113,4 +113,15 @@ export class SvServices {
 
     return responsePatientSV.data;
   }
+
+  async creatoSoPendingByCh(clinicHistory: string, tokenSv: string) {
+
+    const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/mid-espo/create-service-order-pending`, { clinicHistory: clinicHistory }, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responsePatientSV.data;
+  }
 }

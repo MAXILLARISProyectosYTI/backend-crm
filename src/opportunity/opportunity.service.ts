@@ -30,7 +30,7 @@ import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
-  private readonly URL_FILES = process.env.URL_FILES;
+  private readonly URL_FILES = process.env.URL_DOWNLOAD_FILES;
   
   constructor(
     @InjectRepository(Opportunity)
@@ -96,8 +96,8 @@ export class OpportunityService {
         closeDate: today,
         createdAt: today,
         stage: Enum_Stage.GESTION_INICIAL,
-        cCampaign: createOpportunityDto.campaignId,
-        cSubCamping: createOpportunityDto.subCampaignId,
+        campaignId: createOpportunityDto.campaignId,
+        cSubCampaignId: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
@@ -218,7 +218,7 @@ export class OpportunityService {
 
       const opportunities = await this.getOpportunityByName(opportunity.name || '');
 
-      const refRegex = / REF(\d+)$/;
+      const refRegex = / REF-(\d+)$/;
       const baseName = opportunity.name!.replace(refRegex, '');
 
       let nextRefName: string;
@@ -242,7 +242,7 @@ export class OpportunityService {
         
         // Asignar el siguiente número REF
         const nextRef = highestRef + 1;
-        nextRefName = `${baseName} REF${nextRef}`;
+        nextRefName = `${baseName} REF-${nextRef}`;
       }
 
       const today = DateTime.now().setZone("America/Lima").toJSDate();
@@ -254,7 +254,7 @@ export class OpportunityService {
         createdAt: today,
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
         stage: Enum_Stage.CIERRE_GANADO,
-        cCampaign: opportunity.cCampaign,
+        campaignId: opportunity.campaignId,
         cSubCampaignId: opportunity.cSubCampaignId,
         cCanal: opportunity.cCanal,
         contactId: opportunity.contactId,
@@ -376,8 +376,8 @@ export class OpportunityService {
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: today,
         stage: Enum_Stage.GESTION_INICIAL,
-        cCampaign: createOpportunityDto.campaignId,
-        cSubCamping: createOpportunityDto.subCampaignId,
+        campaignId: createOpportunityDto.campaignId,
+        cSubCampaignId: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
@@ -513,7 +513,6 @@ export class OpportunityService {
     if(opportunity.assignedUserId){
       userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
       teams = await this.userService.getAllTeamsByUser(userAssigned.id);
-
     }
   
     const user = await this.userService.findOne(userId);
@@ -633,7 +632,7 @@ export class OpportunityService {
 
     const isAdmin = await this.userService.isAdmin(assignedUserId);
 
-    const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
+    const isTIorOwnerorAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER || team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     let team: string = '';
@@ -657,7 +656,7 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwner || isAdmin) {
+    if (isTIorOwnerorAssistent || isAdmin) {
       // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
       // Solo mantiene el filtro de deleted = false que ya está aplicado
     } else if (isTeamLeader && users.length > 0) {
@@ -722,7 +721,7 @@ export class OpportunityService {
       .where('o.assignedUserId IS NOT NULL')
       .andWhere('o.c_sub_camping = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
-      .andWhere('o.name NOT ILIKE :name', { name: '%REF%' })
+      .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' })
       .orderBy('o.createdAt', 'DESC')
       .getRawOne();
 
@@ -743,12 +742,13 @@ export class OpportunityService {
   }
 
   async getOpportunitiesNotAssigned(): Promise<Opportunity[]> {
-    return await this.opportunityRepository.find({
-      where: { assignedUserId: IsNull() },
-      order: { createdAt: 'DESC' },
-    });
+    return await this.opportunityRepository
+      .createQueryBuilder("o")
+      .where("o.assigned_user_id IS NULL OR o.assigned_user_id = ''")
+      .orderBy("o.created_at", "ASC")
+      .getMany();
   }
-
+      
   async getOpportunitiesNotReaction(): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
       where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()) },
@@ -958,12 +958,16 @@ export class OpportunityService {
 
     }
 
-    if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
-      await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
-    }
-
     const user = await this.userService.findOne(userId);
     const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+
+    if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
+
+      console.log('body.cClinicHistory!', body.cClinicHistory!)
+      await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
+      await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
+    }
+
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);  
 

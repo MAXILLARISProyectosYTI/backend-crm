@@ -35,6 +35,7 @@ import { Enum_Stage } from './dto/enums';
 import { FilesService } from 'src/files/files.service';
 import { FileUploadService } from 'src/files/file-upload.service';
 import { FileType, DirectoryType } from 'src/files/dto/files.dto';
+import { OpportunityCronsService } from './opportunity-crons.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -44,11 +45,75 @@ export class OpportunityController {
     private readonly opportunityService: OpportunityService,
     private readonly websocketService: OpportunityWebSocketService,
     private readonly contactService: ContactService,
-    private readonly filesService: FilesService,
     private readonly fileUploadService: FileUploadService,
+    private readonly opportunityCronsService: OpportunityCronsService,
   ) {}
   
+  @Get('consumer')
+  async consumer() {
+    return this.opportunityCronsService.assignUnassignedOpportunitiesDaily();
+  }
 
+  @Put('data/:id')
+  @UseInterceptors(OpportunityFilesInterceptor)
+  async changeData(
+    @Body() body: Omit<CreateOpportunityDto, 'files'>,
+    @Param('id') id: string,
+    @UploadedFiles() files: Express.Multer.File[]
+  ): Promise<Opportunity> {
+            
+      const opportunity = await this.opportunityService.getOneWithEntity(id);
+      let newOpportunity: Opportunity | null = null;
+  
+      if(!opportunity){
+        throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
+      }
+
+      const changeDataDto: CreateOpportunityDto = {
+        ...body,
+      };
+  
+      const payloadOpportunity: UpdateOpportunityDto = {
+        name: changeDataDto.name || opportunity.name,
+        cNumeroDeTelefono: changeDataDto.phoneNumber || opportunity.cNumeroDeTelefono,
+        campaignId: changeDataDto.campaignId || opportunity.campaignId,
+        cSubCampaignId: changeDataDto.subCampaignId || opportunity.cSubCampaignId,
+        cCanal: changeDataDto.channel || opportunity.cCanal,
+        cObs: changeDataDto.observation || opportunity.cObs,
+      }
+  
+      try {
+        newOpportunity = await this.opportunityService.update(id, payloadOpportunity);
+      } catch (error) {
+        throw new BadRequestException('Ocurrio un error al actualizar la oportunidad');
+      }
+  
+      const payloadContact: UpdateContactDto = {
+        firstName: changeDataDto.name || opportunity.name || '',
+        lastName: changeDataDto.name || opportunity.name || '',
+      }
+  
+      try {
+        await this.contactService.update(opportunity.contactId!, payloadContact);
+      } catch (error) {
+        throw new BadRequestException('Ocurrio un error al actualizar el contacto');
+      }
+
+      // Guardar archivos en la base de datos
+      if (files && files.length > 0) {
+        await this.fileUploadService.uploadFiles(
+          files,
+          id,
+          'opportunities',
+          FileType.ALL,
+          DirectoryType.OPPORTUNITIES
+        );
+      }
+  
+      return newOpportunity;
+    }
+
+    
   @Put('reassign-opportunity-manual/:opportunityId')
   async reassignOpportunityManual(@Param('opportunityId') opportunityId: string, @Body() body: { newUserId: string }) {
     return this.opportunityService.reassignOpportunitiesManual(opportunityId, body.newUserId);
@@ -209,65 +274,6 @@ export class OpportunityController {
     const userId = req.user.userId;
     return this.opportunityService.updateOpportunityWithFacturas(id, body, userId);
   }
-
-  @Put('data/:id')
-  @UseInterceptors(OpportunityFilesInterceptor)
-  async changeData(
-    @Body() body: Omit<CreateOpportunityDto, 'files'>,
-    @Param('id') id: string,
-    @UploadedFiles() files: Express.Multer.File[]
-  ): Promise<Opportunity> {
-            
-      const opportunity = await this.opportunityService.getOneWithEntity(id);
-      let newOpportunity: Opportunity | null = null;
-  
-      if(!opportunity){
-        throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
-      }
-
-      const changeDataDto: CreateOpportunityDto = {
-        ...body,
-      };
-  
-      const payloadOpportunity: UpdateOpportunityDto = {
-        name: changeDataDto.name || opportunity.name,
-        cNumeroDeTelefono: changeDataDto.phoneNumber || opportunity.cNumeroDeTelefono,
-        cCampaign: changeDataDto.campaignId || opportunity.cCampaign,
-        cSubCampaignId: changeDataDto.subCampaignId || opportunity.cSubCampaignId,
-        cCanal: changeDataDto.channel || opportunity.cCanal,
-        cObs: changeDataDto.observation || opportunity.cObs,
-      }
-  
-      try {
-        newOpportunity = await this.opportunityService.update(id, payloadOpportunity);
-      } catch (error) {
-        throw new BadRequestException('Ocurrio un error al actualizar la oportunidad');
-      }
-  
-      const payloadContact: UpdateContactDto = {
-        firstName: changeDataDto.name || opportunity.name || '',
-        lastName: changeDataDto.name || opportunity.name || '',
-      }
-  
-      try {
-        await this.contactService.update(opportunity.contactId!, payloadContact);
-      } catch (error) {
-        throw new BadRequestException('Ocurrio un error al actualizar el contacto');
-      }
-
-      // Guardar archivos en la base de datos
-      if (files && files.length > 0) {
-        await this.fileUploadService.uploadFiles(
-          files,
-          id,
-          'opportunities',
-          FileType.ALL,
-          DirectoryType.OPPORTUNITIES
-        );
-      }
-  
-      return newOpportunity;
-    }
 
   @Get('patient-sv/:id')
   async getPatientSV(@Param('id') id: string) {
