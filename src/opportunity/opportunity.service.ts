@@ -753,6 +753,7 @@ export class OpportunityService {
     return await this.opportunityRepository.find({
       where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()) },
       order: { createdAt: 'DESC' },
+      relations: ['assignedUserId'],
     });
   }
 

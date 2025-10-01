@@ -11,6 +11,7 @@ import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { Cron } from '@nestjs/schedule';
 import { Repository } from 'typeorm';
 import { Enum_Following } from './dto/enums';
+import { DateTime } from 'luxon';
 
 @Injectable()
 export class OpportunityCronsService {
@@ -45,23 +46,20 @@ export class OpportunityCronsService {
 
   @Cron('*/2 * * * * *')
   async runReassignUser() {
-    console.log('cron de reasignación');
-    const now = new Date();
-    const hour = now.getHours();
-    const minute = now.getMinutes();
+    const now = DateTime.now();
+    const hour = now.hour;
+    const minute = now.minute;
 
     // Franja 1: 09:30 - 12:59  (incluye 9:30)
     const morning = (hour === 9 && minute >= 30) || (hour >= 10 && hour < 13);
 
-    // Franja 2: 15:00 - 18:30
+    // Franja 2: 15:00 - 18:50
     const afternoon = (hour >= 15 && (hour < 18 || (hour === 18 && minute <= 30)));
 
     if (!morning && !afternoon) {
       // No estamos en ventana válida — no hacemos nada.
       return;
     }
-
-    console.log('A REASIGNAR');
 
     return this.reassignUser();
   }
@@ -357,30 +355,98 @@ export class OpportunityCronsService {
     }
 
     try {
-      for (const opportunity of opportunities) {
+      // Tracking local para reasignaciones por subcampaña
+      const reassignTracking = new Map<string, string>();
+      let reassignCount = 0;
 
+      for (const opportunity of opportunities) {
         const follow = opportunity.cSeguimientocliente;
         // Si sigue sin seguimiento, verificar tiempo transcurrido
         if (follow === Enum_Following.SIN_SEGUIMIENTO) {
-          const now = new Date();
-          const createdAt = new Date(opportunity.modifiedAt || '');
+          const now = DateTime.now();
+          const createdAt = opportunity.modifiedAt 
+            ? DateTime.fromJSDate(opportunity.modifiedAt)
+            : DateTime.now();
           const minutesElapsed = Math.floor(
-            (now.getTime() - createdAt.getTime()) / (1000 * 60),
+            now.diff(createdAt, 'minutes').minutes,
           );
 
+          console.log(`⏰ Oportunidad ${opportunity.id}: ${minutesElapsed} minutos transcurridos desde ${createdAt.toFormat('dd/MM/yyyy HH:mm:ss')}`);
+
           // Si han pasado más de 10 minutos y tiene usuario asignado, reasignar
-          if (minutesElapsed >= 10 && opportunity.assignedUserId) {
+          if (minutesElapsed >= 10) {
             try {
-              const nextUserAssigned =
-                await this.userService.getNextUserToAssign(
-                  opportunity.cSubCampaignId || '',
-                );
-              if (!nextUserAssigned) {
+              const subCampaignId = opportunity.cSubCampaignId || '';
+              const currentAssignedUserId = opportunity.assignedUserId?.id;
+
+              if (!currentAssignedUserId) {
                 console.error(
-                  `❌ No se pudo obtener usuario para reasignar oportunidad ${opportunity.id}`,
+                  `❌ La oportunidad ${opportunity.id} no tiene usuario asignado válido`,
                 );
                 continue;
               }
+
+              // Obtener la lista de usuarios para esta subcampaña
+              const listUsers = await this.userService.getUsersBySubCampaignId(subCampaignId);
+              
+              if (listUsers.length === 0) {
+                console.error(
+                  `❌ No hay usuarios disponibles para reasignar oportunidad ${opportunity.id}`,
+                );
+                continue;
+              }
+
+              // Si solo hay un usuario, no reasignar
+              if (listUsers.length === 1) {
+                console.log(
+                  `⚠️ Solo hay un usuario disponible para subcampaña ${subCampaignId}, no se reasigna oportunidad ${opportunity.id}`,
+                );
+                continue;
+              }
+
+              // Usar tracking local para reasignaciones
+              const lastReassignedUserId = reassignTracking.get(subCampaignId);
+              let nextUserAssigned: User | null = null;
+
+              if (lastReassignedUserId) {
+                // Usar el tracking local de reasignaciones
+                const lastReassignedUser = await this.userService.findOne(lastReassignedUserId);
+                const lastOpportunityAssigned = {
+                  assigned_user_id: lastReassignedUserId,
+                  assigned_user_user_name: lastReassignedUser.userName || '',
+                };
+                nextUserAssigned = this.getNextUserWithLocalTracking(
+                  listUsers,
+                  lastOpportunityAssigned
+                );
+              } else {
+                // Primera reasignación, usar el usuario actual como referencia
+                const currentUser = await this.userService.findOne(currentAssignedUserId);
+                const lastOpportunityAssigned = {
+                  assigned_user_id: currentAssignedUserId,
+                  assigned_user_user_name: currentUser.userName || '',
+                };
+                nextUserAssigned = this.getNextUserWithLocalTracking(
+                  listUsers,
+                  lastOpportunityAssigned
+                );
+              }
+
+              if (!nextUserAssigned) {
+                console.error(
+                  `❌ No se pudo determinar el siguiente usuario para reasignar oportunidad ${opportunity.id}`,
+                );
+                continue;
+              }
+
+              // Verificar que no sea el mismo usuario
+              if (nextUserAssigned.id === currentAssignedUserId) {
+                console.log(
+                  `⚠️ El siguiente usuario en la cola es el mismo que ya tiene la oportunidad ${opportunity.id}, no se reasigna`,
+                );
+                continue;
+              }
+
 
               // Actualizar la oportunidad en EspoCRM
               await this.opportunityService.update(opportunity.id, {
@@ -388,9 +454,11 @@ export class OpportunityCronsService {
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
               });
 
-              console.log('oportunidad reasignada', opportunity.id);
-              console.log('usuario reasignado', nextUserAssigned.id);
-              return
+              // Actualizar tracking local de reasignaciones
+              reassignTracking.set(subCampaignId, nextUserAssigned.id);
+              reassignCount++;
+
+              console.log(`✅ Oportunidad reasignada ${opportunity.id} de ${currentAssignedUserId} a ${nextUserAssigned.id} (${minutesElapsed} min sin seguimiento)`);
             } catch (error) {
               console.error(
                 `❌ Error al reasignar oportunidad ${opportunity.id}:`,
@@ -399,6 +467,12 @@ export class OpportunityCronsService {
             }
           }
         }
+      }
+
+      if (reassignCount > 0) {
+        console.log(`🔄 Total de reasignaciones realizadas: ${reassignCount} a las ${DateTime.now().toFormat('dd/MM/yyyy HH:mm:ss')}`);
+      } else {
+        console.log(`ℹ️ No se encontraron oportunidades que requieran reasignación a las ${DateTime.now().toFormat('dd/MM/yyyy HH:mm:ss')}`);
       }
     } finally {
       this.reassignInProgress = false;
