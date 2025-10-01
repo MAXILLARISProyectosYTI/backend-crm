@@ -36,16 +36,6 @@ export class SvServices {
     return responseClinicHistory.data;
   }
 
-  async uploadFiles(group: string, id: string, files: Express.Multer.File[], tokenSv: string) {
-    const responseUploadFiles = await axios.post(`${this.URL_BACK_SV}/medical-act/upload/os/:group/:id`, { files }, {
-      headers: {
-        Authorization: `Bearer ${tokenSv}`
-      }
-    })
-
-    return responseUploadFiles.data;
-  }
-
   async getTokenSv(username: string, password: string) {
     const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password })
 
@@ -114,7 +104,8 @@ export class SvServices {
   }
 
   async getIRHByComprobante(comprobante: string, tokenSv: string) {
-    const responsePatientSV = await axios.get(`${this.URL_BACK_SV}/service_billing_payments01/get-irh-by-comprobante/${comprobante}`, {
+
+    const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/service_billing_payments01/get-irh-by-comprobante`, { comprobante }, {
       headers: {
         Authorization: `Bearer ${tokenSv}`
       }

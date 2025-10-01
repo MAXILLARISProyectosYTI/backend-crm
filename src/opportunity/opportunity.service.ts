@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
-import { UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
+import { ReprogramingReservationDto, UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
@@ -29,6 +29,7 @@ import { FilesService } from 'src/files/files.service';
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
+  private readonly URL_FILES = process.env.URL_FILES;
   
   constructor(
     @InjectRepository(Opportunity)
@@ -44,7 +45,7 @@ export class OpportunityService {
     private readonly filesService: FilesService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
 
     let contact: Contact | null = null;
 
@@ -56,7 +57,9 @@ export class OpportunityService {
         throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
       }
 
-      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+      const user = await this.userService.findOne(userId);
+
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
@@ -305,8 +308,12 @@ export class OpportunityService {
   }
 
   async countOpportunitiesAssignedBySubcampaign(date: string) {
+    // Parsear fecha desde formato dd-mm-yyyy
+    const [day, month, year] = date.split('-');
+    const parsedDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    
     const allOpportunities = await this.opportunityRepository.find({
-      where: {assignedUserId: Not(IsNull()), createdAt: MoreThanOrEqual(new Date(date)), deleted: false },
+      where: {assignedUserId: Not(IsNull()), createdAt: MoreThanOrEqual(parsedDate), deleted: false },
     });
 
     const countOpportunitiesAssigned = {
@@ -324,17 +331,20 @@ export class OpportunityService {
         countOpportunitiesAssigned['OI']++;
       }
     });
+
+    return countOpportunitiesAssigned;
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
     let contact: Contact | null = null;
       
     try {
       
       const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
 
+      const user = await this.userService.findOne(userId);
 
-      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
@@ -702,7 +712,7 @@ export class OpportunityService {
       ])
       .leftJoin('user', 'u', 'u.id = o.assignedUserId')
       .where('o.assignedUserId IS NOT NULL')
-      .andWhere('o.cSubCampaignId = :subCampaignId', { subCampaignId })
+      .andWhere('o.c_sub_camping = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
       .andWhere('o.name NOT ILIKE :name', { name: '%REF%' })
       .orderBy('o.createdAt', 'DESC')
@@ -784,6 +794,19 @@ export class OpportunityService {
   }
 
   /**
+   * Extrae la ruta relativa de una URL después de "Comprobantes/"
+   * @param url URL completa del comprobante
+   * @returns Ruta relativa que comienza con "Comprobantes/"
+   */
+  private extractComprobantePath(url: string): string {
+    const comprobantesIndex = url.indexOf('Comprobantes/');
+    if (comprobantesIndex === -1) {
+      throw new Error(`No se encontró "Comprobantes/" en la URL: ${url}`);
+    }
+    return url.substring(comprobantesIndex);
+  }
+
+  /**
    * Descarga las facturas desde URLs y las guarda en la base de datos
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
@@ -798,7 +821,10 @@ export class OpportunityService {
     try {
       // Descargar comprobante en soles si existe
       if (cFacturas.comprobante_soles) {
-        const response = await fetch(cFacturas.comprobante_soles);
+        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_soles);
+        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
+        
+        const response = await fetch(newUrl);
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
@@ -814,7 +840,10 @@ export class OpportunityService {
 
       // Descargar comprobante en dólares si existe
       if (cFacturas.comprobante_dolares) {
-        const response = await fetch(cFacturas.comprobante_dolares);
+        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_dolares);
+        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
+        
+        const response = await fetch(newUrl);
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
@@ -838,6 +867,7 @@ export class OpportunityService {
   async updateOpportunityWithFacturas(
     opportunityId: string,
     body: UpdateOpportunityProcces,
+    userId: string,
   ) {
 
     // --- Configuración de campos ---
@@ -908,6 +938,7 @@ export class OpportunityService {
       dateEnd = addHours(dateEnd, 5);
 
       const payload: Partial<Meeting> = {
+        id: this.idGeneratorService.generateId(),
         name: 'Creacion de reserva',
         status: 'Planned',
         description: 'Creacion de reserva',
@@ -919,13 +950,15 @@ export class OpportunityService {
       };
 
       await this.meetingService.create(payload);
+
     }
 
     if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
-      // await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
+      await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
     }
 
-    const tokenSv = await this.svServices.getTokenSv(newOpportunity.assignedUserId!.cUsersv!, newOpportunity.assignedUserId!.cContraseaSv!);
+    const user = await this.userService.findOne(userId);
+    const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);  
 
@@ -942,23 +975,34 @@ export class OpportunityService {
   
       } else if (hasMainData && !hasAppointmentData) {
         // Solo datos principales
+
+
+        if(body.cFacturas && body.cFacturas.comprobante_soles) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        } else if(body.cFacturas && body.cFacturas.comprobante_dolares) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        }
   
-        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
   
-        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
   
       } else if (hasMainData && hasAppointmentData) {
-  
         if(!body.reservationId) {
           throw new BadRequestException('El campo reservationId no puede estar vacío');
         }
         // Ambos tipos de datos
-        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
+        if(body.cFacturas && body.cFacturas.comprobante_soles) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        } else if(body.cFacturas && body.cFacturas.comprobante_dolares) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        }
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
   
-        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
         payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
       }
@@ -999,6 +1043,48 @@ export class OpportunityService {
       'OF': OF,
       'APNEA': APNEA,
       'OI': OI,
+    };
+  }
+
+  async reassignOpportunitiesManual(opportunityId: string, newUserId: string) {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false, assignedUserId: Not(IsNull()) },
+    });
+
+    if(!opportunity) {
+      throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
+    }
+
+    const nextUserAssigned = await this.userService.findOne(newUserId);
+
+    if(!nextUserAssigned) {
+      throw new NotFoundException(`No se pudo obtener el siguiente usuario a asignar`);
+    }
+
+    opportunity.assignedUserId = nextUserAssigned;
+    opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${newUserId}&uuid-opportunity=${opportunityId}`;
+    return await this.opportunityRepository.save(opportunity);
+  }
+
+  async changeURLOI(opportunityId: string) {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false, assignedUserId: Not(IsNull()) },
+    });
+
+    if(!opportunity) {
+      throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
+    }
+
+    if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI) {
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/treatment_plan/?usuario=${opportunity.assignedUserId}&uuid-opportunity=${opportunity.id}`;
+
+      opportunity.cConctionSv = cConctionSv;
+      await this.opportunityRepository.save(opportunity);
+    }
+
+    return {
+      message: opportunity.campaignId === CAMPAIGNS_IDS.OI ? "URL cambiada correctamente" : "URL no cambiada",
+      opportunity,
     };
   }
 }

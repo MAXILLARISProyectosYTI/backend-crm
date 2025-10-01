@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString, IsIn } from 'class-validator';
+import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString, IsIn, IsNotEmpty, IsInt } from 'class-validator';
 import { User } from 'src/user/user.entity';
 
 export class UpdateOpportunityDto {
@@ -299,4 +299,35 @@ export interface UpdateOpportunityProcces {
   cSpecialty?: string;
   cTariff?: string;  
   reservationId?: number; // ------> Este campo no existe en el CRM, pero se usa para guardar el id de la reserva en el flujo principal
+}
+
+export class ReprogramingReservationDto {
+
+  @IsInt()
+  @IsNotEmpty()
+  newReservationId: number;
+
+  @IsString()
+  @IsNotEmpty()
+  cAppointment: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cDateReservation: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cDoctor: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cEnvironment: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cSpecialty: string;
+
+  @IsString()
+  @IsNotEmpty()
+  cTariff: string; 
 }

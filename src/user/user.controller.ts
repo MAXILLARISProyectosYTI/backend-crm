@@ -19,6 +19,7 @@ import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
 import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
 
 @UseGuards(JwtAuthGuard)
 @Controller('user')
@@ -26,8 +27,14 @@ import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
-  @Get('commercial')
-  async getUsersCommercials(): Promise<User[]> {
+  @Public()
+  @Get('next-user/:subCampaignId')
+  async getNextUserToAssign(@Param('subCampaignId') subCampaignId: string): Promise<User> {
+    return await this.userService.getNextUserToAssign(subCampaignId);
+  }
+
+  @Get('users-active')
+  async usersActive() {
     return await this.userService.getUsersCommercials();
   }
 
@@ -115,4 +122,6 @@ export class UserController {
   async remove(@Param('id') id: string): Promise<void> {
     return await this.userService.remove(id);
   }
+
+
 }

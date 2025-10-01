@@ -22,7 +22,7 @@ import {
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
-import type { UpdateOpportunityProcces } from './dto/update-opportunity.dto';
+import type { ReprogramingReservationDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { Opportunity } from './opportunity.entity';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
@@ -119,14 +119,16 @@ export class OpportunityController {
   @UseInterceptors(OpportunityFilesInterceptor) 
   async register(
     @Body() body: Omit<CreateOpportunityDto, 'files'>,
-    @UploadedFiles() files: Express.Multer.File[]
+    @UploadedFiles() files: Express.Multer.File[],
+    @Req() req: Request & { user: { userId: string; userName: string } }
+
   ): Promise<Opportunity> {
     
     const createData: CreateOpportunityDto = {
       ...body,
     };
 
-    const opportunity = await this.opportunityService.create(createData);
+    const opportunity = await this.opportunityService.create(createData, req.user.userId);
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
@@ -154,8 +156,13 @@ export class OpportunityController {
 
   @Post('create-opportunity-with-manual-assign')
   @UseInterceptors(OpportunityFilesInterceptor)
-  async createOpportunityWithManualAssign(@Body()  body: Omit<CreateOpportunityDto, 'files'>, @UploadedFiles() files: Express.Multer.File[]) {
-    const opportunity = await this.opportunityService.createWithManualAssign(body);
+  async createOpportunityWithManualAssign(
+    @Body()  body: Omit<CreateOpportunityDto, 'files'>, 
+    @UploadedFiles() files: Express.Multer.File[],
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    const userId = req.user.userId;
+    const opportunity = await this.opportunityService.createWithManualAssign(body, userId);
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
@@ -172,8 +179,13 @@ export class OpportunityController {
   }
 
   @Put('update-opportunity-procces/:id')
-  async updateOpportunityWithProcces(@Param('id') id: string, @Body() body: UpdateOpportunityProcces) {
-    return this.opportunityService.updateOpportunityWithFacturas(id, body);
+  async updateOpportunityWithProcces(
+    @Param('id') id: string, 
+    @Body() body: UpdateOpportunityProcces,
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    const userId = req.user.userId;
+    return this.opportunityService.updateOpportunityWithFacturas(id, body, userId);
   }
 
   @Put('data/:id')
@@ -245,4 +257,15 @@ export class OpportunityController {
   async getOneWithEntity(@Param('id') id: string) {
     return this.opportunityService.getOneWithEntity(id);
   }
+
+  @Put('reassign-opportunity-manual/:opportunityId')
+  async reassignOpportunityManual(@Param('opportunityId') opportunityId: string, @Body() body: { newUserId: string }) {
+    return this.opportunityService.reassignOpportunitiesManual(opportunityId, body.newUserId);
+  }
+
+  @Put('change-url-oi/:opportunityId')
+  async changeURLOI(@Param('opportunityId') opportunityId: string) {
+    return this.opportunityService.changeURLOI(opportunityId);
+  }
+
 }

@@ -82,10 +82,12 @@ export class UserService {
   }
 
   async findActiveUsers(): Promise<User[]> {
-    return await this.userRepository.find({
-      where: { isActive: true },
+    const users = await this.userRepository.find({
+      where: { isActive: true, deleted: false },
       order: { firstName: 'ASC', lastName: 'ASC' },
     });
+
+    return orderListAlphabetic(users);
   }
 
   async findByType(type: string): Promise<User[]> {
@@ -276,6 +278,8 @@ export class UserService {
     ])
     .where('t.id IN (:...teamIds)', { teamIds: teams })
     .andWhere('u.deleted = :deleted', { deleted: false })
+    .andWhere('t.deleted = :deleted', { deleted: false })
+    .andWhere('tu.deleted = :deleted', { deleted: false })
     .getRawMany();
     return users
   }
@@ -307,7 +311,7 @@ export class UserService {
     return orderListAlphabetic(filteredUsers)
   }
 
-  async getNextUserToAssign(subCampaignId: string): Promise<User> {
+  async getNextUserToAssign(subCampaignId: string): Promise<any> {
     const listUsers = await this.getUsersBySubCampaignId(subCampaignId)
     let listUsersDefault: UserWithTeam[]
 
@@ -364,19 +368,35 @@ export class UserService {
   }
 
   async getUsersCommercials(): Promise<User[]> {
+
+    const usersActives = await this.findActiveUsers()
+
+    if(usersActives.length === 0){
+      return []
+    }
+
     let users: User[] = []
     const teams = [
       TEAMS_IDS.TEAM_LEADERS_COMERCIALES, 
       TEAMS_IDS.EJ_COMERCIAL,
       TEAMS_IDS.TEAM_FIORELLA,
       TEAMS_IDS.TEAM_MICHELL,
-      TEAMS_IDS.TEAM_VERONICA
+      TEAMS_IDS.TEAM_VERONICA,
+      TEAMS_IDS.EJ_COMERCIAL_APNEA,
+      TEAMS_IDS.EJ_COMERCIAL_OI
     ];
     
     const allUsers = await this.getUserByAllTeams(teams)
 
-    for(const user of allUsers) {
-      const userFound = await this.findOne(user.user_id)
+    // Obtener solo los usuarios que están en ambos arrays (intersección)
+    const userIdsActives = usersActives.map(user => user.id);
+    const userIdsFromTeams = allUsers.map(user => user.user_id);
+    
+    // Encontrar la intersección de ambos arrays
+    const commonUserIds = userIdsActives.filter(id => userIdsFromTeams.includes(id));
+    
+    for(const userId of commonUserIds) {
+      const userFound = await this.findOne(userId)
       users.push(userFound)
     } 
 
