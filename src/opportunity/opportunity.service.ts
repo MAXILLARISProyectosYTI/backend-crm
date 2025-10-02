@@ -676,7 +676,9 @@ export class OpportunityService {
 
     const isAdmin = await this.userService.isAdmin(assignedUserId);
 
-    const isTIorOwnerorAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER || team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
+    const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
+
+    const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     let team: string = '';
@@ -700,8 +702,8 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwnerorAssistent || isAdmin) {
-      // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
+    if (isTIorOwner || isAdmin || isAssistent) {
+      // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
       // Solo mantiene el filtro de deleted = false que ya está aplicado
     } else if (isTeamLeader && users.length > 0) {
       // Si es team leader, buscar oportunidades de todos los usuarios de su equipo
@@ -720,13 +722,26 @@ export class OpportunityService {
       );
     }
 
-    // Usar ordenamiento con dos campos: primero por seguimiento (DESC para que "Sin Seguimiento" venga primero), luego por fecha
-    const [opportunities, total] = await queryBuilder
-      .addOrderBy('opportunity.cSeguimientocliente', 'DESC') // "Sin Seguimiento" viene antes que "En seguimiento" al ordenar DESC
-      .addOrderBy('opportunity.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    // Usar ordenamiento diferente según el tipo de usuario
+    let opportunities: Opportunity[];
+    let total: number;
+    
+    if (isAssistent) {
+      // Si es asistente, solo ordenar por fecha de creación (sin priorizar "Sin Seguimiento")
+      [opportunities, total] = await queryBuilder
+        .orderBy('opportunity.createdAt', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit)
+        .getManyAndCount();
+    } else {
+      // Para otros usuarios, usar ordenamiento con dos campos: primero por seguimiento (DESC para que "Sin Seguimiento" venga primero), luego por fecha
+      [opportunities, total] = await queryBuilder
+        .addOrderBy('opportunity.cSeguimientocliente', 'DESC') // "Sin Seguimiento" viene antes que "En seguimiento" al ordenar DESC
+        .addOrderBy('opportunity.createdAt', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit)
+        .getManyAndCount();
+    }
 
     const totalPages = Math.ceil(total / limit);
 
