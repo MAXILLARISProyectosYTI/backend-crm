@@ -167,7 +167,7 @@ export class OpportunityService {
         }
 
         // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.id_payment = dataPayment.payment_id;
         payloadClinicHistory.patientId = patient.id;
 
         // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
@@ -189,8 +189,6 @@ export class OpportunityService {
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);   
       
-      // await this.svServices.uploadFiles(newOpportunity.id, 'os',  files, tokenSv);
-
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
@@ -208,7 +206,8 @@ export class OpportunityService {
     }
   }
 
-  async createWithSamePhoneNumber(opportunityId: string){
+  async createWithSamePhoneNumber(opportunityId: string, userId: string){
+
     try {
       const opportunity = await this.getOneWithEntity(opportunityId);
 
@@ -216,6 +215,7 @@ export class OpportunityService {
         throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
       }      
 
+      const user = await this.userService.findOne(userId);
       const opportunities = await this.getOpportunityByName(opportunity.name || '');
 
       const refRegex = / REF-(\d+)$/;
@@ -225,7 +225,7 @@ export class OpportunityService {
 
       if (opportunities.length === 1) {
         // Si solo hay una oportunidad, significa que solo existe la original, asignar REF2
-        nextRefName = `${baseName} REF2`;
+        nextRefName = `${baseName} REF-2`;
       } else {
         // Buscar el REF más alto entre todas las oportunidades encontradas
         let highestRef = 1; // El original sería REF1 (sin mostrar)
@@ -273,7 +273,7 @@ export class OpportunityService {
         espoId: newOpportunity.id,
       }
 
-      const tokenSv = await this.svServices.getTokenSv(opportunity.assignedUserId!.cUsersv!, opportunity.assignedUserId!.cContraseaSv!);
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
@@ -371,7 +371,7 @@ export class OpportunityService {
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
-        name: contact.firstName,
+        name: `${contact.firstName} REF-`,
         createdAt: today,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: today,
@@ -444,7 +444,7 @@ export class OpportunityService {
         }
 
         // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.id_payment = dataPayment.payment_id;
         payloadClinicHistory.patientId = patient.id;
 
         // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
@@ -457,7 +457,7 @@ export class OpportunityService {
           payloadUpdateComplete.cTariff = dataReservation.tariff_name;
 
           // Agregamos el id de la reserva en la tabla intermediaria
-          payloadClinicHistory.id_reservation = dataReservation.id;
+          payloadClinicHistory.id_reservation = dataReservation.reservation_id;
         }
 
         await this.update(newOpportunity.id, payloadUpdateComplete);
@@ -929,16 +929,11 @@ export class OpportunityService {
     if (onlyAppointment || hasAppointmentData) {
       let dateStart = newOpportunity.cDateReservation;
       let dateEnd = newOpportunity.cDateReservation;
-      let duration = 60;
       const [startTime, endTime] = newOpportunity.cAppointment!
         .split("-")
         .map((s) => s.trim());
       dateStart = `${newOpportunity.cDateReservation} ${startTime}:00`;
       dateEnd = `${newOpportunity.cDateReservation} ${endTime}:00`;
-      // Calcular duración en minutos
-      const [startHour, startMinute] = startTime.split(":").map(Number);
-      const [endHour, endMinute] = endTime.split(":").map(Number);
-      duration = endHour * 60 + endMinute - (startHour * 60 + startMinute);
 
       dateStart = addHours(dateStart, 5);
       dateEnd = addHours(dateEnd, 5);

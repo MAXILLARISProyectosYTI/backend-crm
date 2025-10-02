@@ -54,6 +54,15 @@ export class OpportunityController {
     return this.opportunityCronsService.assignUnassignedOpportunitiesDaily();
   }
 
+  
+  @Post('create-opportunity-with-same-phone-number/:opportunityId')
+  async createOpportunityWithSamePhoneNumber(
+    @Param('opportunityId') opportunityId: string,
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    return this.opportunityService.createWithSamePhoneNumber(opportunityId, req.user.userId);
+  }
+
   @Put('data/:id')
   @UseInterceptors(OpportunityFilesInterceptor)
   async changeData(
@@ -234,11 +243,6 @@ export class OpportunityController {
   @Get('count-opportunities-assigned/:date')
   async countOpportunitiesAssigned(@Param('date') date: string) {
     return this.opportunityService.countOpportunitiesAssignedBySubcampaign(date);
-  }
-
-  @Post('create-opportunity-with-same-phone-number/:opportunityId')
-  async createOpportunityWithSamePhoneNumber(@Param('opportunityId') opportunityId: string) {
-    return this.opportunityService.createWithSamePhoneNumber(opportunityId);
   }
 
   @Post('create-opportunity-with-manual-assign')

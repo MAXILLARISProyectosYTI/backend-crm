@@ -29,6 +29,11 @@ import { orderListAlphabetic } from './utils/orderListAlphabetic';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
+  @Get('users-by-team-leader/:id')
+  async getUsersByTeamLeader(@Param('id') id: string) {
+    return await this.userService.getUsersByTeamLeader(id);
+  }
+
   @Get('commercial')
   async getUsersCommercial() {
     
