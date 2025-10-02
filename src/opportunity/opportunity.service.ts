@@ -25,6 +25,7 @@ import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
 import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
+import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 
 @Injectable()
 export class OpportunityService {
@@ -118,7 +119,7 @@ export class OpportunityService {
 
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -146,7 +147,7 @@ export class OpportunityService {
           .filter(([_, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
       
-        await this.update(newOpportunity.id, payloadToUpdate);
+        await this.update(newOpportunity.id, payloadToUpdate, userId);
       }
 
       // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
@@ -183,7 +184,7 @@ export class OpportunityService {
           payloadClinicHistory.id_reservation = dataReservation.id;
         }
 
-        await this.update(newOpportunity.id, payloadUpdateComplete);
+        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
       }
 
 
@@ -193,6 +194,13 @@ export class OpportunityService {
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
+
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
 
       return newOpportunity;
 
@@ -267,7 +275,7 @@ export class OpportunityService {
 
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${opportunity.assignedUserId!.id}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
         espoId: newOpportunity.id,
@@ -282,6 +290,13 @@ export class OpportunityService {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
 
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
+
       return newOpportunity;
 
     } catch (error) {
@@ -289,7 +304,7 @@ export class OpportunityService {
     }
   }
 
-  async assingManual(opportunityId: string, assignedUserId: string): Promise<Opportunity> {
+  async assingManual(opportunityId: string, assignedUserId: string, userId: string): Promise<Opportunity> {
 
     const opportunity = await this.getOneWithEntity(opportunityId);
 
@@ -302,8 +317,16 @@ export class OpportunityService {
     await this.websocketService.notifyOpportunityUpdate(opportunity, opportunity.stage);
 
     opportunity.assignedUserId = user;
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assignedUserId}&uuid-opportunity=${opportunityId}`;
+
+    await this.actionHistoryService.addRecord({
+      targetId: opportunityId,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad asignada manualmente',
+    });
+
     return await this.opportunityRepository.save(opportunity);
 
   }
@@ -395,7 +418,7 @@ export class OpportunityService {
       
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -423,7 +446,7 @@ export class OpportunityService {
           .filter(([_, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
       
-        await this.update(newOpportunity.id, payloadToUpdate);
+        await this.update(newOpportunity.id, payloadToUpdate, userId);
       }
 
       // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
@@ -460,7 +483,7 @@ export class OpportunityService {
           payloadClinicHistory.id_reservation = dataReservation.reservation_id;
         }
 
-        await this.update(newOpportunity.id, payloadUpdateComplete);
+        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
       }
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
@@ -469,6 +492,13 @@ export class OpportunityService {
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
+
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
 
       return newOpportunity;
     } catch (error) {
@@ -558,7 +588,7 @@ export class OpportunityService {
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
   }
 
-  async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
+  async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
 
     const opportunity = await this.getOneWithEntity(id);
 
@@ -573,7 +603,7 @@ export class OpportunityService {
     });
     
     // Actualizar timestamp de modificación
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     
     const updatedOpportunity = await this.opportunityRepository.save(opportunity);
 
@@ -583,11 +613,18 @@ export class OpportunityService {
     if (newOpportunity.assignedUserId) {
       await this.websocketService.notifyOpportunityUpdate(newOpportunity, previousStage);
     }
+
+    await this.actionHistoryService.addRecord({
+      targetId: newOpportunity.id,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId || 'Automatico',
+      message: 'Oportunidad actualizada',
+    });
     
     return newOpportunity;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, userId: string): Promise<void> {
     // Obtener la oportunidad antes de eliminar para notificar
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
@@ -604,6 +641,13 @@ export class OpportunityService {
     if (opportunity?.assignedUserId) {
       await this.websocketService.notifyOpportunityDeleted(opportunity.assignedUserId.id, id);
     }
+
+    await this.actionHistoryService.addRecord({
+      targetId: id,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad eliminada',
+    });
   }
 
   // Métodos adicionales útiles para el CRM
@@ -704,7 +748,7 @@ export class OpportunityService {
   async softDelete(id: string): Promise<Opportunity> {
     const opportunity = await this.getOneWithEntity(id);
     opportunity.deleted = true;
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     return await this.opportunityRepository.save(opportunity);
   }
 
@@ -819,7 +863,7 @@ export class OpportunityService {
    * @returns Array con los IDs de los archivos guardados
    */
   private async downloadFacturasFromURLs(
-    opportunityId: string,
+    parentId: string,
     cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
   ): Promise<{ comprobante_soles?: number; comprobante_dolares?: number }> {
     const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
@@ -834,10 +878,10 @@ export class OpportunityService {
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
-        const fileName = `comprobante_soles_${opportunityId}.pdf`;
+        const fileName = `comprobante_soles_${parentId}.pdf`;
         const result = await this.filesService.createFileRecord(
-          opportunityId,
-          'opportunities',
+          parentId,
+          ENUM_TARGET_TYPE.OPPORTUNITY,
           fileName,
           buffer
         );
@@ -853,10 +897,10 @@ export class OpportunityService {
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
-        const fileName = `comprobante_dolares_${opportunityId}.pdf`;
+        const fileName = `comprobante_dolares_${parentId}.pdf`;
         const result = await this.filesService.createFileRecord(
-          opportunityId,
-          'opportunities',
+          parentId,
+          ENUM_TARGET_TYPE.OPPORTUNITY,
           fileName,
           buffer
         );
@@ -924,7 +968,15 @@ export class OpportunityService {
     const newOpportunity = (await this.update(
       opportunityId,
       payload,       
+      userId,
     )) as Opportunity;
+
+    await this.actionHistoryService.addRecord({
+      targetId: newOpportunity.id,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad actualizada',
+    });
 
     if (onlyAppointment || hasAppointmentData) {
       let dateStart = newOpportunity.cDateReservation;
@@ -940,7 +992,7 @@ export class OpportunityService {
 
       const payload: Partial<Meeting> = {
         id: this.idGeneratorService.generateId(),
-        name: 'Creacion de reserva',
+        name: newOpportunity.name,
         status: 'Planned',
         description: 'Creacion de reserva',
         parentId: opportunityId,
@@ -950,7 +1002,14 @@ export class OpportunityService {
         assignedUserId: newOpportunity.assignedUserId!.id,
       };
 
-      await this.meetingService.create(payload);
+      const meetingCreated = await this.meetingService.create(payload);
+
+      await this.actionHistoryService.addRecord({
+        targetId: meetingCreated.id,
+        target_type: ENUM_TARGET_TYPE.MEETING,
+        userId: userId,
+        message: 'Actividad creada',
+      });
 
     }
 
@@ -959,7 +1018,6 @@ export class OpportunityService {
 
     if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
 
-      console.log('body.cClinicHistory!', body.cClinicHistory!)
       await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
       await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
     }
@@ -1051,25 +1109,7 @@ export class OpportunityService {
     };
   }
 
-  async reassignOpportunitiesManual(opportunityId: string, newUserId: string) {
-    const opportunity = await this.opportunityRepository.findOne({
-      where: { id: opportunityId, deleted: false, assignedUserId: Not(IsNull()) },
-    });
 
-    if(!opportunity) {
-      throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
-    }
-
-    const nextUserAssigned = await this.userService.findOne(newUserId);
-
-    if(!nextUserAssigned) {
-      throw new NotFoundException(`No se pudo obtener el siguiente usuario a asignar`);
-    }
-
-    opportunity.assignedUserId = nextUserAssigned;
-    opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${newUserId}&uuid-opportunity=${opportunityId}`;
-    return await this.opportunityRepository.save(opportunity);
-  }
 
   async changeURLOI(opportunityId: string) {
     const opportunity = await this.opportunityRepository.findOne({
@@ -1118,7 +1158,14 @@ export class OpportunityService {
         cTariff: dataReservation.cTariff,
       }
 
-      const opportunityEspo = await this.update(opportunityId, payload);
+      const opportunityEspo = await this.update(opportunityId, payload, userId);
+
+      await this.actionHistoryService.addRecord({
+        targetId: opportunityEspo.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad actualizada',
+      });
 
       const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
         
@@ -1144,7 +1191,14 @@ export class OpportunityService {
         description: "Reprogramación de reserva",
       }
       
-      const updateActivity = await this.meetingService.updateByParentId(opportunityEspo.id, payloadUpdateMetting);
+      const updateActivity = await this.meetingService.updateByParentName(opportunityEspo.name!, payloadUpdateMetting);
+
+      await this.actionHistoryService.addRecord({
+        targetId: updateActivity.id,
+        target_type: ENUM_TARGET_TYPE.MEETING,
+        userId: userId,
+        message: 'Actividad actualizada',
+      });
 
       return {
         message: "Reserva reprogramada exitosamente",

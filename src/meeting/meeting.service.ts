@@ -30,6 +30,14 @@ export class MeetingService {
     return await this.meetingRepository.save({ ...meeting, ...updateMeetingDto });
   }
 
+  async updateByParentName(parentName: string, updateMeetingDto: UpdateMeetingDto): Promise<Meeting> {
+    const meeting = await this.meetingRepository.findOne({ where: { name: parentName } });
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+    return await this.meetingRepository.save({ ...meeting, ...updateMeetingDto });
+  }
+
   async findByparentIdLess(parentId: string) {
 
     return await this.meetingRepository.createQueryBuilder('m')

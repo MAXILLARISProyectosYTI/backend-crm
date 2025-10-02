@@ -269,6 +269,10 @@ export class UpdateOpportunityDto {
   @IsOptional()
   @IsString()
   cCampaign1Id?: string;
+
+  @IsOptional()
+  @IsDateString()
+  createdAt?: string;
 }
 
 

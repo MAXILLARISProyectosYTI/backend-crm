@@ -12,6 +12,8 @@ import { Cron } from '@nestjs/schedule';
 import { Repository } from 'typeorm';
 import { Enum_Following } from './dto/enums';
 import { DateTime } from 'luxon';
+import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
+import { ActionHistoryService } from 'src/action-history/action-history.service';
 
 @Injectable()
 export class OpportunityCronsService {
@@ -30,6 +32,7 @@ export class OpportunityCronsService {
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
     private readonly opportunityService: OpportunityService,
+    private readonly actionHistoryService: ActionHistoryService,
   ) {}
 
   @Cron('0 30 9 * * *')
@@ -297,6 +300,13 @@ export class OpportunityCronsService {
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
               });
 
+              await this.actionHistoryService.addRecord({
+                targetId: opportunity.id,
+                target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+                userId: 'Automatico',
+                message: 'Oportunidad asignada',
+              });
+
               // 3. Enviar notificación al usuario (después de que todo esté guardado)
               try {
                 await this.websocketService.notifyOpportunityUpdate(
@@ -364,8 +374,8 @@ export class OpportunityCronsService {
         // Si sigue sin seguimiento, verificar tiempo transcurrido
         if (follow === Enum_Following.SIN_SEGUIMIENTO) {
           const now = DateTime.now();
-          const createdAt = opportunity.modifiedAt 
-            ? DateTime.fromJSDate(opportunity.modifiedAt)
+          const createdAt = opportunity.createdAt 
+            ? DateTime.fromJSDate(opportunity.createdAt)
             : DateTime.now();
           const minutesElapsed = Math.floor(
             now.diff(createdAt, 'minutes').minutes,
@@ -447,11 +457,18 @@ export class OpportunityCronsService {
                 continue;
               }
 
-
               // Actualizar la oportunidad en EspoCRM
               await this.opportunityService.update(opportunity.id, {
                 assignedUserId: nextUserAssigned,
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
+                createdAt: DateTime.now().setZone("America/Lima").toISO()!,
+              });
+
+              await this.actionHistoryService.addRecord({
+                targetId: opportunity.id,
+                target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+                userId: 'Automatico',
+                message: 'Oportunidad reasignada',
               });
 
               // Actualizar tracking local de reasignaciones

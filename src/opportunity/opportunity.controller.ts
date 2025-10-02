@@ -68,7 +68,9 @@ export class OpportunityController {
   async changeData(
     @Body() body: Omit<CreateOpportunityDto, 'files'>,
     @Param('id') id: string,
-    @UploadedFiles() files: Express.Multer.File[]
+    @UploadedFiles() files: Express.Multer.File[],
+    @Req() req: Request & { user: { userId: string; userName: string } }
+
   ): Promise<Opportunity> {
             
       const opportunity = await this.opportunityService.getOneWithEntity(id);
@@ -92,7 +94,7 @@ export class OpportunityController {
       }
   
       try {
-        newOpportunity = await this.opportunityService.update(id, payloadOpportunity);
+        newOpportunity = await this.opportunityService.update(id, payloadOpportunity, req.user.userId);
       } catch (error) {
         throw new BadRequestException('Ocurrio un error al actualizar la oportunidad');
       }
@@ -124,8 +126,13 @@ export class OpportunityController {
 
     
   @Put('reassign-opportunity-manual/:opportunityId')
-  async reassignOpportunityManual(@Param('opportunityId') opportunityId: string, @Body() body: { newUserId: string }) {
-    return this.opportunityService.reassignOpportunitiesManual(opportunityId, body.newUserId);
+  async reassignOpportunityManual(
+    @Param('opportunityId') opportunityId: string, 
+    @Body() body: { newUserId: string },
+    @Req() req: Request & { user: { userId: string; userName: string } }
+  ) {
+    const userId = req.user.userId;
+    return this.opportunityService.assingManual(opportunityId, body.newUserId, userId);
   }
 
   @Put('change-url-oi/:opportunityId')
@@ -191,14 +198,17 @@ export class OpportunityController {
   async update(
     @Param('id') id: string,
     @Body() updateOpportunityDto: UpdateOpportunityDto,
+    @Req() req: Request & { user: { userId: string; userName: string } }
   ): Promise<Opportunity> {
-    return await this.opportunityService.update(id, updateOpportunityDto);
+    const userId = req.user.userId;
+    return await this.opportunityService.update(id, updateOpportunityDto, userId);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async remove(@Param('id') id: string): Promise<void> {
-    return await this.opportunityService.remove(id);
+  async remove(@Param('id') id: string, @Req() req: Request & { user: { userId: string; userName: string } }): Promise<void> {
+    const userId = req.user.userId;
+    return await this.opportunityService.remove(id, userId);
   }
 
   @Patch(':id/soft-delete')
