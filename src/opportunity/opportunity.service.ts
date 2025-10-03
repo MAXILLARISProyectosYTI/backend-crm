@@ -614,12 +614,14 @@ export class OpportunityService {
       await this.websocketService.notifyOpportunityUpdate(newOpportunity, previousStage);
     }
 
-    await this.actionHistoryService.addRecord({
-      targetId: newOpportunity.id,
-      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
-      userId: userId || 'Automatico',
-      message: 'Oportunidad actualizada',
-    });
+    if(userId){
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad actualizada',
+      });
+    }
     
     return newOpportunity;
   }

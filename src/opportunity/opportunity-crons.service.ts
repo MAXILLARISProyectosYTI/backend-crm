@@ -300,12 +300,12 @@ export class OpportunityCronsService {
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
               });
 
-              await this.actionHistoryService.addRecord({
-                targetId: opportunity.id,
-                target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
-                userId: 'Automatico',
-                message: 'Oportunidad asignada',
-              });
+              // await this.actionHistoryService.addRecord({
+              //   targetId: opportunity.id,
+              //   target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+              //   userId: 'Automatico',
+              //   message: 'Oportunidad asignada',
+              // });
 
               // 3. Enviar notificación al usuario (después de que todo esté guardado)
               try {
@@ -464,12 +464,12 @@ export class OpportunityCronsService {
                 createdAt: DateTime.now().setZone("America/Lima").toISO()!,
               });
 
-              await this.actionHistoryService.addRecord({
-                targetId: opportunity.id,
-                target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
-                userId: 'Automatico',
-                message: 'Oportunidad reasignada',
-              });
+              // await this.actionHistoryService.addRecord({
+              //   targetId: opportunity.id,
+              //   target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+              //   userId: 'Automatico',
+              //   message: 'Oportunidad reasignada',
+              // });
 
               // Actualizar tracking local de reasignaciones
               reassignTracking.set(subCampaignId, nextUserAssigned.id);
