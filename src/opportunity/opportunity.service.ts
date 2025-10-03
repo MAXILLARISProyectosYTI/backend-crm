@@ -1241,4 +1241,16 @@ export class OpportunityService {
   
     return validTeams.some(validTeam => teams.some(team => team.team_id === validTeam));
   }
+
+  async getOpportunitiesByPhoneNumber(phoneNumber: string): Promise<Opportunity> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { cNumeroDeTelefono: ILike(`%${phoneNumber}%`), deleted: false },
+    });
+
+    if(!opportunity) {
+      throw new NotFoundException(`Oportunidad con número de teléfono ${phoneNumber} no encontrada`);
+    }
+
+    return opportunity;
+  }
 }

@@ -304,4 +304,10 @@ export class OpportunityController {
   async isForRefer(@Param('userId') userId: string) {
     return this.opportunityService.isForRefer(userId);
   }
+
+  @Public()
+  @Get('get-by-phone-number/:phoneNumber')
+  async getByPhoneNumber(@Param('phoneNumber') phoneNumber: string) {
+    return this.opportunityService.getOpportunitiesByPhoneNumber(phoneNumber);
+  }
 }
