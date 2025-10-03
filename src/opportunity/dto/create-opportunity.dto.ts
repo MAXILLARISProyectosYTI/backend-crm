@@ -32,12 +32,4 @@ export class CreateOpportunityDto {
 
   @IsOptional()
   files?: Express.Multer.File[];
-
-  @IsNotEmpty()
-  @IsString()
-  usernameSv?: string;
-
-  @IsNotEmpty()
-  @IsString()
-  passwordSv?: string;
 }

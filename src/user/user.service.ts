@@ -82,10 +82,12 @@ export class UserService {
   }
 
   async findActiveUsers(): Promise<User[]> {
-    return await this.userRepository.find({
-      where: { isActive: true },
+    const users = await this.userRepository.find({
+      where: { isActive: true, deleted: false },
       order: { firstName: 'ASC', lastName: 'ASC' },
     });
+
+    return orderListAlphabetic(users);
   }
 
   async findByType(type: string): Promise<User[]> {
@@ -265,16 +267,19 @@ export class UserService {
 
   async getUserByAllTeams(teams: string[]): Promise<UserWithTeam[]> {
 
-    console.log('teams', teams)
     const users = await this.userRepository.createQueryBuilder('u')
     .leftJoin('team_user', 'tu', 'u.id = tu.user_id')
     .leftJoin('team', 't', 't.id = tu.team_id')
     .select([
       'u.id AS user_id',
       'u.user_name AS user_name', 
-      't.name AS team_name'
+      't.name AS team_name',
+      't.id AS team_id'
     ])
     .where('t.id IN (:...teamIds)', { teamIds: teams })
+    .andWhere('u.deleted = :deleted', { deleted: false })
+    .andWhere('t.deleted = :deleted', { deleted: false })
+    .andWhere('tu.deleted = :deleted', { deleted: false })
     .getRawMany();
     return users
   }
@@ -306,7 +311,7 @@ export class UserService {
     return orderListAlphabetic(filteredUsers)
   }
 
-  async getNextUserToAssign(subCampaignId: string): Promise<User> {
+  async getNextUserToAssign(subCampaignId: string): Promise<any> {
     const listUsers = await this.getUsersBySubCampaignId(subCampaignId)
     let listUsersDefault: UserWithTeam[]
 
@@ -331,7 +336,7 @@ export class UserService {
     }
 
     const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
-
+    
     const nextUser = getNextUser(listUsers, lastOpportunityAssigned)
 
     if(!nextUser){
@@ -362,29 +367,76 @@ export class UserService {
     return user.type === 'admin';
   }
 
-  async getUsersCommercials(): Promise<any[]> {
+  async getUsersCommercials(): Promise<User[]> {
+
+    const usersActives = await this.findActiveUsers()
+
+    if(usersActives.length === 0){
+      return []
+    }
+
     let users: User[] = []
     const teams = [
       TEAMS_IDS.TEAM_LEADERS_COMERCIALES, 
-      TEAMS_IDS.EJ_COMERCIAL_APNEA, 
-      TEAMS_IDS.EJ_COMERCIAL_OI,
       TEAMS_IDS.EJ_COMERCIAL,
       TEAMS_IDS.TEAM_FIORELLA,
       TEAMS_IDS.TEAM_MICHELL,
-      TEAMS_IDS.TEAM_VERONICA
+      TEAMS_IDS.TEAM_VERONICA,
+      TEAMS_IDS.EJ_COMERCIAL_APNEA,
+      TEAMS_IDS.EJ_COMERCIAL_OI
     ];
     
-    return teams
     const allUsers = await this.getUserByAllTeams(teams)
 
-    return allUsers
-
-    for(const user of allUsers) {
-      const userFound = await this.findOne(user.user_id)
+    // Obtener solo los usuarios que están en ambos arrays (intersección)
+    const userIdsActives = usersActives.map(user => user.id);
+    const userIdsFromTeams = allUsers.map(user => user.user_id);
+    
+    // Encontrar la intersección de ambos arrays
+    const commonUserIds = userIdsActives.filter(id => userIdsFromTeams.includes(id));
+    
+    for(const userId of commonUserIds) {
+      const userFound = await this.findOne(userId)
       users.push(userFound)
     } 
 
     return orderListAlphabetic(users);
   }
   
+  async getUsersByTeamLeader(userId: string) {
+    const teams = await this.getAllTeamsByUser(userId);
+
+    const isOwnerOrTI = teams.some(team => team.team_id === TEAMS_IDS.TEAM_OWNER || team.team_id === TEAMS_IDS.TEAM_TI);
+    const isTeamLeaderFiorella = teams.some(team => team.team_id === TEAMS_IDS.TEAM_FIORELLA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isTeamLeaderVeronica = teams.some(team => team.team_id === TEAMS_IDS.TEAM_VERONICA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isTeamLeaderMichel = teams.some(team => team.team_id === TEAMS_IDS.TEAM_MICHELL) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    const isUserApneas = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
+    const isUserOi = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
+    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL]);
+
+    if(isOwnerOrTI) {
+      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL];
+      const usersByTeam = allUsers.filter(user => teamsUsers.some(team => user.team_id === team));
+      return usersByTeam;
+    }
+    
+    if(isTeamLeaderFiorella) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_FIORELLA);
+    }
+
+    if(isTeamLeaderVeronica) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_VERONICA);
+    }
+
+    if(isTeamLeaderMichel) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_MICHELL);
+    }
+    if(isUserApneas) {
+      return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
+    }
+    if(isUserOi) {
+        return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
+    }
+    return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+  }
 }

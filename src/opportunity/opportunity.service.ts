@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
-import { UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
+import { ReprogramingReservationDto, UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { CreateContactDto } from 'src/contact/dto/create-contact.dto';
@@ -24,11 +24,14 @@ import { DateTime } from 'luxon';
 import { addHours, hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
+import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
+import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 
 @Injectable()
 export class OpportunityService {
 
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
+  private readonly URL_FILES = process.env.URL_DOWNLOAD_FILES;
   
   constructor(
     @InjectRepository(Opportunity)
@@ -44,7 +47,7 @@ export class OpportunityService {
     private readonly filesService: FilesService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
 
     let contact: Contact | null = null;
 
@@ -56,7 +59,9 @@ export class OpportunityService {
         throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
       }
 
-      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+      const user = await this.userService.findOne(userId);
+
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
@@ -83,7 +88,7 @@ export class OpportunityService {
         userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.campaignId);
       } 
 
-      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -92,8 +97,8 @@ export class OpportunityService {
         closeDate: today,
         createdAt: today,
         stage: Enum_Stage.GESTION_INICIAL,
-        cCampaign: createOpportunityDto.campaignId,
-        cSubCamping: createOpportunityDto.subCampaignId,
+        campaignId: createOpportunityDto.campaignId,
+        cSubCampaignId: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
@@ -114,7 +119,7 @@ export class OpportunityService {
 
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -142,7 +147,7 @@ export class OpportunityService {
           .filter(([_, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
       
-        await this.update(newOpportunity.id, payloadToUpdate);
+        await this.update(newOpportunity.id, payloadToUpdate, userId);
       }
 
       // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
@@ -163,7 +168,7 @@ export class OpportunityService {
         }
 
         // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.id_payment = dataPayment.payment_id;
         payloadClinicHistory.patientId = patient.id;
 
         // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
@@ -179,18 +184,23 @@ export class OpportunityService {
           payloadClinicHistory.id_reservation = dataReservation.id;
         }
 
-        await this.update(newOpportunity.id, payloadUpdateComplete);
+        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
       }
 
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);   
       
-      // await this.svServices.uploadFiles(newOpportunity.id, 'os',  files, tokenSv);
-
       // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
+
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
 
       return newOpportunity;
 
@@ -204,7 +214,8 @@ export class OpportunityService {
     }
   }
 
-  async createWithSamePhoneNumber(opportunityId: string){
+  async createWithSamePhoneNumber(opportunityId: string, userId: string){
+
     try {
       const opportunity = await this.getOneWithEntity(opportunityId);
 
@@ -212,16 +223,17 @@ export class OpportunityService {
         throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
       }      
 
+      const user = await this.userService.findOne(userId);
       const opportunities = await this.getOpportunityByName(opportunity.name || '');
 
-      const refRegex = / REF(\d+)$/;
+      const refRegex = / REF-(\d+)$/;
       const baseName = opportunity.name!.replace(refRegex, '');
 
       let nextRefName: string;
 
       if (opportunities.length === 1) {
         // Si solo hay una oportunidad, significa que solo existe la original, asignar REF2
-        nextRefName = `${baseName} REF2`;
+        nextRefName = `${baseName} REF-2`;
       } else {
         // Buscar el REF más alto entre todas las oportunidades encontradas
         let highestRef = 1; // El original sería REF1 (sin mostrar)
@@ -238,10 +250,10 @@ export class OpportunityService {
         
         // Asignar el siguiente número REF
         const nextRef = highestRef + 1;
-        nextRefName = `${baseName} REF${nextRef}`;
+        nextRefName = `${baseName} REF-${nextRef}`;
       }
 
-      const today = DateTime.now().setZone("America/Lima").minus({ weeks: 1 }).endOf("day").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -250,7 +262,7 @@ export class OpportunityService {
         createdAt: today,
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
         stage: Enum_Stage.CIERRE_GANADO,
-        cCampaign: opportunity.cCampaign,
+        campaignId: opportunity.campaignId,
         cSubCampaignId: opportunity.cSubCampaignId,
         cCanal: opportunity.cCanal,
         contactId: opportunity.contactId,
@@ -263,13 +275,13 @@ export class OpportunityService {
 
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${opportunity.assignedUserId!.id}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
         espoId: newOpportunity.id,
       }
 
-      const tokenSv = await this.svServices.getTokenSv(opportunity.assignedUserId!.cUsersv!, opportunity.assignedUserId!.cContraseaSv!);
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
@@ -278,6 +290,13 @@ export class OpportunityService {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
 
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
+
       return newOpportunity;
 
     } catch (error) {
@@ -285,7 +304,7 @@ export class OpportunityService {
     }
   }
 
-  async assingManual(opportunityId: string, assignedUserId: string): Promise<Opportunity> {
+  async assingManual(opportunityId: string, assignedUserId: string, userId: string): Promise<Opportunity> {
 
     const opportunity = await this.getOneWithEntity(opportunityId);
 
@@ -298,15 +317,27 @@ export class OpportunityService {
     await this.websocketService.notifyOpportunityUpdate(opportunity, opportunity.stage);
 
     opportunity.assignedUserId = user;
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assignedUserId}&uuid-opportunity=${opportunityId}`;
+
+    await this.actionHistoryService.addRecord({
+      targetId: opportunityId,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad asignada manualmente',
+    });
+
     return await this.opportunityRepository.save(opportunity);
 
   }
 
   async countOpportunitiesAssignedBySubcampaign(date: string) {
+    // Parsear fecha desde formato dd-mm-yyyy
+    const [day, month, year] = date.split('-');
+    const parsedDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    
     const allOpportunities = await this.opportunityRepository.find({
-      where: {assignedUserId: Not(IsNull()), createdAt: MoreThanOrEqual(new Date(date)), deleted: false },
+      where: {assignedUserId: Not(IsNull()), createdAt: MoreThanOrEqual(parsedDate), deleted: false },
     });
 
     const countOpportunitiesAssigned = {
@@ -324,17 +355,20 @@ export class OpportunityService {
         countOpportunitiesAssigned['OI']++;
       }
     });
+
+    return countOpportunitiesAssigned;
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
     let contact: Contact | null = null;
       
     try {
       
       const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
 
+      const user = await this.userService.findOne(userId);
 
-      const tokenSv = await this.svServices.getTokenSv(createOpportunityDto.usernameSv!, createOpportunityDto.passwordSv!);
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
       const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
@@ -360,13 +394,13 @@ export class OpportunityService {
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
-        name: contact.firstName,
+        name: `${contact.firstName} REF-`,
         createdAt: today,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: today,
         stage: Enum_Stage.GESTION_INICIAL,
-        cCampaign: createOpportunityDto.campaignId,
-        cSubCamping: createOpportunityDto.subCampaignId,
+        campaignId: createOpportunityDto.campaignId,
+        cSubCampaignId: createOpportunityDto.subCampaignId,
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
@@ -384,7 +418,7 @@ export class OpportunityService {
       
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv});
+      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
 
       // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
@@ -412,7 +446,7 @@ export class OpportunityService {
           .filter(([_, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
       
-        await this.update(newOpportunity.id, payloadToUpdate);
+        await this.update(newOpportunity.id, payloadToUpdate, userId);
       }
 
       // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
@@ -433,7 +467,7 @@ export class OpportunityService {
         }
 
         // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.id;
+        payloadClinicHistory.id_payment = dataPayment.payment_id;
         payloadClinicHistory.patientId = patient.id;
 
         // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
@@ -446,10 +480,10 @@ export class OpportunityService {
           payloadUpdateComplete.cTariff = dataReservation.tariff_name;
 
           // Agregamos el id de la reserva en la tabla intermediaria
-          payloadClinicHistory.id_reservation = dataReservation.id;
+          payloadClinicHistory.id_reservation = dataReservation.reservation_id;
         }
 
-        await this.update(newOpportunity.id, payloadUpdateComplete);
+        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
       }
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
@@ -458,6 +492,13 @@ export class OpportunityService {
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
+
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad creada',
+      });
 
       return newOpportunity;
     } catch (error) {
@@ -496,10 +537,17 @@ export class OpportunityService {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
 
-    const userAssigned = await this.userService.findOne(opportunity.assignedUserId!.id);
+    let userAssigned: User | null = null;
+    let teams: { team_id: string; team_name: string }[] = [];
+
+    if(opportunity.assignedUserId){
+      userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
+      teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+    }
+  
     const user = await this.userService.findOne(userId);
 
-    const meeting = await this.meetingService.findOneByparentIdLess(opportunity.id);
+    const meeting = await this.meetingService.findByparentIdLess(opportunity.id);
 
     let campainName: string = '';
     let subCampaignName: string = '';
@@ -528,7 +576,6 @@ export class OpportunityService {
         break;
     }
 
-    const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
 
     const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
 
@@ -538,10 +585,10 @@ export class OpportunityService {
 
     const files = await this.filesService.findByParentId(opportunity.id);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
   }
 
-  async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
+  async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
 
     const opportunity = await this.getOneWithEntity(id);
 
@@ -556,7 +603,7 @@ export class OpportunityService {
     });
     
     // Actualizar timestamp de modificación
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     
     const updatedOpportunity = await this.opportunityRepository.save(opportunity);
 
@@ -566,11 +613,20 @@ export class OpportunityService {
     if (newOpportunity.assignedUserId) {
       await this.websocketService.notifyOpportunityUpdate(newOpportunity, previousStage);
     }
+
+    if(userId){
+      await this.actionHistoryService.addRecord({
+        targetId: newOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad actualizada',
+      });
+    }
     
     return newOpportunity;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, userId: string): Promise<void> {
     // Obtener la oportunidad antes de eliminar para notificar
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
@@ -587,6 +643,13 @@ export class OpportunityService {
     if (opportunity?.assignedUserId) {
       await this.websocketService.notifyOpportunityDeleted(opportunity.assignedUserId.id, id);
     }
+
+    await this.actionHistoryService.addRecord({
+      targetId: id,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad eliminada',
+    });
   }
 
   // Métodos adicionales útiles para el CRM
@@ -615,6 +678,8 @@ export class OpportunityService {
 
     const isAdmin = await this.userService.isAdmin(assignedUserId);
 
+    const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
+
     const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
@@ -639,8 +704,8 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwner || isAdmin) {
-      // Si es TI o Owner, no aplicar ningún filtro de usuario (ve todas las oportunidades)
+    if (isTIorOwner || isAdmin || isAssistent) {
+      // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
       // Solo mantiene el filtro de deleted = false que ya está aplicado
     } else if (isTeamLeader && users.length > 0) {
       // Si es team leader, buscar oportunidades de todos los usuarios de su equipo
@@ -659,13 +724,26 @@ export class OpportunityService {
       );
     }
 
-    // Usar ordenamiento con dos campos: primero por seguimiento (DESC para que "Sin Seguimiento" venga primero), luego por fecha
-    const [opportunities, total] = await queryBuilder
-      .addOrderBy('opportunity.cSeguimientocliente', 'DESC') // "Sin Seguimiento" viene antes que "En seguimiento" al ordenar DESC
-      .addOrderBy('opportunity.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    // Usar ordenamiento diferente según el tipo de usuario
+    let opportunities: Opportunity[];
+    let total: number;
+    
+    if (isAssistent) {
+      // Si es asistente, solo ordenar por fecha de creación (sin priorizar "Sin Seguimiento")
+      [opportunities, total] = await queryBuilder
+        .orderBy('opportunity.createdAt', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit)
+        .getManyAndCount();
+    } else {
+      // Para otros usuarios, usar ordenamiento con dos campos: primero por seguimiento (DESC para que "Sin Seguimiento" venga primero), luego por fecha
+      [opportunities, total] = await queryBuilder
+        .addOrderBy('opportunity.cSeguimientocliente', 'DESC') // "Sin Seguimiento" viene antes que "En seguimiento" al ordenar DESC
+        .addOrderBy('opportunity.createdAt', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit)
+        .getManyAndCount();
+    }
 
     const totalPages = Math.ceil(total / limit);
 
@@ -687,7 +765,7 @@ export class OpportunityService {
   async softDelete(id: string): Promise<Opportunity> {
     const opportunity = await this.getOneWithEntity(id);
     opportunity.deleted = true;
-    opportunity.modifiedAt = new Date();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
     return await this.opportunityRepository.save(opportunity);
   }
 
@@ -702,15 +780,12 @@ export class OpportunityService {
       ])
       .leftJoin('user', 'u', 'u.id = o.assignedUserId')
       .where('o.assignedUserId IS NOT NULL')
-      .andWhere('o.cSubCampaignId = :subCampaignId', { subCampaignId })
+      .andWhere('o.c_sub_camping = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
-      .andWhere('o.name NOT ILIKE :name', { name: '%REF%' })
+      .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' })
       .orderBy('o.createdAt', 'DESC')
       .getRawOne();
 
-    if (!opportunity) {
-      throw new NotFoundException('No hay oportunidades asignadas');
-    }
     
     return opportunity;
   }
@@ -728,16 +803,18 @@ export class OpportunityService {
   }
 
   async getOpportunitiesNotAssigned(): Promise<Opportunity[]> {
-    return await this.opportunityRepository.find({
-      where: { assignedUserId: IsNull() },
-      order: { createdAt: 'DESC' },
-    });
+    return await this.opportunityRepository
+      .createQueryBuilder("o")
+      .where("o.assigned_user_id IS NULL OR o.assigned_user_id = ''")
+      .orderBy("o.created_at", "ASC")
+      .getMany();
   }
-
+      
   async getOpportunitiesNotReaction(): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
       where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()) },
       order: { createdAt: 'DESC' },
+      relations: ['assignedUserId'],
     });
   }
 
@@ -784,13 +861,26 @@ export class OpportunityService {
   }
 
   /**
+   * Extrae la ruta relativa de una URL después de "Comprobantes/"
+   * @param url URL completa del comprobante
+   * @returns Ruta relativa que comienza con "Comprobantes/"
+   */
+  private extractComprobantePath(url: string): string {
+    const comprobantesIndex = url.indexOf('Comprobantes/');
+    if (comprobantesIndex === -1) {
+      throw new Error(`No se encontró "Comprobantes/" en la URL: ${url}`);
+    }
+    return url.substring(comprobantesIndex);
+  }
+
+  /**
    * Descarga las facturas desde URLs y las guarda en la base de datos
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
    * @returns Array con los IDs de los archivos guardados
    */
   private async downloadFacturasFromURLs(
-    opportunityId: string,
+    parentId: string,
     cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
   ): Promise<{ comprobante_soles?: number; comprobante_dolares?: number }> {
     const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
@@ -798,14 +888,17 @@ export class OpportunityService {
     try {
       // Descargar comprobante en soles si existe
       if (cFacturas.comprobante_soles) {
-        const response = await fetch(cFacturas.comprobante_soles);
+        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_soles);
+        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
+        
+        const response = await fetch(newUrl);
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
-        const fileName = `comprobante_soles_${opportunityId}.pdf`;
+        const fileName = `comprobante_soles_${parentId}.pdf`;
         const result = await this.filesService.createFileRecord(
-          opportunityId,
-          'opportunities',
+          parentId,
+          ENUM_TARGET_TYPE.OPPORTUNITY,
           fileName,
           buffer
         );
@@ -814,14 +907,17 @@ export class OpportunityService {
 
       // Descargar comprobante en dólares si existe
       if (cFacturas.comprobante_dolares) {
-        const response = await fetch(cFacturas.comprobante_dolares);
+        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_dolares);
+        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
+        
+        const response = await fetch(newUrl);
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
         
-        const fileName = `comprobante_dolares_${opportunityId}.pdf`;
+        const fileName = `comprobante_dolares_${parentId}.pdf`;
         const result = await this.filesService.createFileRecord(
-          opportunityId,
-          'opportunities',
+          parentId,
+          ENUM_TARGET_TYPE.OPPORTUNITY,
           fileName,
           buffer
         );
@@ -838,6 +934,7 @@ export class OpportunityService {
   async updateOpportunityWithFacturas(
     opportunityId: string,
     body: UpdateOpportunityProcces,
+    userId: string,
   ) {
 
     // --- Configuración de campos ---
@@ -888,27 +985,31 @@ export class OpportunityService {
     const newOpportunity = (await this.update(
       opportunityId,
       payload,       
+      userId,
     )) as Opportunity;
+
+    await this.actionHistoryService.addRecord({
+      targetId: newOpportunity.id,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+      userId: userId,
+      message: 'Oportunidad actualizada',
+    });
 
     if (onlyAppointment || hasAppointmentData) {
       let dateStart = newOpportunity.cDateReservation;
       let dateEnd = newOpportunity.cDateReservation;
-      let duration = 60;
       const [startTime, endTime] = newOpportunity.cAppointment!
         .split("-")
         .map((s) => s.trim());
       dateStart = `${newOpportunity.cDateReservation} ${startTime}:00`;
       dateEnd = `${newOpportunity.cDateReservation} ${endTime}:00`;
-      // Calcular duración en minutos
-      const [startHour, startMinute] = startTime.split(":").map(Number);
-      const [endHour, endMinute] = endTime.split(":").map(Number);
-      duration = endHour * 60 + endMinute - (startHour * 60 + startMinute);
 
       dateStart = addHours(dateStart, 5);
       dateEnd = addHours(dateEnd, 5);
 
       const payload: Partial<Meeting> = {
-        name: 'Creacion de reserva',
+        id: this.idGeneratorService.generateId(),
+        name: newOpportunity.name,
         status: 'Planned',
         description: 'Creacion de reserva',
         parentId: opportunityId,
@@ -918,14 +1019,26 @@ export class OpportunityService {
         assignedUserId: newOpportunity.assignedUserId!.id,
       };
 
-      await this.meetingService.create(payload);
+      const meetingCreated = await this.meetingService.create(payload);
+
+      await this.actionHistoryService.addRecord({
+        targetId: meetingCreated.id,
+        target_type: ENUM_TARGET_TYPE.MEETING,
+        userId: userId,
+        message: 'Actividad creada',
+      });
+
     }
+
+    const user = await this.userService.findOne(userId);
+    const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
 
     if(body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
-      // await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
+
+      await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
+      await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
     }
 
-    const tokenSv = await this.svServices.getTokenSv(newOpportunity.assignedUserId!.cUsersv!, newOpportunity.assignedUserId!.cContraseaSv!);
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);  
 
@@ -942,23 +1055,34 @@ export class OpportunityService {
   
       } else if (hasMainData && !hasAppointmentData) {
         // Solo datos principales
+
+
+        if(body.cFacturas && body.cFacturas.comprobante_soles) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        } else if(body.cFacturas && body.cFacturas.comprobante_dolares) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        }
   
-        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
   
-        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
   
       } else if (hasMainData && hasAppointmentData) {
-  
         if(!body.reservationId) {
           throw new BadRequestException('El campo reservationId no puede estar vacío');
         }
         // Ambos tipos de datos
-        const irh = await this.svServices.getIRHByComprobante(body.cFacturas!.comprobante_soles!, tokenSv);
+        if(body.cFacturas && body.cFacturas.comprobante_soles) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        } else if(body.cFacturas && body.cFacturas.comprobante_dolares) {
+          const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
+          payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+        }
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
   
-        payloadUpdateClinicHistoryCrm.id_payment = irh.id;
         payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
       }
@@ -1000,5 +1124,133 @@ export class OpportunityService {
       'APNEA': APNEA,
       'OI': OI,
     };
+  }
+
+
+
+  async changeURLOI(opportunityId: string) {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false, assignedUserId: Not(IsNull()) },
+    });
+
+    if(!opportunity) {
+      throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
+    }
+
+    if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI) {
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/treatment_plan/?usuario=${opportunity.assignedUserId}&uuid-opportunity=${opportunity.id}`;
+
+      opportunity.cConctionSv = cConctionSv;
+      await this.opportunityRepository.save(opportunity);
+    }
+
+    return {
+      message: opportunity.campaignId === CAMPAIGNS_IDS.OI ? "URL cambiada correctamente" : "URL no cambiada",
+      opportunity,
+    };
+  }
+
+  async reprograminReservation(opportunityId: string, dataReservation: ReprogramingReservationDto, userId: string) {
+
+    try {
+
+      const user = await this.userService.findOne(userId);
+
+      const tokenSv = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+
+      const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
+
+      if(clinicHistoryCrm) {
+        await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, {
+          id_reservation: dataReservation.newReservationId,
+        });
+      }
+
+      const payload: UpdateOpportunityDto = {
+        cAppointment: dataReservation.cAppointment,
+        cDateReservation: dataReservation.cDateReservation,
+        cDoctor: dataReservation.cDoctor,
+        cEnvironment: dataReservation.cEnvironment,
+        cSpecialty: dataReservation.cSpecialty,
+        cTariff: dataReservation.cTariff,
+      }
+
+      const opportunityEspo = await this.update(opportunityId, payload, userId);
+
+      await this.actionHistoryService.addRecord({
+        targetId: opportunityEspo.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: 'Oportunidad actualizada',
+      });
+
+      const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
+        
+      if(!meeting) {
+        throw new NotFoundException("No se encontró la actividad");
+      }
+
+      let dateStart = opportunityEspo.cDateReservation;
+      let dateEnd = opportunityEspo.cDateReservation;
+
+      const [startTime, endTime] = opportunityEspo.cAppointment!
+        .split("-")
+        .map((s) => s.trim());
+      dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
+      dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
+
+      dateStart = addHours(dateStart, 5);
+      dateEnd = addHours(dateEnd, 5);
+  
+      const payloadUpdateMetting: UpdateMeetingDto = {
+        dateStart: new Date(dateStart),
+        dateEnd: new Date(dateEnd),
+        description: "Reprogramación de reserva",
+      }
+      
+      const updateActivity = await this.meetingService.updateByParentName(opportunityEspo.name!, payloadUpdateMetting);
+
+      await this.actionHistoryService.addRecord({
+        targetId: updateActivity.id,
+        target_type: ENUM_TARGET_TYPE.MEETING,
+        userId: userId,
+        message: 'Actividad actualizada',
+      });
+
+      return {
+        message: "Reserva reprogramada exitosamente",
+        newMeeting: updateActivity,
+        newOpportunity: opportunityEspo,
+      }
+      
+    } catch (error) {
+      console.error('Error en reprogramingReservation:', error);
+      throw new Error('Error al reprogramar la reserva');
+    }
+  }
+
+  async isForRefer(userId: string) {
+  
+    const validTeams = [
+      TEAMS_IDS.TEAM_LEADERS_COMERCIALES,
+      TEAMS_IDS.TEAM_OWNER,
+      TEAMS_IDS.TEAM_TI,
+    ];
+
+    const teams = await this.userService.getAllTeamsByUser(userId);
+  
+    return validTeams.some(validTeam => teams.some(team => team.team_id === validTeam));
+  }
+
+  async getOpportunitiesByPhoneNumber(phoneNumber: string): Promise<Opportunity> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { cNumeroDeTelefono: ILike(`%${phoneNumber}%`), deleted: false },
+    });
+
+    if(!opportunity) {
+      throw new NotFoundException(`Oportunidad con número de teléfono ${phoneNumber} no encontrada`);
+    }
+
+    return opportunity;
   }
 }

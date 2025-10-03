@@ -21,13 +21,13 @@ export class ActionHistoryController {
     @Body() body: Omit<CreateActionDto, 'files'>,
     @UploadedFiles() files: Express.Multer.File[]
   ): Promise<ActionHistory> {
-    const actionHistory = await this.actionHistoryService.addRecord(body, files);
+    const actionHistory = await this.actionHistoryService.addRecord(body);
     
     // Guardar archivos en la base de datos
     if (files && files.length > 0) {
       await this.fileUploadService.uploadFiles(
         files,
-        actionHistory.id.toString(),
+        body.targetId,
         body.target_type,
         FileType.ALL,
         DirectoryType.ACTION_HISTORY

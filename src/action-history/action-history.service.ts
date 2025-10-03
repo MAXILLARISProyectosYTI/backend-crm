@@ -4,6 +4,7 @@ import { ILike, Not, Repository } from 'typeorm';
 import { ActionHistory } from './action-history.entity';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { CreateActionDto } from './dto/create-action.dto';
+import { DateTime } from 'luxon';
 
 @Injectable()
 export class ActionHistoryService {
@@ -31,11 +32,11 @@ export class ActionHistoryService {
       .getMany();
   }
 
-  async addRecord(actionHistory: CreateActionDto, files: Express.Multer.File[]): Promise<ActionHistory> {
+  async addRecord(actionHistory: CreateActionDto): Promise<ActionHistory> {
 
     const payload: Partial<ActionHistory> = {
       id: this.idGeneratorService.generateId(),
-      createdAt: new Date(),
+      createdAt: DateTime.now().setZone("America/Lima").toJSDate(),
       targetId: actionHistory.targetId,
       userId: actionHistory.userId,   
       action: 'update',

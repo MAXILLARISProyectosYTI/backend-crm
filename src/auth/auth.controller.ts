@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from "@nestjs/common"
+import { Body, Controller, Get, Param, Post } from "@nestjs/common"
 import { SignInDto } from "./dto/sign-in.dto"
 import { RefreshTokenDto } from "./dto/refresh-token.dto"
 import { AuthService } from "./auth.service"
@@ -17,4 +17,15 @@ export class AuthController {
   async refreshToken(@Body() body: RefreshTokenDto): Promise<any> {
     return await this.authService.refreshToken(body);
   }
+
+  @Get('by-user/:id')
+  async byUser(@Param('id') id: string): Promise<any> {
+    return await this.authService.byUserId(id);
+  }
+
+  @Post('apikey')
+  async loginWithApiKey(@Body('apiKey') apiKey: string) {
+    return this.authService.signInWithApiKey(apiKey);
+  }
+
 }

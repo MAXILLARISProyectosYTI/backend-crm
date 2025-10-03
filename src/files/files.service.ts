@@ -26,8 +26,8 @@ export class FilesService {
     // Construir URLs completas para cada archivo
     return files.map(file => ({
       ...file,
-      url: `${this.BASE_URL}/files/${file.id}/view`,
-      downloadUrl: `${this.BASE_URL}/files/${file.id}/download`
+      url: `${this.BASE_URL}files/${file.id}/view`,
+      downloadUrl: `${this.BASE_URL}files/${file.id}/download`
     }));
   }
 

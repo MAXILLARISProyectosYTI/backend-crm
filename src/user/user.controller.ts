@@ -19,12 +19,44 @@ import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
 import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
+import { TEAMS_IDS } from 'src/globals/ids';
+import { orderListAlphabetic } from './utils/orderListAlphabetic';
 
 @UseGuards(JwtAuthGuard)
 @Controller('user')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class UserController {
   constructor(private readonly userService: UserService) {}
+
+  @Get('users-by-team-leader/:id')
+  async getUsersByTeamLeader(@Param('id') id: string) {
+    return await this.userService.getUsersByTeamLeader(id);
+  }
+
+  @Get('commercial')
+  async getUsersCommercial() {
+    
+    const teams = [
+      TEAMS_IDS.EJ_COMERCIAL,
+      TEAMS_IDS.TEAM_FIORELLA,
+      TEAMS_IDS.TEAM_VERONICA,
+      TEAMS_IDS.TEAM_MICHELL,
+      TEAMS_IDS.EJ_COMERCIAL_OI,
+      TEAMS_IDS.EJ_COMERCIAL_APNEA,
+    ]
+
+    const users = await this.userService.getUserByAllTeams(teams)
+
+    const usersEntity = users.map(user => this.userService.findOne(user.user_id))
+
+    return orderListAlphabetic(await Promise.all(usersEntity))
+  }
+
+  @Get('users-active')
+  async usersActive() {
+    return await this.userService.getUsersCommercials();
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -111,8 +143,5 @@ export class UserController {
     return await this.userService.remove(id);
   }
 
-  @Get('commercial')
-  async getUsersCommercials(): Promise<User[]> {
-    return await this.userService.getUsersCommercials();
-  }
+
 }
