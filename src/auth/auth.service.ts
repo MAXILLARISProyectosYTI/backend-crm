@@ -118,4 +118,37 @@ export class AuthService {
       user: user,
     };
   }
+
+  async signInWithApiKey(apiKey: string): Promise<any> {
+    const user = await this.userRepository.findOne({
+      where: { apiKey: apiKey },
+    });
+  
+    if (!user) {
+      throw new UnauthorizedException('API Key inválida');
+    }
+  
+    // Construimos el payload del JWT
+    const payload = { sub: user.id, userName: user.userName, type: 'api' };
+  
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = this.jwtService.sign(
+      { sub: user.id, type: 'refresh' },
+      {
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+      }
+    );
+  
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user: {
+        id: user.id,
+        userName: user.userName,
+        type: 'api',
+      },
+    };
+  }
+  
 }

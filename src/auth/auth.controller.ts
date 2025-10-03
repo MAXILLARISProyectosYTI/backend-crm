@@ -22,4 +22,10 @@ export class AuthController {
   async byUser(@Param('id') id: string): Promise<any> {
     return await this.authService.byUserId(id);
   }
+
+  @Post('apikey')
+  async loginWithApiKey(@Body('apiKey') apiKey: string) {
+    return this.authService.signInWithApiKey(apiKey);
+  }
+
 }
