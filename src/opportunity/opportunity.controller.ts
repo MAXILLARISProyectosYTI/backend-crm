@@ -36,6 +36,8 @@ import { FilesService } from 'src/files/files.service';
 import { FileUploadService } from 'src/files/file-upload.service';
 import { FileType, DirectoryType } from 'src/files/dto/files.dto';
 import { OpportunityCronsService } from './opportunity-crons.service';
+import { SvServices } from 'src/sv-services/sv.services';
+import { UserService } from 'src/user/user.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -47,6 +49,8 @@ export class OpportunityController {
     private readonly contactService: ContactService,
     private readonly fileUploadService: FileUploadService,
     private readonly opportunityCronsService: OpportunityCronsService,
+    private readonly userService: UserService,
+    private readonly svServices: SvServices,
   ) {}
   
   @Get('consumer')
@@ -309,5 +313,18 @@ export class OpportunityController {
   @Get('get-by-phone-number/:phoneNumber')
   async getByPhoneNumber(@Param('phoneNumber') phoneNumber: string) {
     return this.opportunityService.getOpportunitiesByPhoneNumber(phoneNumber);
+  }
+
+  @Public()
+  @Get('get-token-sv/:userId')
+  async getTokenSv(@Param('userId') userId: string) {
+    const user = await this.userService.findOne(userId);
+
+    if(!user.cUsersv || !user.cContraseaSv) {
+      throw new BadRequestException('Usuario no tiene credenciales de SV');
+    }
+
+    const {data} = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
+    return data;
   }
 }

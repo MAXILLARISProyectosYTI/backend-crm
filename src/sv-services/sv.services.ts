@@ -39,7 +39,7 @@ export class SvServices {
   async getTokenSv(username: string, password: string) {
     const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password })
 
-    return responseTokenSv.data.token;
+    return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
   }
 
   async getStatusClient(opportunityId: string, tokenSv: string) {
@@ -115,8 +115,8 @@ export class SvServices {
   }
 
   async creatoSoPendingByCh(clinicHistory: string, tokenSv: string) {
-
-    const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/mid-espo/create-service-order-pending`, { clinicHistory: clinicHistory }, {
+    
+    const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/service-order-invoice/create-service-order-pending`, { clinicHistory: clinicHistory }, {
       headers: {
         Authorization: `Bearer ${tokenSv}`
       }
