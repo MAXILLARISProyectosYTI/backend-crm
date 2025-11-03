@@ -21,7 +21,7 @@ import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
 import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { DateTime } from 'luxon';
-import { addHours, hasFields, pickFields } from './utils/hasFields';
+import { hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
 import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
@@ -224,15 +224,23 @@ export class OpportunityService {
       }      
 
       const user = await this.userService.findOne(userId);
-      const opportunities = await this.getOpportunityByName(opportunity.name || '');
 
+      // Primero calcular el baseName para buscar correctamente
       const refRegex = / REF-(\d+)$/;
-      const baseName = opportunity.name!.replace(refRegex, '');
+      const baseName = opportunity.name!.replace(refRegex, '').trim();
+
+      // Buscar todas las oportunidades que empiecen con baseName seguido de REF- o sin REF
+      const opportunities = await this.opportunityRepository.find({
+        where: [
+          { name: baseName },
+          { name: Like(`${baseName} REF-%`) }
+        ],
+      });
 
       let nextRefName: string;
 
       if (opportunities.length === 1) {
-        // Si solo hay una oportunidad, significa que solo existe la original, asignar REF2
+        // Si solo hay una oportunidad, significa que solo existe la original, asignar REF-2
         nextRefName = `${baseName} REF-2`;
       } else {
         // Buscar el REF más alto entre todas las oportunidades encontradas
@@ -993,9 +1001,6 @@ export class OpportunityService {
       dateStart = `${newOpportunity.cDateReservation} ${startTime}:00`;
       dateEnd = `${newOpportunity.cDateReservation} ${endTime}:00`;
 
-      dateStart = addHours(dateStart, 5);
-      dateEnd = addHours(dateEnd, 5);
-
       const payload: Partial<Meeting> = {
         id: this.idGeneratorService.generateId(),
         name: newOpportunity.name,
@@ -1172,9 +1177,6 @@ export class OpportunityService {
       dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
       dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
 
-      dateStart = addHours(dateStart, 5);
-      dateEnd = addHours(dateEnd, 5);
-  
       const payloadUpdateMetting: UpdateMeetingDto = {
         dateStart: new Date(dateStart),
         dateEnd: new Date(dateEnd),
