@@ -28,8 +28,12 @@ async function bootstrap() {
   }));
   
   // Configurar CORS si es necesario
+  const corsOrigins = process.env.CORS_ORIGIN 
+    ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
+    : (process.env.NODE_ENV === 'production' ? [] : ['*']);
+  
   app.enableCors({
-    origin: '*', // En producción, especificar dominios permitidos
+    origin: corsOrigins.length === 0 ? false : (corsOrigins.includes('*') ? '*' : corsOrigins),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });

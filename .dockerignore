@@ -1,0 +1,52 @@
+# Dependencias
+node_modules
+npm-debug.log
+# package-lock.json debe incluirse para npm ci
+
+# Archivos de construcción
+dist
+*.tsbuildinfo
+
+# Archivos de desarrollo
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+
+# Archivos de prueba
+coverage
+.nyc_output
+test
+*.spec.ts
+*.e2e-spec.ts
+
+# Documentación
+README.md
+documentation
+*.md
+
+# Archivos del IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Otros
+.eslintcache
+tsconfig.build.json
+
