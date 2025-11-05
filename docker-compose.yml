@@ -1,24 +1,6 @@
+version: "3.9"
+
 services:
-  # Base de datos PostgreSQL
-  postgres:
-    image: postgres:16-alpine
-    container_name: crm-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-      POSTGRES_DB: ${DB_DATABASE:-crm_maxillaris}
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - crm-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # Backend NestJS
   backend:
@@ -29,34 +11,18 @@ services:
     container_name: crm-backend
     restart: unless-stopped
     ports:
-      - "${PORT:-8990}:${PORT:-8990}"
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      PORT: ${PORT:-8990}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USERNAME: ${DB_USERNAME:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      DB_DATABASE: ${DB_DATABASE:-crm_maxillaris}
-      # Configuración JWT
-      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
-      # Configuración CORS (separar múltiples orígenes con comas)
-      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      - "${PORT}:${PORT}"
+    env_file:
+      - .env   # Carga todas las variables de tu archivo .env
     volumes:
-      # Montar directorio de uploads para persistencia
-      - ./uploads:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - ./uploads:/app/uploads  # Persistencia de archivos subidos
     networks:
       - crm-network
+    # Configura la zona horaria dentro del contenedor
+    environment:
+      TZ: America/Lima
 
-volumes:
-  postgres_data:
-    driver: local
-
+# Red de contenedores (aunque ahora solo tienes un servicio)
 networks:
   crm-network:
     driver: bridge
-
