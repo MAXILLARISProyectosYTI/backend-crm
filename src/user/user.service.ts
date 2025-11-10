@@ -439,4 +439,10 @@ export class UserService {
     }
     return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
   }
+
+  async updateUserCloserToBusy(userId: string, busy: boolean) {
+    const user = await this.findOne(userId);
+    user.cBusy = busy;
+    return await this.userRepository.save(user);
+  }
 }

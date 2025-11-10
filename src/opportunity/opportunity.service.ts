@@ -1228,4 +1228,16 @@ export class OpportunityService {
 
     return opportunity;
   }
+
+  async getOpportunityByClinicHistory(clinicHistory: string) {
+    const opportunities = await this.opportunityRepository.find({
+      where: { cClinicHistory: clinicHistory, deleted: false },
+    });
+
+    if(!opportunities) {
+      return [];
+    }
+
+    return opportunities;
+  }
 }

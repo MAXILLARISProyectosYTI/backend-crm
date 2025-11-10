@@ -1,11 +1,15 @@
 import { Injectable } from "@nestjs/common";
 import axios from "axios";
+import { BodyAddOpportunityToQueueDto, PayloadAddOpportunityToQueueDto } from "src/opportunities-closers/dto/queue-assignment-closers";
+import { UpdateQueueOpClosersDto } from "src/opportunities-closers/dto/update-op-closer.dto";
 import { CreateClinicHistoryCrmDto } from "src/opportunity/dto/clinic-history";
 
 @Injectable()
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  private readonly usernameSv = process.env.USERNAME_SV;
+  private readonly passwordSv = process.env.PASSWORD_SV;
   
   constructor(
   ) {}
@@ -38,6 +42,12 @@ export class SvServices {
 
   async getTokenSv(username: string, password: string) {
     const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password })
+
+    return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
+  }
+
+  async getTokenSvAdmin() {
+    const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username: this.usernameSv, password: this.passwordSv })
 
     return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
   }
@@ -123,5 +133,89 @@ export class SvServices {
     })
 
     return responsePatientSV.data;
+  }
+
+  async updateQueueAssignmentClosers(opportunityCloserId: string, payload: Partial<UpdateQueueOpClosersDto>, tokenSv: string) {
+    const responseQueueAssignmentClosers = await axios.put(`${this.URL_BACK_SV}/opportunity-closers/update-queue/${opportunityCloserId}`, payload, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseQueueAssignmentClosers.data;
+  }
+
+  async getFactsByContractId(contractId: number, tokenSv: string): Promise<{
+    url_invoice_dolares: string;
+    url_invoice_soles: string;
+    id: number;
+}[]> {
+    const responseFacts = await axios.get(`${this.URL_BACK_SV}/contract/get-facts-contract/${contractId}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseFacts.data;
+  }
+
+  async getQuotationsToday(tokenSv: string) {
+    const responseQuotations = await axios.get(`${this.URL_BACK_SV}/quotation/get-today`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseQuotations.data;
+  }
+
+  async getQueueAssignmentClosers(tokenSv: string) {
+    const responseQueueAssignmentClosers = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-quotations-in-queue`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseQueueAssignmentClosers.data;
+  }
+
+  async addOpportunityToQueue(payload: PayloadAddOpportunityToQueueDto, tokenSv: string) {
+    const responseQueueAssignmentClosers = await axios.post(`${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`, payload, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseQueueAssignmentClosers.data;
+  }
+
+  async getForClosers(tokenSv: string) {
+    const responseForClosers = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-opportunity-for-closers`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseForClosers.data;
+  }
+
+  async getUserWithLessOpportunities(tokenSv: string) {
+    const responseUserWithLessOpportunities = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-user-with-less-opportunities`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseUserWithLessOpportunities.data;
+  }
+
+  async getQuotationByHistory(history: string, tokenSv: string) {
+    const responseQuotationByHistory = await axios.get(`${this.URL_BACK_SV}/quotation/get-by-history/${history}`, {
+      headers: {
+        Authorization: `Bearer ${tokenSv}`
+      }
+    })
+
+    return responseQuotationByHistory.data;
   }
 }
