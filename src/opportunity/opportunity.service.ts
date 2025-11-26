@@ -26,6 +26,8 @@ import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
 import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
+import { EnumCodeFlow } from './dto/enumCodeManage';
+import { CampaignService } from 'src/campaign/campaign.service';
 
 @Injectable()
 export class OpportunityService {
@@ -45,6 +47,7 @@ export class OpportunityService {
     private readonly idGeneratorService: IdGeneratorService,
     private readonly actionHistoryService: ActionHistoryService,
     private readonly filesService: FilesService,
+    private readonly campaignService: CampaignService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
@@ -1028,7 +1031,7 @@ export class OpportunityService {
 
     if (body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
       await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
-      await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
+      // await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
     }
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
@@ -1109,14 +1112,15 @@ export class OpportunityService {
   async changeURLOI(opportunityId: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false, assignedUserId: Not(IsNull()) },
+      relations: ['assignedUserId'],
     });
 
     if(!opportunity) {
-      throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
+      throw new  NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
     }
 
     if(opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI) {
-      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/treatment_plan/?usuario=${opportunity.assignedUserId}&uuid-opportunity=${opportunity.id}`;
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/treatment_plan/?usuario=${opportunity.assignedUserId!.id}&uuid-opportunity=${opportunity.id}`;
 
       opportunity.cConctionSv = cConctionSv;
       await this.opportunityRepository.save(opportunity);
@@ -1239,5 +1243,29 @@ export class OpportunityService {
     }
 
     return opportunities;
+  }
+
+  async redirectToManager(_usuario: string, opportunityId: string) {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false },
+    });
+
+    if (!opportunity) {
+      throw new NotFoundException("No se encontró la oportunidad");
+    }
+
+    const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId!);
+
+    const historyCLinic = opportunity.cClinicHistory;
+    
+    if(!historyCLinic){
+      return {
+        message: "No existe la historia clínica de este paciente",
+        code: EnumCodeFlow.HACER_ALPHA,
+        subCampaign: campaign.name,
+      };
+    }
+
+    return await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, historyCLinic);
   }
 }

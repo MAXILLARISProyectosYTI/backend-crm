@@ -12,7 +12,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
-import { UserService } from './user.service';
+import { UserService, UserWithRoles } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
@@ -105,7 +105,7 @@ export class UserController {
   }
 
   @Get('username/:userName')
-  async findByUserName(@Param('userName') userName: string): Promise<User> {
+  async findByUserName(@Param('userName') userName: string): Promise<UserWithRoles> {
     return await this.userService.findByUserName(userName);
   }
 

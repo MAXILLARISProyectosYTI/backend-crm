@@ -52,6 +52,17 @@ export class OpportunityController {
     private readonly userService: UserService,
     private readonly svServices: SvServices,
   ) {}
+
+  @Public()          
+  @Get('redirect')
+  async redirectToManager(
+    @Query('usuario') usuario: string,
+    @Query('uuid-opportunity') uuidOpportunity: string
+  ) {
+    console.log('usuario', usuario);
+    console.log('uuidOpportunity', uuidOpportunity);
+    return this.opportunityService.redirectToManager(usuario, uuidOpportunity);
+  }
   
   @Get('consumer')
   async consumer() {

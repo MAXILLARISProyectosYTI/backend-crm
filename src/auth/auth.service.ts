@@ -7,6 +7,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { UserService } from 'src/user/user.service';
 
 @Injectable()
 export class AuthService {
@@ -15,13 +16,12 @@ export class AuthService {
     private readonly userRepository: Repository<User>, 
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly userService: UserService,
   ) {}
 
   async signIn(body: SignInDto): Promise<any> {
     const { userName, password } = body;
-    const user = await this.userRepository.findOne({
-      where: { userName: userName },
-    });
+    const user = await this.userService.findByUserName(userName);
 
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');

@@ -1,6 +1,6 @@
 import { HttpException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull, Not } from 'typeorm';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
 import { DateTime } from 'luxon';
@@ -12,6 +12,7 @@ import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { FilesService } from 'src/files/files.service';
 import { User } from 'src/user/user.entity';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
+import { IdGeneratorService } from 'src/common/services/id-generator.service';
 
 @Injectable()
 export class OpportunitiesClosersService {
@@ -23,11 +24,17 @@ export class OpportunitiesClosersService {
     private readonly userService: UserService,
     private readonly filesService: FilesService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly idGeneratorService: IdGeneratorService,
   ) {}
 
   async createOpportunityCloser(payload: Partial<OpportunitiesClosers>) {
-    const opportunity = await this.opportunitiesClosersRepository.save(payload);
-    return opportunity;
+    const opportunity = this.opportunitiesClosersRepository.create({
+      id: payload.id ?? this.idGeneratorService.generateId(),
+      ...payload,
+      createdAt: payload.createdAt ?? new Date(),
+    });
+
+    return await this.opportunitiesClosersRepository.save(opportunity);
   }
 
   async findAll(
@@ -357,5 +364,32 @@ export class OpportunitiesClosersService {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     return buffer;
+  }
+
+  async existsOpportunityCloserByQuotationId(quotationId: string) {
+    const opportunity = await this.opportunitiesClosersRepository.findOne({
+      where: { cotizacionId: quotationId },
+    });
+    return opportunity ? true : false;
+  }
+
+  async getLastOpportunity(){
+    const opportunity = await this.opportunitiesClosersRepository.findOne({
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+    return opportunity;
+  }
+
+  async getLastAssignedOpportunity() {
+    return await this.opportunitiesClosersRepository.findOne({
+      where: {
+        assignedUserId: Not(IsNull()),
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
   }
 }
