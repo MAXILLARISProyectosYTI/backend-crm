@@ -45,11 +45,11 @@ RUN mkdir -p uploads/contacts uploads/opportunities uploads/users && \
 USER nestjs
 
 # Exponer puerto
-EXPOSE 8990
+EXPOSE ${PORT}
 
 # Variables de entorno por defecto
 ENV NODE_ENV=production
-ENV PORT=8990
+ENV PORT=${PORT}
 
 # Comando para iniciar la aplicación
 CMD ["node", "dist/main.js"]

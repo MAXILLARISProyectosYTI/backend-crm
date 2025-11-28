@@ -791,7 +791,7 @@ export class OpportunityService {
       ])
       .leftJoin('user', 'u', 'u.id = o.assignedUserId')
       .where('o.assignedUserId IS NOT NULL')
-      .andWhere('o.c_sub_camping = :subCampaignId', { subCampaignId })
+      .andWhere('o.c_sub_campaign_id = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
       .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' })
       .orderBy('o.createdAt', 'DESC')

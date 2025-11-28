@@ -46,6 +46,10 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 
+# Archivos de datos y uploads
+uploads
+uploads/**
+
 # Otros
 .eslintcache
 tsconfig.build.json
