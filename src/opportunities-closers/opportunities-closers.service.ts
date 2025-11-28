@@ -287,7 +287,7 @@ export class OpportunitiesClosersService {
       buffer
     );
 
-    return {message: 'Archivo subido correctamente'};
+    return opportunity;
   }
 
   async uploadFacts(contractId: number, opportunityId: string, userId: string) {

@@ -130,9 +130,6 @@ export class SvServices {
 
   async updateClinicHistoryCrm(espoId: string, tokenSv: string, payload: Partial<CreateClinicHistoryCrmDto>) {
     try {
-      console.log('espoId', espoId);
-      console.log('payload', payload);
-      console.log('url', `${this.URL_BACK_SV}/opportunities/update-clinic-history-crm/${espoId}`);
       const responsePatientSV = await axios.put(`${this.URL_BACK_SV}/opportunities/update-clinic-history-crm/${espoId}`, payload, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
@@ -175,21 +172,6 @@ export class SvServices {
     } catch (error) {
       console.error('Error getIRHByComprobante', error);
       throw new BadRequestException('Error al obtener el IRH por comprobante en SV');
-    }
-  }
-
-  async creatoSoPendingByCh(clinicHistory: string, tokenSv: string) {
-    try {
-      const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/service-order-invoice/create-service-order-pending`, { clinicHistory: clinicHistory }, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
-      })
-  
-      return responsePatientSV.data;
-    } catch (error) {
-      console.error('Error creatoSoPendingByCh', error);
-      throw new BadRequestException('Error al crear la orden de servicio pendiente en SV');
     }
   }
 
@@ -241,21 +223,6 @@ export class SvServices {
     }
   }
 
-  async getQueueAssignmentClosers(tokenSv: string) {
-    try {
-      const responseQueueAssignmentClosers = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-quotations-in-queue`, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
-      })
-  
-      return responseQueueAssignmentClosers.data;
-    } catch (error) {
-      console.error('Error getQueueAssignmentClosers', error);
-      throw new BadRequestException('Error al obtener la cola de cotizaciones en SV');
-    }
-  }
-
   async addOpportunityToQueue(payload: PayloadAddOpportunityToQueueDto, tokenSv: string) {
     try {
       const responseQueueAssignmentClosers = await axios.post(`${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`, payload, {
@@ -268,51 +235,6 @@ export class SvServices {
     } catch (error) {
       console.error('Error addOpportunityToQueue', error);
       throw new BadRequestException('Error al agregar la oportunidad a la cola en SV');
-    }
-  }
-
-  async getForClosers(tokenSv: string) {
-    try {
-      const responseForClosers = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-opportunity-for-closers`, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
-      })
-  
-      return responseForClosers.data;
-    } catch (error) {
-      console.error('Error getForClosers', error);
-      throw new BadRequestException('Error al obtener oportunidades para closers en SV');
-    }
-  }
-
-  async getUserWithLessOpportunities(tokenSv: string) {
-    try {
-      const responseUserWithLessOpportunities = await axios.get(`${this.URL_BACK_SV}/opportunity-closers/get-user-with-less-opportunities`, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
-      })
-  
-      return responseUserWithLessOpportunities.data;
-    } catch (error) {
-      console.error('Error getUserWithLessOpportunities', error);
-      throw new BadRequestException('Error al obtener usuario con menos oportunidades en SV');
-    }
-  }
-
-  async getQuotationByHistory(history: string, tokenSv: string) {
-    try {
-      const responseQuotationByHistory = await axios.get(`${this.URL_BACK_SV}/quotation/get-by-history/${history}`, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
-      })
-  
-      return responseQuotationByHistory.data;
-    } catch (error) {
-      console.error('Error getQuotationByHistory', error);
-      throw new BadRequestException('Error al obtener la cotización por historia clínica en SV');
     }
   }
 
@@ -335,3 +257,4 @@ export class SvServices {
     }
   }
 }
+  

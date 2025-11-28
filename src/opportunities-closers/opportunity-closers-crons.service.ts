@@ -72,7 +72,7 @@ export class OpportunitiesClosersCronsService {
     // Actualizar el estado de la oportunidad
     const payloadToUpdate: Partial<UpdateOpCloserDto> = {
       status: statesCRM.EN_PROGRESO,
-      url: `${this.URL_FRONT}manager-leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`,
+      url: `${this.URL_FRONT}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`,
     }
 
     

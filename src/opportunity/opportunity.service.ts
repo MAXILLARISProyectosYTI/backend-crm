@@ -1031,7 +1031,6 @@ export class OpportunityService {
 
     if (body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
       await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
-      // await this.svServices.creatoSoPendingByCh(body.cClinicHistory!, tokenSv);
     }
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
