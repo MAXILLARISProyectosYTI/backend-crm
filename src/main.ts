@@ -33,7 +33,7 @@ async function bootstrap() {
     : (process.env.NODE_ENV === 'production' ? [] : ['*']);
   
   app.enableCors({
-    origin: corsOrigins.length === 0 ? false : (corsOrigins.includes('*') ? '*' : corsOrigins),
+    origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
