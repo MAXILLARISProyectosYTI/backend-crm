@@ -13,6 +13,7 @@ import { MeetingModule } from 'src/meeting/meeting.module';
 import { SvServices } from 'src/sv-services/sv.services';
 import { ActionHistoryModule } from 'src/action-history/action-history.module';
 import { FilesModule } from 'src/files/files.module';
+import { CampaignModule } from 'src/campaign/campaign.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { FilesModule } from 'src/files/files.module';
     ScheduleModule.forRoot(),
     ActionHistoryModule,
     FilesModule,
+    CampaignModule,
   ],
   controllers: [OpportunityController],  
   providers: [

@@ -10,6 +10,6 @@ export default registerAs('database', (): TypeOrmModuleOptions => ({
   database: process.env.DB_DATABASE || 'crm_maxillaris',
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
   synchronize: false, // Nunca sincronizar - respetar estructura existente
-  logging: process.env.NODE_ENV === 'development',
+  logging: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 }));

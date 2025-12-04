@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Campaign } from './campaign.entity';
@@ -24,5 +24,17 @@ export class CampaignService {
       ])
       .where('c.deleted = :deleted', { deleted: false })
       .getRawMany();
+  }
+
+  async findOne(id: string) {
+    const campaign = await this.campaignRepository.findOne({
+      where: { id, deleted: false },
+    });
+
+    if(!campaign) {
+      throw new NotFoundException(`Campaña con ID ${id} no encontrada`);
+    }
+
+    return campaign;
   }
 }

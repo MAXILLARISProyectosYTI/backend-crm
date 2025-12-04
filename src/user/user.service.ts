@@ -14,6 +14,13 @@ import { CAMPAIGNS_IDS, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 
+export interface RoleSummary {
+  id: string;
+  name?: string;
+}
+
+export type UserWithRoles = User & { roles: RoleSummary[] };
+
 @Injectable()
 export class UserService {
   constructor(
@@ -69,16 +76,38 @@ export class UserService {
   }
 
   // Métodos adicionales útiles
-  async findByUserName(userName: string): Promise<User> {
-    const user = await this.userRepository.findOne({
-      where: { userName },
-    });
+  async findByUserName(userName: string): Promise<UserWithRoles> {
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoin('role_user', 'ru', 'ru.user_id = user.id AND (ru.deleted = false OR ru.deleted IS NULL)')
+      .leftJoin('role', 'r', 'r.id = ru.role_id AND (r.deleted = false OR r.deleted IS NULL)')
+      .where('user.user_name = :userName', { userName })
+      .addSelect('r.id', 'role_id')
+      .addSelect('r.name', 'role_name');
+
+    const { entities, raw } = await queryBuilder.getRawAndEntities();
+
+    const user = entities[0];
 
     if (!user) {
       throw new NotFoundException(`Usuario con nombre de usuario ${userName} no encontrado`);
     }
 
-    return user;
+    const rolesMap = new Map<string, RoleSummary>();
+    raw.forEach(row => {
+      const roleId: string | null = row['role_id'] ?? null;
+      if (roleId) {
+        rolesMap.set(roleId, {
+          id: roleId,
+          name: row['role_name'] ?? undefined,
+        });
+      }
+    });
+
+    const userWithRoles = user as UserWithRoles;
+    userWithRoles.roles = Array.from(rolesMap.values());
+
+    return userWithRoles;
   }
 
   async findActiveUsers(): Promise<User[]> {
@@ -99,7 +128,7 @@ export class UserService {
 
   async findByTeam(teamId: string): Promise<User[]> {
     return await this.userRepository.find({
-      where: { defaultTeamId: teamId },
+      where: { defaultTeamId: teamId, deleted: false },
       order: { firstName: 'ASC', lastName: 'ASC' },
     });
   }
@@ -288,7 +317,6 @@ export class UserService {
     const usersActives = await this.findActiveUsers()
 
     if(usersActives.length === 0){
-      console.log('No hay usuarios activos, asignando por defecto')
       return []
     }
 
@@ -438,5 +466,11 @@ export class UserService {
         return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
     }
     return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+  }
+
+  async updateUserCloserToBusy(userId: string, busy: boolean) {
+    const user = await this.findOne(userId);
+    user.cBusy = busy;
+    return await this.userRepository.save(user);
   }
 }

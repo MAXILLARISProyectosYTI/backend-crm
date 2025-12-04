@@ -99,7 +99,6 @@ export class OpportunityCronsService {
                 lastAssignedUsersBySubcampaign,
               );
 
-            console.log(nextUserAssigned, 'nextUserAssigned')
 
             if (!nextUserAssigned) {
               console.error(
@@ -381,7 +380,6 @@ export class OpportunityCronsService {
             now.diff(createdAt, 'minutes').minutes,
           );
 
-          console.log(`⏰ Oportunidad ${opportunity.id}: ${minutesElapsed} minutos transcurridos desde ${createdAt.toFormat('dd/MM/yyyy HH:mm:ss')}`);
 
           // Si han pasado más de 10 minutos y tiene usuario asignado, reasignar
           if (minutesElapsed >= 10) {
@@ -408,9 +406,6 @@ export class OpportunityCronsService {
 
               // Si solo hay un usuario, no reasignar
               if (listUsers.length === 1) {
-                console.log(
-                  `⚠️ Solo hay un usuario disponible para subcampaña ${subCampaignId}, no se reasigna oportunidad ${opportunity.id}`,
-                );
                 continue;
               }
 
@@ -451,9 +446,6 @@ export class OpportunityCronsService {
 
               // Verificar que no sea el mismo usuario
               if (nextUserAssigned.id === currentAssignedUserId) {
-                console.log(
-                  `⚠️ El siguiente usuario en la cola es el mismo que ya tiene la oportunidad ${opportunity.id}, no se reasigna`,
-                );
                 continue;
               }
 
@@ -461,7 +453,7 @@ export class OpportunityCronsService {
               await this.opportunityService.update(opportunity.id, {
                 assignedUserId: nextUserAssigned,
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
-                createdAt: DateTime.now().setZone("America/Lima").toISO()!,
+                createdAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toISO()!,
               });
 
               // await this.actionHistoryService.addRecord({
@@ -475,7 +467,6 @@ export class OpportunityCronsService {
               reassignTracking.set(subCampaignId, nextUserAssigned.id);
               reassignCount++;
 
-              console.log(`✅ Oportunidad reasignada ${opportunity.id} de ${currentAssignedUserId} a ${nextUserAssigned.id} (${minutesElapsed} min sin seguimiento)`);
             } catch (error) {
               console.error(
                 `❌ Error al reasignar oportunidad ${opportunity.id}:`,
@@ -487,9 +478,7 @@ export class OpportunityCronsService {
       }
 
       if (reassignCount > 0) {
-        console.log(`🔄 Total de reasignaciones realizadas: ${reassignCount} a las ${DateTime.now().toFormat('dd/MM/yyyy HH:mm:ss')}`);
       } else {
-        console.log(`ℹ️ No se encontraron oportunidades que requieran reasignación a las ${DateTime.now().toFormat('dd/MM/yyyy HH:mm:ss')}`);
       }
     } finally {
       this.reassignInProgress = false;

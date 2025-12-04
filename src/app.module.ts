@@ -14,6 +14,7 @@ import { CommonModule } from './common/common.module';
 import { ActionHistoryModule } from './action-history/action-history.module';
 import { FilesModule } from './files/files.module';
 import { CampaignModule } from './campaign/campaign.module';
+import { OpportunitiesClosersModule } from './opportunities-closers/opportunities-closers.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { CampaignModule } from './campaign/campaign.module';
     ActionHistoryModule,
     FilesModule,
     CampaignModule,
+    OpportunitiesClosersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

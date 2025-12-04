@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+
+  # Backend NestJS
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: crm-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT}:${PORT}"
+    env_file:
+      - .env   # Carga todas las variables de tu archivo .env
+    volumes:
+      - ./uploads:/app/uploads  # Persistencia de archivos subidos
+    networks:
+      - crm-network
+    # Configura la zona horaria dentro del contenedor
+    environment:
+      TZ: America/Lima
+
+# Red de contenedores (aunque ahora solo tienes un servicio)
+networks:
+  crm-network:
+    driver: bridge
