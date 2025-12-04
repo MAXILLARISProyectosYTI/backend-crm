@@ -453,7 +453,7 @@ export class OpportunityCronsService {
               await this.opportunityService.update(opportunity.id, {
                 assignedUserId: nextUserAssigned,
                 cConctionSv: `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${nextUserAssigned.id}&uuid-opportunity=${opportunity.id}`,
-                createdAt: DateTime.now().setZone("America/Lima").toISO()!,
+                createdAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toISO()!,
               });
 
               // await this.actionHistoryService.addRecord({

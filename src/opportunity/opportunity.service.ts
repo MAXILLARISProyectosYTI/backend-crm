@@ -88,10 +88,10 @@ export class OpportunityService {
 
       // Asignamos la oportunidad en caso de que sea hora de asignar
       if (isTimeToAssign) {
-        userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.campaignId);
+        userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.subCampaignId);
       } 
 
-      const today = DateTime.now().setZone("America/Lima").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -264,7 +264,7 @@ export class OpportunityService {
         nextRefName = `${baseName} REF-${nextRef}`;
       }
 
-      const today = DateTime.now().setZone("America/Lima").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -328,7 +328,7 @@ export class OpportunityService {
     await this.websocketService.notifyOpportunityUpdate(opportunity, opportunity.stage);
 
     opportunity.assignedUserId = user;
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
     opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assignedUserId}&uuid-opportunity=${opportunityId}`;
 
     await this.actionHistoryService.addRecord({
@@ -401,7 +401,7 @@ export class OpportunityService {
       // Obtenemos el usuario asignado
       const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId!);
 
-      const today = DateTime.now().setZone("America/Lima").toJSDate();
+      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -614,7 +614,7 @@ export class OpportunityService {
     });
     
     // Actualizar timestamp de modificación
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
     
     const updatedOpportunity = await this.opportunityRepository.save(opportunity);
 
@@ -776,7 +776,7 @@ export class OpportunityService {
   async softDelete(id: string): Promise<Opportunity> {
     const opportunity = await this.getOneWithEntity(id);
     opportunity.deleted = true;
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
     return await this.opportunityRepository.save(opportunity);
   }
 

@@ -141,7 +141,7 @@ export class OpportunitiesClosersService {
     });
 
     // Actualizar timestamp de modificación
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").toJSDate();
+    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
 
     // Actualizar modifiedById si se proporciona userId
     if (userId) {

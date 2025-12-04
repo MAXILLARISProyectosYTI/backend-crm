@@ -36,7 +36,7 @@ export class ActionHistoryService {
 
     const payload: Partial<ActionHistory> = {
       id: this.idGeneratorService.generateId(),
-      createdAt: DateTime.now().setZone("America/Lima").toJSDate(),
+      createdAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate(),
       targetId: actionHistory.targetId,
       userId: actionHistory.userId,   
       action: 'update',
