@@ -1,114 +1,51 @@
-import { IsString, IsBoolean, IsOptional, IsEmail } from 'class-validator';
+import { IsString, IsBoolean, IsOptional, IsEmail, IsNotEmpty, IsArray, IsEnum } from 'class-validator';
 
 export class CreateUserDto {
+  @IsNotEmpty()
   @IsString()
-  id: string;
+  userName: string;
 
-  @IsOptional()
+  @IsNotEmpty()
+  @IsEnum(['admin', 'regular'])
+  type: 'admin' | 'regular';
+
+  @IsNotEmpty()
+  @IsString()
+  password: string;
+
+  @IsNotEmpty()
+  @IsString()
+  firstName: string;
+
+  @IsNotEmpty()
+  @IsString()
+  lastName: string;
+
+  @IsNotEmpty()
   @IsBoolean()
-  deleted?: boolean;
+  isActive: boolean;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  userName?: string;
+  title: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  type?: string;
+  gender: string;
 
-  @IsOptional()
+  @IsNotEmpty()
+  @IsArray()
+  teamsIds: string[];
+
+  @IsNotEmpty()
+  @IsArray()
+  rolesIds: string[];
+
+  @IsNotEmpty()
   @IsString()
-  password?: string;
+  cUsersv: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  authMethod?: string;
-
-  @IsOptional()
-  @IsString()
-  apiKey?: string;
-
-  @IsOptional()
-  @IsString()
-  salutationName?: string;
-
-  @IsOptional()
-  @IsString()
-  firstName?: string;
-
-  @IsOptional()
-  @IsString()
-  lastName?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
-
-  @IsOptional()
-  @IsString()
-  title?: string;
-
-  @IsOptional()
-  @IsString()
-  avatarColor?: string;
-
-  @IsOptional()
-  @IsString()
-  gender?: string;
-
-  @IsOptional()
-  @IsString()
-  middleName?: string;
-
-  @IsOptional()
-  @IsString()
-  deleteId?: string;
-
-  @IsOptional()
-  @IsString()
-  defaultTeamId?: string;
-
-  @IsOptional()
-  @IsString()
-  contactId?: string;
-
-  @IsOptional()
-  @IsString()
-  avatarId?: string;
-
-  @IsOptional()
-  @IsString()
-  createdById?: string;
-
-  @IsOptional()
-  @IsString()
-  dashboardTemplateId?: string;
-
-  @IsOptional()
-  @IsString()
-  workingTimeCalendarId?: string;
-
-  @IsOptional()
-  @IsString()
-  layoutSetId?: string;
-
-  @IsOptional()
-  @IsString()
-  cUsersv?: string;
-
-  @IsOptional()
-  @IsString()
-  cContraseaSv?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  cOcupado?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  cCBusy?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  cBusy?: boolean;
+  cContraseaSv: string;
 }

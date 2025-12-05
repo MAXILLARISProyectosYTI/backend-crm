@@ -976,7 +976,9 @@ export class OpportunityService {
     const hasAppointmentData = hasFields(appointmentFields, body);
   
     // --- Construir payload ---
-    let payload: Record<string, any> = {};
+    let payload: Record<string, any> = {
+      stage: Enum_Stage.CIERRE_GANADO,
+    };
   
     if (onlyAppointment) {
       payload = pickFields(appointmentFields, body);

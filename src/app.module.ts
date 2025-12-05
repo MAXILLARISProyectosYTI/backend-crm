@@ -15,6 +15,8 @@ import { ActionHistoryModule } from './action-history/action-history.module';
 import { FilesModule } from './files/files.module';
 import { CampaignModule } from './campaign/campaign.module';
 import { OpportunitiesClosersModule } from './opportunities-closers/opportunities-closers.module';
+import { TeamUserModule } from './team-user/team-user.module';
+import { TeamModule } from './team/team.module';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { OpportunitiesClosersModule } from './opportunities-closers/opportunitie
     FilesModule,
     CampaignModule,
     OpportunitiesClosersModule,
+    TeamUserModule,
+    TeamModule,
   ],
   controllers: [AppController],
   providers: [AppService],
