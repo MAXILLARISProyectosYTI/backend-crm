@@ -31,7 +31,7 @@ export class RoleController {
   }
 
   @Get()
-  async findAll(): Promise<Role[]> {
+  async findAll(): Promise<{ id: string, name: string, createdAt: Date, modifiedAt: Date }[]> {
     return await this.roleService.findAll();
   }
 

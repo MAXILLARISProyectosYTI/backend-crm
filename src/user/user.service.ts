@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Inject, forwardRef, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { User } from './user.entity';
@@ -13,7 +13,10 @@ import { UserWithTeam } from './dto/user-with-team';
 import { CAMPAIGNS_IDS, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
-
+import { TeamUserService } from 'src/team-user/team-user.service';
+import { RoleService } from 'src/role/role.service';
+import { IdGeneratorService } from 'src/common/services/id-generator.service';
+import * as bcrypt from 'bcryptjs';
 export interface RoleSummary {
   id: string;
   name?: string;
@@ -30,11 +33,36 @@ export class UserService {
     private readonly opportunityRepository: Repository<Opportunity>,
     @Inject(forwardRef(() => OpportunityService))
     private readonly opportunityService: OpportunityService,
+    private readonly teamUserService: TeamUserService,
+    private readonly roleService: RoleService,
+    private readonly idGeneratorService: IdGeneratorService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    const user = this.userRepository.create(createUserDto);
-    return await this.userRepository.save(user);
+
+    const existUser = await this.userRepository.findOne({
+      where: { userName: createUserDto.userName },
+    });
+
+    if(existUser){
+      throw new ConflictException('El usuario ya existe');
+    }
+
+    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+
+    const user = this.userRepository.create({
+      ...createUserDto,
+      password: hashedPassword,
+      id: (this.idGeneratorService.generateId()),
+      createdAt: new Date(),
+      modifiedAt: new Date(),
+      deleted: false,
+    });
+
+    const savedUser = await this.userRepository.save(user);
+    await this.teamUserService.createMany(createUserDto.teamsIds, savedUser.id);
+    await this.roleService.createMany(createUserDto.rolesIds, savedUser.id);
+    return savedUser;
   }
 
   async findAll(): Promise<User[]> {
@@ -43,7 +71,79 @@ export class UserService {
     });
   }
 
-  async findOne(id: string): Promise<User> {
+  async findAllWithPagination(
+    page: number = 1,
+    limit: number = 10,
+    search?: string,
+    teamIds?: string[]
+  ): Promise<{ users: User[], total: number, page: number, totalPages: number }> {
+    // Query builder para obtener usuarios
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .where('user.deleted = :deleted', { deleted: false });
+
+    // Query builder para el conteo
+    const countQueryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .where('user.deleted = :deleted', { deleted: false });
+
+    // Filtro por equipos
+    if (teamIds && teamIds.length > 0) {
+      queryBuilder.andWhere(
+        `EXISTS (
+          SELECT 1 FROM team_user tu 
+          WHERE tu.user_id = user.id 
+          AND tu.team_id IN (:...teamIds) 
+          AND tu.deleted = false
+        )`,
+        { teamIds }
+      );
+
+      countQueryBuilder.andWhere(
+        `EXISTS (
+          SELECT 1 FROM team_user tu 
+          WHERE tu.user_id = user.id 
+          AND tu.team_id IN (:...teamIds) 
+          AND tu.deleted = false
+        )`,
+        { teamIds }
+      );
+    }
+
+    // Búsqueda por nombre, apellido o username
+    if (search && search.trim()) {
+      const searchParam = `%${search.trim()}%`;
+      queryBuilder.andWhere(
+        '(user.first_name ILIKE :search OR user.last_name ILIKE :search OR user.user_name ILIKE :search)',
+        { search: searchParam }
+      );
+      countQueryBuilder.andWhere(
+        '(user.first_name ILIKE :search OR user.last_name ILIKE :search OR user.user_name ILIKE :search)',
+        { search: searchParam }
+      );
+    }
+
+    // Obtener el total
+    const total = await countQueryBuilder.getCount();
+
+    // Aplicar paginación y ordenamiento para obtener usuarios
+    const users = await queryBuilder
+      .orderBy('user.created_at', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getMany();
+
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      users,
+      total,
+      page,
+      totalPages,
+    };
+  }
+
+  async findOne(id: string) {
     const user = await this.userRepository.findOne({
       where: { id },
     });
@@ -52,17 +152,32 @@ export class UserService {
       throw new NotFoundException(`Usuario con ID ${id} no encontrado`);
     }
 
-    return user;
+    const teamUsers = await this.teamUserService.getCurrentTeamUsers(id);
+    const roleUsers = await this.roleService.getCurrentRoleUsers(id);
+    return {...user, teams: teamUsers, roles: roleUsers};
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
+    
+    // Si se está actualizando la contraseña, hashearla antes de guardar
+    if (updateUserDto.password) {
+      updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
+    }
     
     // Actualizar campos con los nuevos valores
     Object.assign(user, updateUserDto);
     
     // Actualizar timestamp de modificación
     user.modifiedAt = new Date();
+
+    if(updateUserDto.teamsIds){
+      await this.teamUserService.updateMany(updateUserDto.teamsIds, id);
+    }
+
+    if(updateUserDto.rolesIds){
+      await this.roleService.updateMany(updateUserDto.rolesIds, id);
+    }
     
     return await this.userRepository.save(user);
   }
@@ -116,6 +231,14 @@ export class UserService {
       order: { firstName: 'ASC', lastName: 'ASC' },
     });
 
+    return orderListAlphabetic(users);
+  }
+
+  async getUsersToAssign(): Promise<User[]> {
+    const users = await this.userRepository.find({
+      where: { isActive: true, deleted: false, cOcupado: false },
+      order: { firstName: 'ASC', lastName: 'ASC' },
+    });
     return orderListAlphabetic(users);
   }
 
@@ -309,12 +432,13 @@ export class UserService {
     .andWhere('u.deleted = :deleted', { deleted: false })
     .andWhere('t.deleted = :deleted', { deleted: false })
     .andWhere('tu.deleted = :deleted', { deleted: false })
+    .andWhere('u.cOcupado = :cOcupado', { cOcupado: false })
     .getRawMany();
     return users
   }
 
   async getUsersBySubCampaignId(subCampaignId: string): Promise<User[]> {
-    const usersActives = await this.findActiveUsers()
+    const usersActives = await this.getUsersToAssign()
 
     if(usersActives.length === 0){
       return []
@@ -397,7 +521,7 @@ export class UserService {
 
   async getUsersCommercials(): Promise<User[]> {
 
-    const usersActives = await this.findActiveUsers()
+    const usersActives = await this.getUsersToAssign()
 
     if(usersActives.length === 0){
       return []
@@ -471,6 +595,12 @@ export class UserService {
   async updateUserCloserToBusy(userId: string, busy: boolean) {
     const user = await this.findOne(userId);
     user.cBusy = busy;
+    return await this.userRepository.save(user);
+  }
+
+  async switchUserToBusy(userId: string, busy: boolean) {
+    const user = await this.findOne(userId);
+    user.cOcupado = busy;
     return await this.userRepository.save(user);
   }
 }

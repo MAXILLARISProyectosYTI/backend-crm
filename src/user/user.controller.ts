@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
   UsePipes,
   ValidationPipe,
   HttpCode,
@@ -58,15 +59,10 @@ export class UserController {
     return await this.userService.getUsersCommercials();
   }
 
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  async create(@Body() createUserDto: CreateUserDto): Promise<User> {
-    return await this.userService.create(createUserDto);
-  }
-
-  @Get()
-  async findAll(): Promise<User[]> {
-    return await this.userService.findAll();
+  
+  @Post('all')
+  async findAll(@Body() body: { page: number, limit: number, search?: string, teams?: string[] }): Promise<{ users: User[], total: number, page: number, totalPages: number }> {
+    return await this.userService.findAllWithPagination(body.page, body.limit, body.search, body.teams);
   }
 
   @Get('active')
@@ -78,7 +74,7 @@ export class UserController {
   async getUsersWithOpportunities(): Promise<User[]> {
     return await this.userService.getUsersWithOpportunities();
   }
-
+  
   @Get('current/:id/assignments')
   async getCurrentUserAssignments(@Param('id') id: string): Promise<CurrentUserAssignmentsDto> {
     return await this.userService.getCurrentUserAssignments(id);
@@ -88,32 +84,37 @@ export class UserController {
   async getUserWithAssignments(@Param('id') id: string): Promise<UserWithAssignmentsDto> {
     return await this.userService.getUserWithAssignments(id);
   }
-
+  
   @Get('type/:type')
   async findByType(@Param('type') type: string): Promise<User[]> {
     return await this.userService.findByType(type);
   }
-
+  
   @Get('team/:teamId')
   async findByTeam(@Param('teamId') teamId: string): Promise<User[]> {
     return await this.userService.findByTeam(teamId);
   }
-
+  
   @Get('contact/:contactId')
   async findUsersByContact(@Param('contactId') contactId: string): Promise<User[]> {
     return await this.userService.findUsersByContact(contactId);
   }
-
+  
   @Get('username/:userName')
   async findByUserName(@Param('userName') userName: string): Promise<UserWithRoles> {
     return await this.userService.findByUserName(userName);
   }
-
+  
   @Get(':id')
   async findOne(@Param('id') id: string): Promise<User> {
     return await this.userService.findOne(id);
   }
 
+  @Patch(':id/switch-busy')
+  async switchUserToBusy(@Param('id') id: string, @Body() body: { busy: boolean }): Promise<User> {
+    return await this.userService.switchUserToBusy(id, body.busy);
+  }
+  
   @Patch(':id')
   async update(
     @Param('id') id: string,
@@ -121,12 +122,12 @@ export class UserController {
   ): Promise<User> {
     return await this.userService.update(id, updateUserDto);
   }
-
+  
   @Patch(':id/activate')
   async activateUser(@Param('id') id: string): Promise<User> {
     return await this.userService.activateUser(id);
   }
-
+  
   @Patch(':id/deactivate')
   async deactivateUser(@Param('id') id: string): Promise<User> {
     return await this.userService.deactivateUser(id);
@@ -142,6 +143,11 @@ export class UserController {
   async remove(@Param('id') id: string): Promise<void> {
     return await this.userService.remove(id);
   }
-
-
+  
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  async create(@Body() createUserDto: CreateUserDto): Promise<User> {
+    return await this.userService.create(createUserDto);
+  }
+  
 }

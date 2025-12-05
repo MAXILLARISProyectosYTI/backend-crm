@@ -6,6 +6,7 @@ import { RoleUser } from './role-user.entity';
 import { RoleTeam } from './role-team.entity';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
+import { TeamUser } from 'src/team-user/team-user.entity';
 
 @Injectable()
 export class RoleService {
@@ -23,10 +24,21 @@ export class RoleService {
     return await this.roleRepository.save(role);
   }
 
-  async findAll(): Promise<Role[]> {
-    return await this.roleRepository.find({
-      order: { createdAt: 'DESC' },
-    });
+  async createMany(rolesIds: string[], userId: string): Promise<RoleUser[]> {
+    const roleUsers = rolesIds.map(roleId => this.roleUserRepository.create({
+      roleId,
+      userId,
+      deleted: false,
+    }));
+    return await this.roleUserRepository.save(roleUsers);
+  }
+
+  async findAll(): Promise<{ id: string, name: string, createdAt: Date, modifiedAt: Date }[]> {
+    return await this.roleRepository.createQueryBuilder('role')
+      .select(['role.id as id', 'role.name as name', 'role.createdAt as createdAt', 'role.modifiedAt as modifiedAt'])
+      .where('role.deleted = false')
+      .orderBy('role.createdAt', 'DESC')
+      .getRawMany(); 
   }
 
   async findOne(id: string): Promise<Role> {
@@ -213,5 +225,56 @@ export class RoleService {
     role.deleted = true;
     role.modifiedAt = new Date();
     return await this.roleRepository.save(role);
+  }
+  
+  async getCurrentRoleUsers(userId: string): Promise<RoleUser[]> {
+    return await this.roleUserRepository.find({
+      where: { userId, deleted: false },
+    });
+  }
+
+  async updateMany(rolesIds: string[], userId: string): Promise<RoleUser[]> {
+    const currentRoleUsers = await this.getCurrentRoleUsers(userId);
+
+    const results: RoleUser[] = [];
+
+    // 5. Agregar nuevos teams o reactivar los que estaban eliminados
+    for (const roleId of rolesIds) {
+      // Buscar si existe pero está eliminado
+      const existingRoleUser = currentRoleUsers.find(
+        ru => ru.roleId === roleId
+      );
+
+      if (existingRoleUser) {
+        // Reactivar si estaba eliminado
+        existingRoleUser.deleted = false;
+        const reactivated = await this.roleUserRepository.save(existingRoleUser);
+        results.push(reactivated);
+      } else {
+        // Crear nuevo
+        const newRoleUser = this.roleUserRepository.create({
+          roleId,
+          userId,
+          deleted: false,
+        });
+        const created = await this.roleUserRepository.save(newRoleUser);
+        results.push(created);
+      }
+    }
+
+    // 6. Eliminar (soft delete) los teams que ya no están en el array
+    for (const roleId of rolesIds) {
+      const roleUserToRemove = currentRoleUsers.find(
+        ru => ru.roleId === roleId && !ru.deleted
+      );
+
+      if (roleUserToRemove) {
+        roleUserToRemove.deleted = true;
+        await this.roleUserRepository.save(roleUserToRemove);
+      }
+    }
+
+    // 7. Retornar todos los TeamUser activos del usuario después de la sincronización
+      return await this.getCurrentRoleUsers(userId);
   }
 }
