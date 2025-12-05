@@ -187,18 +187,13 @@ export class OpportunityController {
     return await this.opportunityService.findByStage(stage);
   }
 
-  @Get('assigned/:assignedUserId')
+ @Post('assigned/:userRequest')
   async findByAssignedUser(
-    @Param('assignedUserId') assignedUserId: string,
-    @Query('page') page: string = '1',
-    @Query('limit') limit: string = '10',
-    @Query('search') search?: string
+    @Param('userRequest') userRequest: string,
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
-    const pageNumber = parseInt(page, 10);
-    const limitNumber = parseInt(limit, 10);
-    
-    return await this.opportunityService.findByAssignedUser(assignedUserId, pageNumber, limitNumber, search);
-  }
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, body.userSearch, body.stage);
+  } 
 
   @Get(':id')
   async findOne(

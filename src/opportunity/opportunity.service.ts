@@ -679,15 +679,17 @@ export class OpportunityService {
   }
 
   async findByAssignedUser(
-    assignedUserId: string, 
+    userRequest: string, 
     page: number = 1, 
     limit: number = 10,
-    search?: string
+    search?: string,
+    userSearch?: string,
+    stage?: Enum_Stage
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
-    const teamsUser = await this.userService.getAllTeamsByUser(assignedUserId);
+    const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
 
-    const isAdmin = await this.userService.isAdmin(assignedUserId);
+    const isAdmin = await this.userService.isAdmin(userRequest);
 
     const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
 
@@ -715,16 +717,28 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (isTIorOwner || isAdmin || isAssistent) {
-      // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
-      // Solo mantiene el filtro de deleted = false que ya está aplicado
-    } else if (isTeamLeader && users.length > 0) {
-      // Si es team leader, buscar oportunidades de todos los usuarios de su equipo
-      const userIds = users.map(user => user.user_id);
-      queryBuilder.andWhere('opportunity.assignedUserId IN (:...userIds)', { userIds });
+    // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos
+    if (userSearch && userSearch.trim()) {
+      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', { userSearch: userSearch.trim() });
     } else {
-      // Si no es team leader ni TI/Owner, solo ver sus propias oportunidades
-      queryBuilder.andWhere('opportunity.assignedUserId = :assignedUserId', { assignedUserId });
+      // Solo aplicar filtros de permisos si no hay userSearch
+      if (isTIorOwner || isAdmin || isAssistent) {
+        // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
+        // Solo mantiene el filtro de deleted = false que ya está aplicado
+      } else if (isTeamLeader) {
+        // Si es team leader, buscar oportunidades de todos los usuarios de su equipo incluyendo al team leader
+        const userIds = users.length > 0 ? users.map(user => user.user_id) : [];
+        // Incluir al team leader en la lista de usuarios
+        if (!userIds.includes(userRequest)) {
+          userIds.push(userRequest);
+        }
+        if (userIds.length > 0) {
+          queryBuilder.andWhere('opportunity.assigned_user_id IN (:...userIds)', { userIds });
+        }
+      } else {
+        // Si no es team leader ni TI/Owner, solo ver sus propias oportunidades
+        queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
+      }
     }
 
     if (search && search.trim()) {
@@ -733,6 +747,10 @@ export class OpportunityService {
         '(opportunity.name ILIKE :search OR opportunity.cNumeroDeTelefono ILIKE :search OR opportunity.cClinicHistory ILIKE :search OR user.user_name ILIKE :search)',
         { search: `%${search.trim()}%` }
       );
+    }
+
+    if (stage) {
+      queryBuilder.andWhere('opportunity.stage = :stage', { stage });
     }
 
     // Usar ordenamiento diferente según el tipo de usuario

@@ -558,6 +558,8 @@ export class UserService {
   async getUsersByTeamLeader(userId: string) {
     const teams = await this.getAllTeamsByUser(userId);
 
+    const user = await this.findOne(userId);
+
     const isOwnerOrTI = teams.some(team => team.team_id === TEAMS_IDS.TEAM_OWNER || team.team_id === TEAMS_IDS.TEAM_TI);
     const isTeamLeaderFiorella = teams.some(team => team.team_id === TEAMS_IDS.TEAM_FIORELLA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     const isTeamLeaderVeronica = teams.some(team => team.team_id === TEAMS_IDS.TEAM_VERONICA) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
@@ -566,7 +568,7 @@ export class UserService {
     const isUserOi = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
     const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL]);
 
-    if(isOwnerOrTI) {
+    if(isOwnerOrTI || user.type === 'admin') {
       const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL];
       const usersByTeam = allUsers.filter(user => teamsUsers.some(team => user.team_id === team));
       return usersByTeam;
