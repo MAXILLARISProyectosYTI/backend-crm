@@ -236,22 +236,35 @@ export class RoleService {
   async updateMany(rolesIds: string[], userId: string): Promise<RoleUser[]> {
     const currentRoleUsers = await this.getCurrentRoleUsers(userId);
 
+    const currentRoleIds = new Set(
+      currentRoleUsers
+        .filter(ru => !ru.deleted && ru.roleId)
+        .map(ru => ru.roleId as string)
+    );
+    const newRoleIds = new Set(rolesIds.filter((id): id is string => Boolean(id)));
+
+    // Identificar roles a agregar (están en nuevos pero no en actuales)
+    const rolesToAdd = Array.from(newRoleIds).filter(roleId => !currentRoleIds.has(roleId));
+
+    // Identificar roles a eliminar (están en actuales pero no en nuevos)
+    const rolesToRemove = Array.from(currentRoleIds).filter(roleId => !newRoleIds.has(roleId));
+
     const results: RoleUser[] = [];
 
-    // 5. Agregar nuevos teams o reactivar los que estaban eliminados
-    for (const roleId of rolesIds) {
-      // Buscar si existe pero está eliminado
-      const existingRoleUser = currentRoleUsers.find(
-        ru => ru.roleId === roleId
-      );
+    // Agregar nuevos roles o reactivar los que estaban eliminados
+    for (const roleId of rolesToAdd) {
+      // Buscar si existe (incluso si está eliminado) directamente en la base de datos
+      const existingRoleUser = await this.roleUserRepository.findOne({
+        where: { roleId, userId },
+      });
 
       if (existingRoleUser) {
-        // Reactivar si estaba eliminado
+        // Reactivar si estaba eliminado o ya existe
         existingRoleUser.deleted = false;
         const reactivated = await this.roleUserRepository.save(existingRoleUser);
         results.push(reactivated);
       } else {
-        // Crear nuevo
+        // Crear nuevo solo si no existe
         const newRoleUser = this.roleUserRepository.create({
           roleId,
           userId,
@@ -262,8 +275,8 @@ export class RoleService {
       }
     }
 
-    // 6. Eliminar (soft delete) los teams que ya no están en el array
-    for (const roleId of rolesIds) {
+    // Eliminar (soft delete) los roles que ya no están en el array
+    for (const roleId of rolesToRemove) {
       const roleUserToRemove = currentRoleUsers.find(
         ru => ru.roleId === roleId && !ru.deleted
       );
@@ -274,7 +287,7 @@ export class RoleService {
       }
     }
 
-    // 7. Retornar todos los TeamUser activos del usuario después de la sincronización
-      return await this.getCurrentRoleUsers(userId);
+    // Retornar todos los RoleUser activos del usuario después de la sincronización
+    return await this.getCurrentRoleUsers(userId);
   }
 }

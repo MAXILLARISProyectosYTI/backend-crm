@@ -39,18 +39,18 @@ export class TeamUserService {
 
     // 5. Agregar nuevos teams o reactivar los que estaban eliminados
     for (const teamId of teamsToAdd) {
-      // Buscar si existe pero está eliminado
-      const existingTeamUser = currentTeamUsers.find(
-        tu => tu.teamId === teamId
-      );
+      // Buscar si existe (incluso si está eliminado) directamente en la base de datos
+      const existingTeamUser = await this.teamUserRepository.findOne({
+        where: { teamId, userId },
+      });
 
       if (existingTeamUser) {
-        // Reactivar si estaba eliminado
+        // Reactivar si estaba eliminado o ya existe
         existingTeamUser.deleted = false;
         const reactivated = await this.teamUserRepository.save(existingTeamUser);
         results.push(reactivated);
       } else {
-        // Crear nuevo
+        // Crear nuevo solo si no existe
         const newTeamUser = this.teamUserRepository.create({
           teamId,
           userId,
