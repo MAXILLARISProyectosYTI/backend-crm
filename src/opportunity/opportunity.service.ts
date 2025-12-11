@@ -841,7 +841,7 @@ export class OpportunityService {
       
   async getOpportunitiesNotReaction(): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
-      where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()) },
+      where: { cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO, assignedUserId: Not(IsNull()), deleted: false, cSubCampaignId: Not(IsNull()), name: Not(Like('%REF-%')) },
       order: { createdAt: 'DESC' },
       relations: ['assignedUserId'],
     });
