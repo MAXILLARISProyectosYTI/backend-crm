@@ -575,15 +575,57 @@ export class UserService {
     }
     
     if(isTeamLeaderFiorella) {
-      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_FIORELLA);
+      const filteredUsers = allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_FIORELLA);
+      // Agregar el usuario actual si no está en la lista
+      const userInList = filteredUsers.some(u => u.user_id === userId);
+      if (!userInList) {
+        const userTeam = teams.find(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA);
+        if (userTeam && userTeam.team_name) {
+          filteredUsers.push({
+            user_id: userId,
+            user_name: user.userName || '',
+            team_id: TEAMS_IDS.TEAM_FIORELLA,
+            team_name: userTeam.team_name
+          });
+        }
+      }
+      return filteredUsers;
     }
 
     if(isTeamLeaderVeronica) {
-      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_VERONICA);
+      const filteredUsers = allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_VERONICA);
+      // Agregar el usuario actual si no está en la lista
+      const userInList = filteredUsers.some(u => u.user_id === userId);
+      if (!userInList) {
+        const userTeam = teams.find(t => t.team_id === TEAMS_IDS.TEAM_VERONICA);
+        if (userTeam && userTeam.team_name) {
+          filteredUsers.push({
+            user_id: userId,
+            user_name: user.userName || '',
+            team_id: TEAMS_IDS.TEAM_VERONICA,
+            team_name: userTeam.team_name
+          });
+        }
+      }
+      return filteredUsers;
     }
 
     if(isTeamLeaderMichel) {
-      return allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_MICHELL);
+      const filteredUsers = allUsers.filter(user => user.team_id === TEAMS_IDS.TEAM_MICHELL);
+      // Agregar el usuario actual si no está en la lista
+      const userInList = filteredUsers.some(u => u.user_id === userId);
+      if (!userInList) {
+        const userTeam = teams.find(t => t.team_id === TEAMS_IDS.TEAM_MICHELL);
+        if (userTeam && userTeam.team_name) {
+          filteredUsers.push({
+            user_id: userId,
+            user_name: user.userName || '',
+            team_id: TEAMS_IDS.TEAM_MICHELL,
+            team_name: userTeam.team_name
+          });
+        }
+      }
+      return filteredUsers;
     }
     if(isUserApneas) {
       return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
