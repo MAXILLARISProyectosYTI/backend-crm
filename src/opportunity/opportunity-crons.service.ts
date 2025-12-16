@@ -78,7 +78,6 @@ export class OpportunityCronsService {
     try {
       const opportunities = await this.opportunityService.getOpportunitiesNotAssigned();
 
-      console.log(opportunities, 'opportunities')
 
       if (opportunities.length === 0) {
         return;
