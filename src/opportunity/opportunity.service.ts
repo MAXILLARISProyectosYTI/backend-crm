@@ -1276,15 +1276,19 @@ export class OpportunityService {
     const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId!);
 
     const historyCLinic = opportunity.cClinicHistory;
-    
-    if(!historyCLinic){
-      return {
-        message: "No existe la historia clínica de este paciente",
-        code: EnumCodeFlow.HACER_ALPHA,
-        subCampaign: campaign.name,
-      };
+
+    const phoneNumber = opportunity.cNumeroDeTelefono;
+
+    if(!phoneNumber) {
+      throw new BadRequestException("No se encontró el número de teléfono");
     }
 
-    return await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, historyCLinic);
+    let cleanedPhone = phoneNumber.replace(/\(\+\d{1,3}\)\s*/g, '');
+
+    const digits = cleanedPhone.replace(/\D/g, '');
+
+    const localNumber = digits.slice(-9);
+
+    return await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
   }
 }

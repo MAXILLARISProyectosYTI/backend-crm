@@ -238,16 +238,13 @@ export class SvServices {
     }
   }
 
-  async getRedirectByOpportunityId(opportunityId: string, campaignName: string, clinicHistory: string) {
+  async getRedirectByOpportunityId(opportunityId: string, campaignName: string, phoneNumber: string, historyCLinic: string | undefined) {
     try {
-      console.log('campaignName', campaignName);
-      console.log('clinicHistory', clinicHistory);
-      console.log('opportunityId', opportunityId);
-      console.log('url', `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}?campaignName=${campaignName}&clinicHistory=${clinicHistory}`);
       const responseRedirectByOpportunityId = await axios.get(`${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`, {
         params: {
           campaignName,
-          clinicHistory
+          phoneNumber,
+          historyCLinic: historyCLinic || ''
         }
       })
       return responseRedirectByOpportunityId.data;
