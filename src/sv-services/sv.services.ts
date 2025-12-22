@@ -256,7 +256,7 @@ export class SvServices {
 
   async getResumenEvolutivoUnidades(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
     try {
-      const response = await axios.get(`${this.URL_BACK_SV}/resumen-evolutivo-kpi/unidades`, {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/unidades`, {
         params: {
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
@@ -276,7 +276,7 @@ export class SvServices {
 
   async getResumenEvolutivoPorcentajes(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
     try {
-      const response = await axios.get(`${this.URL_BACK_SV}/resumen-evolutivo-kpi/porcentajes`, {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/porcentajes`, {
         params: {
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
@@ -291,6 +291,24 @@ export class SvServices {
     } catch (error) {
       console.error('Error getResumenEvolutivoPorcentajes', error);
       throw new BadRequestException('Error al obtener resumen evolutivo en porcentajes desde SV');
+    }
+  }
+
+  async getComparativoMensual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-mensual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoMensual from SV', error);
+      throw new BadRequestException('Error al obtener datos comparativos mensuales de KPI desde SV');
     }
   }
 }

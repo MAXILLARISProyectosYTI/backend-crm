@@ -36,5 +36,17 @@ export class KpiService {
       tokenSv
     );
   }
+
+  async getComparativoMensual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoMensual(
+      añoInicio,
+      añoFin,
+      tokenSv
+    );
+  }
 }
 

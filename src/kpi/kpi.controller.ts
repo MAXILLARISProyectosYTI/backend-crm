@@ -2,6 +2,7 @@ import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { KpiService } from './kpi.service';
 import { ResumenEvolutivoQueryDto } from './dto/resumen-evolutivo-query.dto';
+import { ComparativoQueryDto } from './dto/comparativo-query.dto';
 import { SvServices } from '../sv-services/sv.services';
 
 @UseGuards(JwtAuthGuard)
@@ -36,6 +37,17 @@ export class KpiController {
       query.fecha_fin,
       query.page || 1,
       query.limit || 12,
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-mensual')
+  async getComparativoMensual(@Query() query: ComparativoQueryDto, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoMensual(
+      query.año_inicio || 0,
+      query.año_fin || 0,
       tokenSv
     );
   }
