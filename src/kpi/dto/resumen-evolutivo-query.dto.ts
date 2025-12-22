@@ -22,3 +22,4 @@ export class ResumenEvolutivoQueryDto {
   limit?: number = 12;
 }
 
+

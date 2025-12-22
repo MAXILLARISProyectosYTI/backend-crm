@@ -48,5 +48,111 @@ export class KpiService {
       tokenSv
     );
   }
+
+  // Endpoints específicos para gráficos anuales
+  async getComparativoVendidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoVendidasAnual(
+      añoInicio,
+      añoFin,
+      tokenSv
+    );
+  }
+
+  async getComparativoAsistidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoAsistidasAnual(
+      añoInicio,
+      añoFin,
+      tokenSv
+    );
+  }
+
+  async getComparativoMoldesAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoMoldesAnual(
+      añoInicio,
+      añoFin,
+      tokenSv
+    );
+  }
+
+  async getComparativoTratamientosAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoTratamientosAnual(
+      añoInicio,
+      añoFin,
+      tokenSv
+    );
+  }
+
+  // Endpoints específicos para gráficos mensuales
+  async getComparativoVendidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoVendidasMes(
+      añoInicio,
+      añoFin,
+      mes,
+      tokenSv
+    );
+  }
+
+  async getComparativoAsistidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoAsistidasMes(
+      añoInicio,
+      añoFin,
+      mes,
+      tokenSv
+    );
+  }
+
+  async getComparativoMoldesMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoMoldesMes(
+      añoInicio,
+      añoFin,
+      mes,
+      tokenSv
+    );
+  }
+
+  async getComparativoTratamientosMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string
+  ) {
+    return await this.svServices.getComparativoTratamientosMes(
+      añoInicio,
+      añoFin,
+      mes,
+      tokenSv
+    );
+  }
 }
 

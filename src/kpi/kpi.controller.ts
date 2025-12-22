@@ -51,5 +51,99 @@ export class KpiController {
       tokenSv
     );
   }
+
+  // Endpoints específicos para gráficos anuales
+  @Get('comparativo-vendidas-anual')
+  async getComparativoVendidasAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoVendidasAnual(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-asistidas-anual')
+  async getComparativoAsistidasAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoAsistidasAnual(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-moldes-anual')
+  async getComparativoMoldesAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoMoldesAnual(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-tratamientos-anual')
+  async getComparativoTratamientosAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoTratamientosAnual(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      tokenSv
+    );
+  }
+
+  // Endpoints específicos para gráficos mensuales
+  @Get('comparativo-vendidas-mes')
+  async getComparativoVendidasMes(@Query() query: any, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoVendidasMes(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      query.mes || 'Dic',
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-asistidas-mes')
+  async getComparativoAsistidasMes(@Query() query: any, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoAsistidasMes(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      query.mes || 'Dic',
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-moldes-mes')
+  async getComparativoMoldesMes(@Query() query: any, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoMoldesMes(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      query.mes || 'Dic',
+      tokenSv
+    );
+  }
+
+  @Get('comparativo-tratamientos-mes')
+  async getComparativoTratamientosMes(@Query() query: any, @Req() req: any) {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    
+    return await this.kpiService.getComparativoTratamientosMes(
+      query.año_inicio || 0,
+      query.año_fin || 0,
+      query.mes || 'Dic',
+      tokenSv
+    );
+  }
 }
 
