@@ -253,5 +253,45 @@ export class SvServices {
       throw new BadRequestException('Error al obtener el redirect por ID de oportunidad');
     }
   }
+
+  async getResumenEvolutivoUnidades(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/resumen-evolutivo-kpi/unidades`, {
+        params: {
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          page,
+          limit
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      })
+      return response.data;
+    } catch (error) {
+      console.error('Error getResumenEvolutivoUnidades', error);
+      throw new BadRequestException('Error al obtener resumen evolutivo en unidades desde SV');
+    }
+  }
+
+  async getResumenEvolutivoPorcentajes(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/resumen-evolutivo-kpi/porcentajes`, {
+        params: {
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          page,
+          limit
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      })
+      return response.data;
+    } catch (error) {
+      console.error('Error getResumenEvolutivoPorcentajes', error);
+      throw new BadRequestException('Error al obtener resumen evolutivo en porcentajes desde SV');
+    }
+  }
 }
   

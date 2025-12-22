@@ -17,6 +17,7 @@ import { CampaignModule } from './campaign/campaign.module';
 import { OpportunitiesClosersModule } from './opportunities-closers/opportunities-closers.module';
 import { TeamUserModule } from './team-user/team-user.module';
 import { TeamModule } from './team/team.module';
+import { KpiModule } from './kpi/kpi.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { TeamModule } from './team/team.module';
     OpportunitiesClosersModule,
     TeamUserModule,
     TeamModule,
+    KpiModule,
   ],
   controllers: [AppController],
   providers: [AppService],
