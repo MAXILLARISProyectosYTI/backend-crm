@@ -684,7 +684,8 @@ export class OpportunityService {
     limit: number = 10,
     search?: string,
     userSearch?: string,
-    stage?: Enum_Stage
+    stage?: Enum_Stage,
+    isPresaved?: boolean
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
@@ -751,6 +752,11 @@ export class OpportunityService {
 
     if (stage) {
       queryBuilder.andWhere('opportunity.stage = :stage', { stage });
+    }
+
+    // Filtro por oportunidades preguardadas
+    if (isPresaved === true) {
+      queryBuilder.andWhere('opportunity.isPresaved = :isPresaved', { isPresaved: true });
     }
 
     // Usar ordenamiento diferente según el tipo de usuario
