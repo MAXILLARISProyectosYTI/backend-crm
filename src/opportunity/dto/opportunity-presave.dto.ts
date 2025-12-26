@@ -1,10 +1,13 @@
-import { IsString, IsOptional, MaxLength, IsNotEmpty } from 'class-validator';
+import { IsString, IsOptional, MaxLength, IsNumber, IsDateString } from 'class-validator';
 
 export class CreateOpportunityPresaveDto {
   @IsString()
   @MaxLength(255)
   espoId: string;
 
+  // ========================================
+  // DATOS DEL CLIENTE
+  // ========================================
   @IsOptional()
   @IsString()
   @MaxLength(20)
@@ -40,10 +43,10 @@ export class CreateOpportunityPresaveDto {
   @MaxLength(500)
   address?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'El campo apoderado es obligatorio para preguardar' })
   @MaxLength(255)
-  attorney: string;
+  attorney?: string;
 
   @IsOptional()
   @IsString()
@@ -54,5 +57,70 @@ export class CreateOpportunityPresaveDto {
   @IsString()
   @MaxLength(50)
   invoiseNumDocument?: string;
-}
 
+  // ========================================
+  // DATOS DE FACTURACIÓN
+  // ========================================
+  @IsOptional()
+  @IsNumber()
+  doctorId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  businessLineId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  specialtyId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  tariffId?: number;
+
+  @IsOptional()
+  @IsDateString()
+  fechaAbono?: string;
+
+  @IsOptional()
+  @IsNumber()
+  metodoPago?: number;
+
+  @IsOptional()
+  @IsNumber()
+  cuentaBancaria?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  numeroOperacion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  moneda?: string;
+
+  @IsOptional()
+  @IsNumber()
+  montoPago?: number;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  // Vouchers guardados como JSON con base64
+  @IsOptional()
+  @IsString()
+  vouchersData?: string;
+
+  // ========================================
+  // DATOS DEL PACIENTE CREADO (si aplica)
+  // ========================================
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  clinicHistory?: string;
+
+  @IsOptional()
+  @IsNumber()
+  clinicHistoryId?: number;
+}

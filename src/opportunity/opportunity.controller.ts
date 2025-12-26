@@ -70,24 +70,25 @@ export class OpportunityController {
     
     // Intentar buscar presave, pero si falla, continuar sin él
     try {
-      // Primero verificar si ya tiene c_clinic_history
-      const hasClinicHistory = await this.opportunityPresaveService.checkClinicHistoryAndUpdatePresave(uuidOpportunity);
+      // Primero verificar si ya fue facturada (isPresaved = false)
+      const alreadyInvoiced = await this.opportunityPresaveService.checkIfAlreadyInvoiced(uuidOpportunity);
       
-      // Si ya tiene clinic_history, no devolver presave
-      if (hasClinicHistory) {
-        console.log('📋 Oportunidad ya tiene clinic_history, no se devuelve presave');
+      // Si ya fue facturada, no devolver presave
+      if (alreadyInvoiced) {
+        console.log('📋 Oportunidad ya fue facturada (isPresaved=false), no se devuelve presave');
         return redirectResponse;
       }
       
-      // Buscar presave solo si no tiene clinic_history
+      // Buscar presave solo si no ha sido facturada
       const presaveData = await this.opportunityPresaveService.findByEspoId(uuidOpportunity);
       
-      // Si existe presave, agregarlo a la respuesta
+      // Si existe presave, agregarlo a la respuesta con TODOS los campos
       if (presaveData) {
         console.log('📦 Devolviendo presave para oportunidad:', uuidOpportunity);
         return {
           ...redirectResponse,
           presave: {
+            // Datos del cliente
             documentNumber: presaveData.documentNumber,
             name: presaveData.name,
             lastNameFather: presaveData.lastNameFather,
@@ -98,6 +99,22 @@ export class OpportunityController {
             attorney: presaveData.attorney,
             invoiseTypeDocument: presaveData.invoiseTypeDocument,
             invoiseNumDocument: presaveData.invoiseNumDocument,
+            // Datos de facturación
+            doctorId: presaveData.doctorId,
+            businessLineId: presaveData.businessLineId,
+            specialtyId: presaveData.specialtyId,
+            tariffId: presaveData.tariffId,
+            fechaAbono: presaveData.fechaAbono,
+            metodoPago: presaveData.metodoPago,
+            cuentaBancaria: presaveData.cuentaBancaria,
+            numeroOperacion: presaveData.numeroOperacion,
+            moneda: presaveData.moneda,
+            montoPago: presaveData.montoPago,
+            description: presaveData.description,
+            vouchersData: presaveData.vouchersData,
+            // Datos del paciente creado (si aplica)
+            clinicHistory: presaveData.clinicHistory,
+            clinicHistoryId: presaveData.clinicHistoryId,
           }
         };
       }

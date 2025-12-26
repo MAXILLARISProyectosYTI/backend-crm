@@ -16,8 +16,7 @@ export class OpportunityPresaveService {
 
   /**
    * Crear o actualizar un presave para una oportunidad
-   * Si ya existe un presave para el espoId, lo actualiza
-   * Si no existe, lo crea
+   * Guarda todos los datos del cliente y facturación
    * También actualiza el campo is_presaved de la oportunidad a true
    */
   async createOrUpdate(dto: CreateOpportunityPresaveDto): Promise<OpportunityPresave> {
@@ -26,7 +25,7 @@ export class OpportunityPresaveService {
     let result: OpportunityPresave;
 
     if (existing) {
-      // Actualizar solo los campos que vienen en el DTO
+      // Actualizar solo los campos que vienen en el DTO (no undefined)
       Object.keys(dto).forEach(key => {
         if (dto[key] !== undefined && key !== 'espoId') {
           existing[key] = dto[key];
@@ -59,7 +58,7 @@ export class OpportunityPresaveService {
 
   /**
    * Marcar is_presaved = false en la oportunidad
-   * Se usa cuando c_clinic_history ya no es null
+   * Se usa cuando se completa el flujo de facturación
    */
   async markAsNotPresaved(espoId: string): Promise<void> {
     await this.opportunityRepository.update(
@@ -69,21 +68,28 @@ export class OpportunityPresaveService {
   }
 
   /**
-   * Verificar si la oportunidad tiene c_clinic_history
-   * Si lo tiene, significa que ya se completó el flujo
+   * Verificar si la oportunidad ya fue facturada (isPresaved = false)
+   * Si isPresaved = false, significa que ya se completó el flujo de facturación
    */
-  async checkClinicHistoryAndUpdatePresave(espoId: string): Promise<boolean> {
+  async checkIfAlreadyInvoiced(espoId: string): Promise<boolean> {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: espoId }
     });
 
-    if (opportunity && opportunity.cClinicHistory) {
-      // Si ya tiene clinic history, marcar como no presaved
-      await this.markAsNotPresaved(espoId);
-      return true; // Tiene clinic history
+    // Si isPresaved es false, significa que ya se facturó
+    // No devolver presave en ese caso
+    if (opportunity && opportunity.isPresaved === false) {
+      return true; // Ya fue facturado
     }
 
-    return false; // No tiene clinic history
+    return false; // No ha sido facturado, puede devolver presave
+  }
+
+  /**
+   * Eliminar presave cuando se completa el flujo
+   */
+  async deleteByEspoId(espoId: string): Promise<void> {
+    await this.presaveRepository.delete({ espoId });
+    await this.markAsNotPresaved(espoId);
   }
 }
-
