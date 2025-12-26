@@ -35,7 +35,7 @@ const schedules: Record<number, { startHour: number; startMinute: number; endHou
     { startHour: 15, startMinute: 0, endHour: 18, endMinute: 30 },
   ],
   6: [ // Sábado
-    { startHour: 8, startMinute: 30, endHour: 13, endMinute: 0 },
+    { startHour: 8, startMinute: 30, endHour: 16, endMinute: 0 },
   ],
   // 0 (Domingo) no tiene horarios
 };
