@@ -231,4 +231,7 @@ export class Opportunity {
 
   @Column({ type: 'varchar', length: 17, nullable: true, name: 'c_campaign1_id' })
   cCampaign1Id?: string;
+
+  @Column({ type: 'boolean', nullable: true, default: false, name: 'is_presaved' })
+  isPresaved?: boolean;
 }

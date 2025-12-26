@@ -253,5 +253,213 @@ export class SvServices {
       throw new BadRequestException('Error al obtener el redirect por ID de oportunidad');
     }
   }
+
+  async getResumenEvolutivoUnidades(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/unidades`, {
+        params: {
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          page,
+          limit
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      })
+      return response.data;
+    } catch (error) {
+      console.error('Error getResumenEvolutivoUnidades', error);
+      throw new BadRequestException('Error al obtener resumen evolutivo en unidades desde SV');
+    }
+  }
+
+  async getResumenEvolutivoPorcentajes(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/porcentajes`, {
+        params: {
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          page,
+          limit
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      })
+      return response.data;
+    } catch (error) {
+      console.error('Error getResumenEvolutivoPorcentajes', error);
+      throw new BadRequestException('Error al obtener resumen evolutivo en porcentajes desde SV');
+    }
+  }
+
+  async getComparativoMensual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-mensual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoMensual from SV', error);
+      throw new BadRequestException('Error al obtener datos comparativos mensuales de KPI desde SV');
+    }
+  }
+
+  // Endpoints específicos para gráficos anuales
+  async getComparativoVendidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-anual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoVendidasAnual from SV', error);
+      throw new BadRequestException('Error al obtener comparativo vendidas anual desde SV');
+    }
+  }
+
+  async getComparativoAsistidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-anual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoAsistidasAnual from SV', error);
+      throw new BadRequestException('Error al obtener comparativo asistidas anual desde SV');
+    }
+  }
+
+  async getComparativoMoldesAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-anual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoMoldesAnual from SV', error);
+      throw new BadRequestException('Error al obtener comparativo moldes anual desde SV');
+    }
+  }
+
+  async getComparativoTratamientosAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-anual`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoTratamientosAnual from SV', error);
+      throw new BadRequestException('Error al obtener comparativo tratamientos anual desde SV');
+    }
+  }
+
+  // Endpoints específicos para gráficos mensuales
+  async getComparativoVendidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-mes`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+          mes: mes,
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoVendidasMes from SV', error);
+      throw new BadRequestException('Error al obtener comparativo vendidas mes desde SV');
+    }
+  }
+
+  async getComparativoAsistidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-mes`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+          mes: mes,
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoAsistidasMes from SV', error);
+      throw new BadRequestException('Error al obtener comparativo asistidas mes desde SV');
+    }
+  }
+
+  async getComparativoMoldesMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-mes`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+          mes: mes,
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoMoldesMes from SV', error);
+      throw new BadRequestException('Error al obtener comparativo moldes mes desde SV');
+    }
+  }
+
+  async getComparativoTratamientosMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-mes`, {
+        params: {
+          año_inicio: añoInicio.toString(),
+          año_fin: añoFin.toString(),
+          mes: mes,
+        },
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getComparativoTratamientosMes from SV', error);
+      throw new BadRequestException('Error al obtener comparativo tratamientos mes desde SV');
+    }
+  }
 }
   

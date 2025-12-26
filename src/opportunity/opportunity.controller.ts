@@ -38,6 +38,8 @@ import { FileType, DirectoryType } from 'src/files/dto/files.dto';
 import { OpportunityCronsService } from './opportunity-crons.service';
 import { SvServices } from 'src/sv-services/sv.services';
 import { UserService } from 'src/user/user.service';
+import { OpportunityPresaveService } from './opportunity-presave.service';
+import { CreateOpportunityPresaveDto } from './dto/opportunity-presave.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -51,6 +53,7 @@ export class OpportunityController {
     private readonly opportunityCronsService: OpportunityCronsService,
     private readonly userService: UserService,
     private readonly svServices: SvServices,
+    private readonly opportunityPresaveService: OpportunityPresaveService,
   ) {}
 
   @Public()          
@@ -61,9 +64,89 @@ export class OpportunityController {
   ) {
     console.log('usuario', usuario);
     console.log('uuidOpportunity', uuidOpportunity);
-    return this.opportunityService.redirectToManager(usuario, uuidOpportunity);
+    
+    // Obtener la respuesta base del redirect
+    const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity);
+    
+    // Intentar buscar presave, pero si falla, continuar sin él
+    try {
+      // Primero verificar si ya fue facturada (isPresaved = false)
+      const alreadyInvoiced = await this.opportunityPresaveService.checkIfAlreadyInvoiced(uuidOpportunity);
+      
+      // Si ya fue facturada, no devolver presave
+      if (alreadyInvoiced) {
+        console.log('📋 Oportunidad ya fue facturada (isPresaved=false), no se devuelve presave');
+        return redirectResponse;
+      }
+      
+      // Buscar presave solo si no ha sido facturada
+      const presaveData = await this.opportunityPresaveService.findByEspoId(uuidOpportunity);
+      
+      // Si existe presave, agregarlo a la respuesta con TODOS los campos
+      if (presaveData) {
+        console.log('📦 Devolviendo presave para oportunidad:', uuidOpportunity);
+        return {
+          ...redirectResponse,
+          presave: {
+            // Datos del cliente
+            documentNumber: presaveData.documentNumber,
+            name: presaveData.name,
+            lastNameFather: presaveData.lastNameFather,
+            lastNameMother: presaveData.lastNameMother,
+            cellphone: presaveData.cellphone,
+            email: presaveData.email,
+            address: presaveData.address,
+            attorney: presaveData.attorney,
+            invoiseTypeDocument: presaveData.invoiseTypeDocument,
+            invoiseNumDocument: presaveData.invoiseNumDocument,
+            // Datos de facturación
+            doctorId: presaveData.doctorId,
+            businessLineId: presaveData.businessLineId,
+            specialtyId: presaveData.specialtyId,
+            tariffId: presaveData.tariffId,
+            fechaAbono: presaveData.fechaAbono,
+            metodoPago: presaveData.metodoPago,
+            cuentaBancaria: presaveData.cuentaBancaria,
+            numeroOperacion: presaveData.numeroOperacion,
+            moneda: presaveData.moneda,
+            montoPago: presaveData.montoPago,
+            description: presaveData.description,
+            vouchersData: presaveData.vouchersData,
+            // Datos del paciente creado (si aplica)
+            clinicHistory: presaveData.clinicHistory,
+            clinicHistoryId: presaveData.clinicHistoryId,
+          }
+        };
+      }
+    } catch (error) {
+      // Si hay error con presave (tabla no existe, etc.), simplemente lo ignoramos
+      console.log('⚠️ Error al buscar presave (ignorando):', error.message);
+    }
+    
+    return redirectResponse;
   }
-  
+
+  @Public()
+  @Post('presave')
+  async createOrUpdatePresave(@Body() dto: CreateOpportunityPresaveDto) {
+    try {
+      console.log('Creando/Actualizando presave para oportunidad:', dto.espoId);
+      const result = await this.opportunityPresaveService.createOrUpdate(dto);
+      return {
+        success: true,
+        message: 'Datos preguardados exitosamente',
+        data: result
+      };
+    } catch (error) {
+      console.error('❌ Error al guardar presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al guardar los datos: ' + error.message,
+        data: null
+      };
+    }
+  }
+
   @Get('consumer')
   async consumer() {
     return this.opportunityCronsService.assignUnassignedOpportunitiesDaily();
@@ -190,9 +273,9 @@ export class OpportunityController {
  @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage }
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, body.userSearch, body.stage);
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, body.userSearch, body.stage, body.isPresaved);
   } 
 
   @Get(':id')
