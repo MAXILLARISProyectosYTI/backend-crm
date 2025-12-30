@@ -743,9 +743,19 @@ export class OpportunityService {
     }
 
     if (search && search.trim()) {
-      // Si hay búsqueda, agregar condiciones OR para búsqueda
+      // Si hay búsqueda, agregar condiciones OR para búsqueda en múltiples campos
       queryBuilder.andWhere(
-        '(opportunity.name ILIKE :search OR opportunity.cNumeroDeTelefono ILIKE :search OR opportunity.cClinicHistory ILIKE :search OR user.user_name ILIKE :search)',
+        '(opportunity.name ILIKE :search OR ' +
+        'opportunity.cNumeroDeTelefono ILIKE :search OR ' +
+        'opportunity.cPhoneNumber ILIKE :search OR ' +
+        'opportunity.cClinicHistory ILIKE :search OR ' +
+        'opportunity.cPatientsname ILIKE :search OR ' +
+        'opportunity.cCanal ILIKE :search OR ' +
+        'opportunity.cChannel ILIKE :search OR ' +
+        'opportunity.cObs ILIKE :search OR ' +
+        'user.user_name ILIKE :search OR ' +
+        'user.first_name ILIKE :search OR ' +
+        'user.last_name ILIKE :search)',
         { search: `%${search.trim()}%` }
       );
     }
@@ -1000,9 +1010,7 @@ export class OpportunityService {
     const hasAppointmentData = hasFields(appointmentFields, body);
   
     // --- Construir payload ---
-    let payload: Record<string, any> = {
-      stage: Enum_Stage.CIERRE_GANADO,
-    };
+    let payload: Record<string, any> = {};
   
     if (onlyAppointment) {
       payload = pickFields(appointmentFields, body);
@@ -1016,7 +1024,10 @@ export class OpportunityService {
     } else {
       payload = { ...body };
     }
-      const newOpportunity = (await this.update(opportunityId, payload, userId)) as Opportunity;
+
+    // Actualizar la oportunidad con los campos del payload
+    let newOpportunity = (await this.update(opportunityId, payload, userId)) as Opportunity;
+
     await this.actionHistoryService.addRecord({
       targetId: newOpportunity.id,
       target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
@@ -1301,6 +1312,26 @@ export class OpportunityService {
 
     const localNumber = digits.slice(-9);
 
-    return await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
+    const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
+
+    // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
+    // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
+    if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
+      await this.opportunityRepository.update(
+        { id: opportunityId },
+        { 
+          stage: Enum_Stage.CIERRE_GANADO,
+          modifiedAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate()
+        }
+      );
+
+      // Notificar por WebSocket si tiene assignedUserId
+      const updatedOpportunity = await this.getOneWithEntity(opportunityId);
+      if (updatedOpportunity.assignedUserId) {
+        await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, opportunity.stage);
+      }
+    }
+
+    return redirectResponse;
   }
 }
