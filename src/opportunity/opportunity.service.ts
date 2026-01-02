@@ -596,7 +596,39 @@ export class OpportunityService {
 
     const files = await this.filesService.findByParentId(opportunity.id);
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistory, statusClient: statusClient, files: files };
+    // Asociar archivos con actionHistory basándose en la fecha de creación (dentro de 2 minutos)
+    const actionHistoryWithFiles = actionHistory.map((historyItem) => {
+      const historyWithFile = { ...historyItem };
+      
+      // Si el data indica que es una imagen
+      if (historyItem.data && (historyItem.data.toLowerCase().includes('imagen:') || historyItem.data.toLowerCase().startsWith('imagen'))) {
+        const historyDate = new Date(historyItem.createdAt).getTime();
+        
+        // Buscar archivo creado cerca de la fecha del actionHistory
+        const matchingFile = files.find((file: any) => {
+          if (!file.created_at) return false;
+          const fileDate = new Date(file.created_at).getTime();
+          const timeDiff = Math.abs(historyDate - fileDate);
+          // Archivos creados dentro de 2 minutos del actionHistory
+          return timeDiff <= 2 * 60 * 1000; // 2 minutos en milisegundos
+        });
+        
+        if (matchingFile) {
+          // Agregar información del archivo al actionHistory
+          (historyWithFile as any).file = {
+            id: matchingFile.id,
+            file_name: matchingFile.file_name,
+            url: matchingFile.url,
+            downloadUrl: matchingFile.downloadUrl,
+            created_at: matchingFile.created_at
+          };
+        }
+      }
+      
+      return historyWithFile;
+    });
+
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {

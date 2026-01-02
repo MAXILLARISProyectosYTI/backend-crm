@@ -22,6 +22,7 @@ export class ActionHistoryService {
         'actionHistory.id',
         'actionHistory.action',
         'actionHistory.createdAt',
+        'actionHistory.data',
         'user.id',
         'user.userName',
       ])
@@ -29,6 +30,7 @@ export class ActionHistoryService {
       .where('actionHistory.targetId = :targetId', { targetId })
       .andWhere('actionHistory.deleted = :deleted', { deleted: false })
       .andWhere('actionHistory.action NOT ILIKE :action', { action: '%read%' })
+      .orderBy('actionHistory.createdAt', 'DESC')
       .getMany();
   }
 
@@ -41,6 +43,7 @@ export class ActionHistoryService {
       userId: actionHistory.userId,   
       action: 'update',
       targetType: actionHistory.target_type,
+      data: actionHistory.message || undefined,
     }
 
     return await this.actionHistoryRepository.save(payload);
