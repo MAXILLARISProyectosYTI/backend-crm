@@ -637,36 +637,39 @@ export class OpportunityService {
 
     const previousStage = opportunity.stage; // Guardar etapa anterior para comparación
 
-    // Actualizar solo los campos que están presentes en el DTO (no undefined)
+    // Construir el objeto de actualización con solo los campos presentes en el DTO
+    const updateData: Partial<Opportunity> = {};
     Object.keys(updateOpportunityDto).forEach(key => {
       const value = updateOpportunityDto[key as keyof UpdateOpportunityDto];
       if (value !== undefined) {
-        (opportunity as any)[key] = value;
+        (updateData as any)[key] = value;
       }
     });
     
     // Actualizar timestamp de modificación
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+    updateData.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
     
-    const updatedOpportunity = await this.opportunityRepository.save(opportunity);
-
-    const newOpportunity = await this.getOneWithEntity(updatedOpportunity.id);
+    // Usar update en lugar de save para asegurar que se actualicen todos los campos
+    await this.opportunityRepository.update({ id }, updateData);
+    
+    // Obtener la oportunidad actualizada
+    const updatedOpportunity = await this.getOneWithEntity(id);
     
     // Notificar por WebSocket si tiene assignedUserId
-    if (newOpportunity.assignedUserId) {
-      await this.websocketService.notifyOpportunityUpdate(newOpportunity, previousStage);
+    if (updatedOpportunity.assignedUserId) {
+      await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, previousStage);
     }
 
     if(userId){
       await this.actionHistoryService.addRecord({
-        targetId: newOpportunity.id,
+        targetId: updatedOpportunity.id,
         target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
         userId: userId,
         message: 'Oportunidad actualizada',
       });
     }
     
-    return newOpportunity;
+    return updatedOpportunity;
   }
 
   async remove(id: string, userId: string): Promise<void> {
@@ -1106,6 +1109,28 @@ export class OpportunityService {
         { id: opportunityId },
         { isPresaved: false }
       );
+
+      // Si hay facturas Y hay historia clínica (paciente creado), marcar como cierre ganado
+      // Verificar si el paciente está creado (cClinicHistory en el body o ya en la oportunidad)
+      const hasClinicHistory = body.cClinicHistory || newOpportunity.cClinicHistory;
+      if (hasClinicHistory && newOpportunity.stage !== Enum_Stage.CIERRE_GANADO) {
+        await this.opportunityRepository.update(
+          { id: opportunityId },
+          { 
+            stage: Enum_Stage.CIERRE_GANADO,
+            modifiedAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate()
+          }
+        );
+
+        // Notificar por WebSocket si tiene assignedUserId
+        const updatedOpportunity = await this.getOneWithEntity(opportunityId);
+        if (updatedOpportunity.assignedUserId) {
+          await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, newOpportunity.stage);
+        }
+
+        // Actualizar newOpportunity para retornar el estado actualizado
+        newOpportunity = updatedOpportunity as Opportunity;
+      }
     }
 
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
