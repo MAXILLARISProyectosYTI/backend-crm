@@ -17,6 +17,9 @@ export class OpportunityPresave {
   // ========================================
   // DATOS DEL CLIENTE
   // ========================================
+  @Column({ name: "document_type", type: "varchar", length: 20, nullable: true })
+  documentType: string;
+
   @Column({ name: "document_number", type: "varchar", length: 20, nullable: true })
   documentNumber: string;
 

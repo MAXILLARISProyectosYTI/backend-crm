@@ -11,6 +11,11 @@ export class CreateOpportunityPresaveDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  documentType?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
   documentNumber?: string;
 
   @IsOptional()

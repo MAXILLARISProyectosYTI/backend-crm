@@ -664,9 +664,20 @@ export class OpportunityService {
       }
     });
     
-    // Si se actualiza cSeguimientocliente a "En seguimiento", también actualizar stage a "Seguimiento"
+    // Validación: Si la oportunidad está en "Cierre ganado", no permitir cambiar cSeguimientocliente a "En seguimiento"
+    // "Cierre ganado" tiene prioridad sobre "En seguimiento"
     if (updateOpportunityDto.cSeguimientocliente === Enum_Following.EN_SEGUIMIENTO) {
-      updateData.stage = Enum_Stage.SEGUIMIENTO;
+      // Si está en "Cierre ganado", no cambiar el cSeguimientocliente y mantener el stage en "Cierre ganado"
+      if (opportunity.stage === Enum_Stage.CIERRE_GANADO) {
+        // Eliminar cSeguimientocliente del updateData para que no se actualice
+        delete updateData.cSeguimientocliente;
+        // Asegurar que el stage se mantenga en "Cierre ganado" (no cambiar a "Seguimiento")
+        updateData.stage = Enum_Stage.CIERRE_GANADO;
+        console.log(`⚠️ Oportunidad ${id} está en "Cierre ganado", no se puede cambiar a "En seguimiento". Se mantiene en "Cierre ganado".`);
+      } else {
+        // Si NO está en "Cierre ganado", sí puede cambiar a "En seguimiento" y actualizar stage
+        updateData.stage = Enum_Stage.SEGUIMIENTO;
+      }
     }
     // Si se actualiza cSeguimientocliente a "Sin Seguimiento" y el stage actual es "Seguimiento", 
     // revertir a "Gestion Inicial" (solo si no se está actualizando explícitamente el stage)

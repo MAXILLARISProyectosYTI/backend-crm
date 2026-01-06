@@ -89,6 +89,7 @@ export class OpportunityController {
           ...redirectResponse,
           presave: {
             // Datos del cliente
+            documentType: presaveData.documentType,
             documentNumber: presaveData.documentNumber,
             name: presaveData.name,
             lastNameFather: presaveData.lastNameFather,
