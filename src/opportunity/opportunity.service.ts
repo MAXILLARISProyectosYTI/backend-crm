@@ -637,30 +637,103 @@ export class OpportunityService {
 
     const previousStage = opportunity.stage; // Guardar etapa anterior para comparación
 
+    // Verificar si solo se está actualizando cClientTypification
+    // Excluir campos que pueden venir automáticamente o que no son relevantes para la verificación
+    const relevantFields = Object.keys(updateOpportunityDto).filter(key => {
+      const value = updateOpportunityDto[key as keyof UpdateOpportunityDto];
+      // Excluir campos internos (que empiezan con _) y campos automáticos
+      return value !== undefined && 
+             key !== 'modifiedAt' && 
+             key !== 'createdAt' && 
+             !key.startsWith('_');
+    });
+    
+    const isOnlyTypificationUpdate = relevantFields.length === 1 && 
+                                     relevantFields[0] === 'cClientTypification';
+
     // Construir el objeto de actualización con solo los campos presentes en el DTO
+    // Excluir campos internos que no deben guardarse en la base de datos
     const updateData: Partial<Opportunity> = {};
     Object.keys(updateOpportunityDto).forEach(key => {
+      // Excluir campos que empiezan con _ (campos internos)
+      if (key.startsWith('_')) return;
+      
       const value = updateOpportunityDto[key as keyof UpdateOpportunityDto];
       if (value !== undefined) {
         (updateData as any)[key] = value;
       }
     });
     
+    // Si se actualiza cSeguimientocliente a "En seguimiento", también actualizar stage a "Seguimiento"
+    if (updateOpportunityDto.cSeguimientocliente === Enum_Following.EN_SEGUIMIENTO) {
+      updateData.stage = Enum_Stage.SEGUIMIENTO;
+    }
+    // Si se actualiza cSeguimientocliente a "Sin Seguimiento" y el stage actual es "Seguimiento", 
+    // revertir a "Gestion Inicial" (solo si no se está actualizando explícitamente el stage)
+    else if (updateOpportunityDto.cSeguimientocliente === Enum_Following.SIN_SEGUIMIENTO && 
+             opportunity.stage === Enum_Stage.SEGUIMIENTO && 
+             !updateOpportunityDto.stage) {
+      updateData.stage = Enum_Stage.GESTION_INICIAL;
+    }
+    
     // Actualizar timestamp de modificación
     updateData.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
     
-    // Usar update en lugar de save para asegurar que se actualicen todos los campos
-    await this.opportunityRepository.update({ id }, updateData);
+    // Actualizar la entidad directamente y guardar para asegurar que los cambios se reflejen
+    Object.assign(opportunity, updateData);
+    const savedOpportunity = await this.opportunityRepository.save(opportunity);
     
-    // Obtener la oportunidad actualizada
+    // Obtener la oportunidad actualizada con relaciones
     const updatedOpportunity = await this.getOneWithEntity(id);
     
-    // Notificar por WebSocket si tiene assignedUserId
-    if (updatedOpportunity.assignedUserId) {
-      await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, previousStage);
+    // No notificar por WebSocket si solo se actualiza la tipificación
+    if (!isOnlyTypificationUpdate) {
+      // Notificar por WebSocket si tiene assignedUserId
+      if (updatedOpportunity.assignedUserId) {
+        await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, previousStage);
+      }
     }
 
-    if(userId){
+    // Registrar en historial con detalles específicos si hay cambios en tipificación
+    if (isOnlyTypificationUpdate && userId && updateOpportunityDto._typificationChange) {
+      const change = updateOpportunityDto._typificationChange;
+      let message = 'Oportunidad actualizada';
+            
+      // Manejar nota global (category es null)
+      if (change.action === 'nota_global_actualizada') {
+        message = change.value 
+          ? `Actualizó la nota global: "${change.value.substring(0, 50)}${change.value.length > 50 ? '...' : ''}"`
+          : 'Actualizó la nota global';
+      } else if (change.action === 'nota_global_eliminada') {
+        message = 'Eliminó la nota global';
+      } 
+      // Manejar cambios en categorías (category no es null)
+      else if (change.category && change.action && change.value) {
+        const categoryLabels: Record<string, string> = {
+          'riesgos': 'Riesgos o alertas',
+          'capacidadCompra': 'Capacidad de compra',
+          'comportamiento': 'Comportamiento del cliente',
+          'motivoPerdida': 'Motivo de pérdida'
+        };
+        
+        const categoryLabel = categoryLabels[change.category] || change.category;
+        
+        if (change.action === 'agregado') {
+          message = `Agregó "${change.value}" en ${categoryLabel}`;
+        } else if (change.action === 'eliminado') {
+          message = `Eliminó "${change.value}" de ${categoryLabel}`;
+        }
+      }
+      
+      
+      await this.actionHistoryService.addRecord({
+        targetId: updatedOpportunity.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId: userId,
+        message: message,
+      });
+    } else if (!isOnlyTypificationUpdate && userId) {
+      // Registrar actualización normal si no es solo tipificación
       await this.actionHistoryService.addRecord({
         targetId: updatedOpportunity.id,
         target_type: ENUM_TARGET_TYPE.OPPORTUNITY,

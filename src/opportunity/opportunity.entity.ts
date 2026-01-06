@@ -129,6 +129,9 @@ export class Opportunity {
   @Column({ type: 'text', nullable: true, default: '["-no aplica-"]', name: 'c_tags_sales' })
   cTagsSales?: string;
 
+  @Column({ type: 'text', nullable: true, default: '{}', name: 'c_client_typification' })
+  cClientTypification?: string;
+
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_clinic_history' })
   cClinicHistory?: string;
 

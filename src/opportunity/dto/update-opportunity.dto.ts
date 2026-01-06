@@ -1,5 +1,6 @@
 import { IsString, IsNumber, IsBoolean, IsOptional, IsDateString, IsIn, IsNotEmpty, IsInt } from 'class-validator';
 import { User } from 'src/user/user.entity';
+import { Enum_Following } from './enums';
 
 export class UpdateOpportunityDto {
   @IsOptional()
@@ -136,6 +137,18 @@ export class UpdateOpportunityDto {
 
   @IsOptional()
   @IsString()
+  cClientTypification?: string;
+
+  // Campo interno para pasar información de cambios en tipificación (no se valida ni se guarda)
+  @IsOptional()
+  _typificationChange?: {
+    category?: string | null;
+    action?: string;
+    value?: string;
+  };
+
+  @IsOptional()
+  @IsString()
   cClinicHistory?: string;
 
   @IsOptional()
@@ -208,7 +221,8 @@ export class UpdateOpportunityDto {
 
   @IsOptional()
   @IsString()
-  cSeguimientocliente?: string;
+  @IsIn([Enum_Following.SIN_SEGUIMIENTO, Enum_Following.EN_SEGUIMIENTO])
+  cSeguimientocliente?: Enum_Following;
 
   @IsOptional()
   @IsString()
