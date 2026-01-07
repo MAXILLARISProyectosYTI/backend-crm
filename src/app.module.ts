@@ -18,6 +18,7 @@ import { OpportunitiesClosersModule } from './opportunities-closers/opportunitie
 import { TeamUserModule } from './team-user/team-user.module';
 import { TeamModule } from './team/team.module';
 import { KpiModule } from './kpi/kpi.module';
+import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { KpiModule } from './kpi/kpi.module';
     TeamUserModule,
     TeamModule,
     KpiModule,
+    ContractPricingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

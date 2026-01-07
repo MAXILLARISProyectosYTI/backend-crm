@@ -461,5 +461,42 @@ export class SvServices {
       throw new BadRequestException('Error al obtener comparativo tratamientos mes desde SV');
     }
   }
+
+  // ============================================================
+  // Contract Pricing y Types - Métodos para contratos
+  // ============================================================
+  
+  async getContractPricingByTreatmentCode(treatmentCode: string, tokenSv: string) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/contract-pricing/by-treatment-code/${treatmentCode}`,
+        {
+          headers: {
+            Authorization: `Bearer ${tokenSv}`
+          }
+        }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getContractPricingByTreatmentCode from SV', error);
+      throw new BadRequestException(
+        `Error al obtener precio de contrato por treatment_code ${treatmentCode} desde SV`
+      );
+    }
+  }
+  
+  async getAllContractTypeStructure(tokenSv: string) {
+    try {
+      const response = await axios.get(`${this.URL_BACK_SV}/contract-type-structure`, {
+        headers: {
+          Authorization: `Bearer ${tokenSv}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getAllContractTypeStructure from SV', error);
+      throw new BadRequestException('Error al obtener tipos de estructura de contratos desde SV');
+    }
+  }
 }
   
