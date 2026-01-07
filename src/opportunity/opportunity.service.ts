@@ -674,10 +674,9 @@ export class OpportunityService {
         // Asegurar que el stage se mantenga en "Cierre ganado" (no cambiar a "Seguimiento")
         updateData.stage = Enum_Stage.CIERRE_GANADO;
         console.log(`⚠️ Oportunidad ${id} está en "Cierre ganado", no se puede cambiar a "En seguimiento". Se mantiene en "Cierre ganado".`);
-      } else {
-        // Si NO está en "Cierre ganado", sí puede cambiar a "En seguimiento" y actualizar stage
-        updateData.stage = Enum_Stage.SEGUIMIENTO;
       }
+      // NO cambiar automáticamente el stage cuando se actualiza el seguimiento
+      // El stage solo debe cambiar si se actualiza explícitamente en updateOpportunityDto.stage
     }
     // Si se actualiza cSeguimientocliente a "Sin Seguimiento" y el stage actual es "Seguimiento", 
     // revertir a "Gestion Inicial" (solo si no se está actualizando explícitamente el stage)
