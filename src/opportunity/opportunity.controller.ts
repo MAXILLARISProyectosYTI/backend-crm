@@ -40,6 +40,8 @@ import { SvServices } from 'src/sv-services/sv.services';
 import { UserService } from 'src/user/user.service';
 import { OpportunityPresaveService } from './opportunity-presave.service';
 import { CreateOpportunityPresaveDto } from './dto/opportunity-presave.dto';
+import { ContractPresaveService } from './contract-presave.service';
+import { CreateContractPresaveDto } from './dto/contract-presave.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -54,6 +56,7 @@ export class OpportunityController {
     private readonly userService: UserService,
     private readonly svServices: SvServices,
     private readonly opportunityPresaveService: OpportunityPresaveService,
+    private readonly contractPresaveService: ContractPresaveService,
   ) {}
 
   @Public()          
@@ -143,6 +146,58 @@ export class OpportunityController {
       return {
         success: false,
         message: 'Error al guardar los datos: ' + error.message,
+        data: null
+      };
+    }
+  }
+
+  // ========================================
+  // CONTRACT PRESAVE ENDPOINTS
+  // ========================================
+
+  @Public()
+  @Post('contract-presave')
+  async createOrUpdateContractPresave(@Body() dto: CreateContractPresaveDto) {
+    try {
+      console.log('📝 Guardando contract presave para quotationId:', dto.quotationId);
+      const result = await this.contractPresaveService.createOrUpdate(dto);
+      return {
+        success: true,
+        message: 'Datos del contrato preguardados exitosamente',
+        data: result
+      };
+    } catch (error) {
+      console.error('❌ Error al guardar contract presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al guardar los datos del contrato: ' + error.message,
+        data: null
+      };
+    }
+  }
+
+  @Public()
+  @Get('contract-presave/:quotationId')
+  async getContractPresave(@Param('quotationId') quotationId: string) {
+    try {
+      const result = await this.contractPresaveService.findByQuotationId(parseInt(quotationId));
+      if (!result) {
+        return {
+          success: true,
+          message: 'No hay datos preguardados para esta cotización',
+          data: null
+        };
+      }
+      return {
+        success: true,
+        message: 'Datos del contrato recuperados',
+        data: result
+      };
+    } catch (error) {
+      console.error('❌ Error al obtener contract presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al obtener los datos del contrato: ' + error.message,
         data: null
       };
     }
