@@ -8,9 +8,10 @@ CREATE TABLE IF NOT EXISTS contract_presave (
     quotation_id INT UNIQUE NOT NULL,
     clinic_history_id INT,
     
-    -- Datos del paciente (editables)
-    patient_email VARCHAR(255),
-    patient_phone VARCHAR(20),
+    -- Datos de facturación (editables)
+    tipo_documento_factura VARCHAR(10), -- DNI o RUC
+    nombre_factura VARCHAR(255),
+    numero_documento_factura VARCHAR(20),
     
     -- Configuración del contrato
     contract_type VARCHAR(50),
@@ -29,6 +30,9 @@ CREATE TABLE IF NOT EXISTS contract_presave (
     
     -- Cronograma de pagos (JSON)
     payment_schedule_editable TEXT,
+    
+    -- Pagos registrados - Paso 2 (JSON)
+    registered_payments TEXT,
     
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

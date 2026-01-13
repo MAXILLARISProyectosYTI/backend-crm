@@ -19,13 +19,16 @@ export class ContractPresave {
   clinicHistoryId: number;
 
   // ========================================
-  // DATOS DEL PACIENTE (editables)
+  // DATOS DE FACTURACIÓN (editables)
   // ========================================
-  @Column({ name: "patient_email", type: "varchar", length: 255, nullable: true })
-  patientEmail: string;
+  @Column({ name: "tipo_documento_factura", type: "varchar", length: 10, nullable: true })
+  tipoDocumentoFactura: string; // DNI o RUC
 
-  @Column({ name: "patient_phone", type: "varchar", length: 20, nullable: true })
-  patientPhone: string;
+  @Column({ name: "nombre_factura", type: "varchar", length: 255, nullable: true })
+  nombreFactura: string;
+
+  @Column({ name: "numero_documento_factura", type: "varchar", length: 20, nullable: true })
+  numeroDocumentoFactura: string;
 
   // ========================================
   // CONFIGURACIÓN DEL CONTRATO
@@ -71,6 +74,12 @@ export class ContractPresave {
   // ========================================
   @Column({ name: "payment_schedule_editable", type: "text", nullable: true })
   paymentScheduleEditable: string; // JSON string
+
+  // ========================================
+  // PAGOS REGISTRADOS - PASO 2 (JSON)
+  // ========================================
+  @Column({ name: "registered_payments", type: "text", nullable: true })
+  registeredPayments: string; // JSON string con los pagos del Paso 2
 
   // ========================================
   // TIMESTAMPS

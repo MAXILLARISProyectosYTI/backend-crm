@@ -9,17 +9,22 @@ export class CreateContractPresaveDto {
   clinicHistoryId?: number;
 
   // ========================================
-  // DATOS DEL PACIENTE (editables)
+  // DATOS DE FACTURACIÓN (editables)
   // ========================================
   @IsOptional()
   @IsString()
+  @MaxLength(10)
+  tipoDocumentoFactura?: string; // DNI o RUC
+
+  @IsOptional()
+  @IsString()
   @MaxLength(255)
-  patientEmail?: string;
+  nombreFactura?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(20)
-  patientPhone?: string;
+  numeroDocumentoFactura?: string;
 
   // ========================================
   // CONFIGURACIÓN DEL CONTRATO
@@ -80,5 +85,12 @@ export class CreateContractPresaveDto {
   @IsOptional()
   @IsString()
   paymentScheduleEditable?: string;
+
+  // ========================================
+  // PAGOS REGISTRADOS - PASO 2 (JSON string)
+  // ========================================
+  @IsOptional()
+  @IsString()
+  registeredPayments?: string;
 }
 

@@ -203,6 +203,25 @@ export class OpportunityController {
     }
   }
 
+  @Public()
+  @Delete('contract-presave/:quotationId')
+  async deleteContractPresave(@Param('quotationId') quotationId: string) {
+    try {
+      console.log('🗑️ Eliminando contract presave para quotationId:', quotationId);
+      await this.contractPresaveService.delete(parseInt(quotationId));
+      return {
+        success: true,
+        message: 'Datos del contrato eliminados exitosamente'
+      };
+    } catch (error) {
+      console.error('❌ Error al eliminar contract presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al eliminar los datos del contrato: ' + error.message
+      };
+    }
+  }
+
   @Get('consumer')
   async consumer() {
     return this.opportunityCronsService.assignUnassignedOpportunitiesDaily();
