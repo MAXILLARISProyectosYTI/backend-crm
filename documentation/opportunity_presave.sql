@@ -109,3 +109,38 @@ END $$;
 
 -- Crear índice para filtrar por is_presaved
 CREATE INDEX IF NOT EXISTS idx_opportunity_is_presaved ON opportunity(is_presaved);
+
+-- ========================================
+-- COLUMNAS ADICIONALES: paymentType, companyType, exchangeRate
+-- ========================================
+DO $$ 
+BEGIN
+    -- Agregar paymentType
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'opportunity_presave' AND column_name = 'payment_type'
+    ) THEN
+        ALTER TABLE opportunity_presave ADD COLUMN payment_type VARCHAR(50);
+    END IF;
+    
+    -- Agregar companyType
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'opportunity_presave' AND column_name = 'company_type'
+    ) THEN
+        ALTER TABLE opportunity_presave ADD COLUMN company_type VARCHAR(50);
+    END IF;
+    
+    -- Agregar exchangeRate
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'opportunity_presave' AND column_name = 'exchange_rate'
+    ) THEN
+        ALTER TABLE opportunity_presave ADD COLUMN exchange_rate DECIMAL(12,4);
+    END IF;
+END $$;
+
+-- Comentarios para las nuevas columnas
+COMMENT ON COLUMN opportunity_presave.payment_type IS 'Tipo de pago';
+COMMENT ON COLUMN opportunity_presave.company_type IS 'Tipo de empresa';
+COMMENT ON COLUMN opportunity_presave.exchange_rate IS 'Tipo de cambio aplicado';

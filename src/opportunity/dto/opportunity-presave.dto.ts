@@ -1,4 +1,5 @@
 import { IsString, IsOptional, MaxLength, IsNumber, IsDateString } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateOpportunityPresaveDto {
   @IsString()
@@ -116,6 +117,21 @@ export class CreateOpportunityPresaveDto {
   @IsOptional()
   @IsString()
   vouchersData?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  paymentType?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  companyType?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  exchangeRate?: number;
 
   // ========================================
   // DATOS DEL PACIENTE CREADO (si aplica)

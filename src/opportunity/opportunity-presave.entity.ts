@@ -90,6 +90,15 @@ export class OpportunityPresave {
   @Column({ name: "vouchers_data", type: "text", nullable: true })
   vouchersData: string;
 
+  @Column({ name: "payment_type", type: "varchar", length: 50, nullable: true })
+  paymentType: string;
+
+  @Column({ name: "company_type", type: "varchar", length: 50, nullable: true })
+  companyType: string;
+
+  @Column({ name: "exchange_rate", type: "decimal", precision: 12, scale: 4, nullable: true })
+  exchangeRate: number;
+
   // ========================================
   // DATOS DEL PACIENTE CREADO (si aplica)
   // ========================================

@@ -116,6 +116,10 @@ export class OpportunityController {
             montoPago: presaveData.montoPago,
             description: presaveData.description,
             vouchersData: presaveData.vouchersData,
+            // Datos adicionales
+            paymentType: presaveData.paymentType,
+            companyType: presaveData.companyType,
+            exchangeRate: presaveData.exchangeRate,
             // Datos del paciente creado (si aplica)
             clinicHistory: presaveData.clinicHistory,
             clinicHistoryId: presaveData.clinicHistoryId,
