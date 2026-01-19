@@ -664,23 +664,14 @@ export class OpportunityService {
       }
     });
     
-    // Validación: Si la oportunidad está en "Cierre ganado", no permitir cambiar cSeguimientocliente a "En seguimiento"
-    // "Cierre ganado" tiene prioridad sobre "En seguimiento"
-    if (updateOpportunityDto.cSeguimientocliente === Enum_Following.EN_SEGUIMIENTO) {
-      // Si está en "Cierre ganado", no cambiar el cSeguimientocliente y mantener el stage en "Cierre ganado"
-      if (opportunity.stage === Enum_Stage.CIERRE_GANADO) {
-        // Eliminar cSeguimientocliente del updateData para que no se actualice
-        delete updateData.cSeguimientocliente;
-        // Asegurar que el stage se mantenga en "Cierre ganado" (no cambiar a "Seguimiento")
-        updateData.stage = Enum_Stage.CIERRE_GANADO;
-        console.log(`⚠️ Oportunidad ${id} está en "Cierre ganado", no se puede cambiar a "En seguimiento". Se mantiene en "Cierre ganado".`);
-      }
-      // NO cambiar automáticamente el stage cuando se actualiza el seguimiento
-      // El stage solo debe cambiar si se actualiza explícitamente en updateOpportunityDto.stage
-    }
+    // cSeguimientocliente y stage son independientes - se pueden cambiar por separado
+    // El campo cSeguimientocliente (Sin Seguimiento / En seguimiento) se controla con el botón "Reaccionar"
+    // El campo stage (Gestion Inicial, Seguimiento, etc.) se controla con el select de etapas
+    // Ambos campos pueden actualizarse independientemente sin restricciones entre ellos
+    
     // Si se actualiza cSeguimientocliente a "Sin Seguimiento" y el stage actual es "Seguimiento", 
     // revertir a "Gestion Inicial" (solo si no se está actualizando explícitamente el stage)
-    else if (updateOpportunityDto.cSeguimientocliente === Enum_Following.SIN_SEGUIMIENTO && 
+    if (updateOpportunityDto.cSeguimientocliente === Enum_Following.SIN_SEGUIMIENTO && 
              opportunity.stage === Enum_Stage.SEGUIMIENTO && 
              !updateOpportunityDto.stage) {
       updateData.stage = Enum_Stage.GESTION_INICIAL;
@@ -1028,16 +1019,9 @@ export class OpportunityService {
    * @param url URL completa del comprobante
    * @returns Ruta relativa que comienza con "Comprobantes/"
    */
-  private extractComprobantePath(url: string): string {
-    const comprobantesIndex = url.indexOf('Comprobantes/');
-    if (comprobantesIndex === -1) {
-      throw new Error(`No se encontró "Comprobantes/" en la URL: ${url}`);
-    }
-    return url.substring(comprobantesIndex);
-  }
-
   /**
    * Descarga las facturas desde URLs y las guarda en la base de datos
+   * Usa las URLs tal cual vienen del frontend, sin buscar o procesar nada adicional
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
    * @returns Array con los IDs de los archivos guardados
@@ -1049,48 +1033,64 @@ export class OpportunityService {
     const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
 
     try {
-      // Descargar comprobante en soles si existe
+      // Descargar comprobante en soles si existe - usar URL tal cual viene del frontend
       if (cFacturas.comprobante_soles) {
-        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_soles);
-        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
-        
-        const response = await fetch(newUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        
-        const fileName = `comprobante_soles_${parentId}.pdf`;
-        const result = await this.filesService.createFileRecord(
-          parentId,
-          ENUM_TARGET_TYPE.OPPORTUNITY,
-          fileName,
-          buffer
-        );
-        downloadedFiles.comprobante_soles = result.id;
+        try {
+          // Usar la URL directamente del frontend, sin procesar ni buscar nada
+          const response = await fetch(cFacturas.comprobante_soles);
+          if (!response.ok) {
+            console.error(`Error al descargar comprobante_soles: ${response.status} ${response.statusText}`);
+            throw new Error(`Error HTTP ${response.status}: ${response.statusText}`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          
+          const fileName = `comprobante_soles_${parentId}.pdf`;
+          const result = await this.filesService.createFileRecord(
+            parentId,
+            ENUM_TARGET_TYPE.OPPORTUNITY,
+            fileName,
+            buffer
+          );
+          downloadedFiles.comprobante_soles = result.id;
+        } catch (error) {
+          console.error('Error al descargar comprobante_soles:', error);
+          // Continuar con el proceso aunque falle la descarga de un comprobante
+        }
       }
 
-      // Descargar comprobante en dólares si existe
+      // Descargar comprobante en dólares si existe - usar URL tal cual viene del frontend
       if (cFacturas.comprobante_dolares) {
-        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_dolares);
-        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
-        
-        const response = await fetch(newUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        
-        const fileName = `comprobante_dolares_${parentId}.pdf`;
-        const result = await this.filesService.createFileRecord(
-          parentId,
-          ENUM_TARGET_TYPE.OPPORTUNITY,
-          fileName,
-          buffer
-        );
-        downloadedFiles.comprobante_dolares = result.id;
+        try {
+          // Usar la URL directamente del frontend, sin procesar ni buscar nada
+          const response = await fetch(cFacturas.comprobante_dolares);
+          if (!response.ok) {
+            console.error(`Error al descargar comprobante_dolares: ${response.status} ${response.statusText}`);
+            throw new Error(`Error HTTP ${response.status}: ${response.statusText}`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          
+          const fileName = `comprobante_dolares_${parentId}.pdf`;
+          const result = await this.filesService.createFileRecord(
+            parentId,
+            ENUM_TARGET_TYPE.OPPORTUNITY,
+            fileName,
+            buffer
+          );
+          downloadedFiles.comprobante_dolares = result.id;
+        } catch (error) {
+          console.error('Error al descargar comprobante_dolares:', error);
+          // Continuar con el proceso aunque falle la descarga de un comprobante
+        }
       }
 
       return downloadedFiles;
     } catch (error) {
-      console.error('Error al descargar facturas:', error);
-      throw error;
+      console.error('Error general al descargar facturas:', error);
+      // No lanzar el error para que la actualización de oportunidad continúe
+      // solo retornar los archivos que se descargaron exitosamente
+      return downloadedFiles;
     }
   }
 
