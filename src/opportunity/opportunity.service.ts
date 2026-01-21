@@ -539,6 +539,10 @@ export class OpportunityService {
   }
 
   async findOneWithDetails(id: string, userId: string) {
+    const startTime = Date.now();
+    console.log(`[PERFORMANCE] 🔍 findOneWithDetails iniciado para oportunidad: ${id}`);
+    
+    const opportunityStart = Date.now();
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -547,18 +551,67 @@ export class OpportunityService {
     if (!opportunity) {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
+    console.log(`[PERFORMANCE] Oportunidad obtenida: ${Date.now() - opportunityStart}ms`);
 
-    let userAssigned: User | null = null;
-    let teams: { team_id: string; team_name: string }[] = [];
+    // Paralelizar IO (BD) para bajar la latencia total
+    const parallelStart = Date.now();
+    const [
+      userAssignedData,
+      user,
+      meeting,
+      actionHistory,
+      files,
+    ] = await Promise.all([
+      (async () => {
+        const opStart = Date.now();
+        try {
+          if (!opportunity.assignedUserId) {
+            return { userAssigned: null as User | null, teams: [] as { team_id: string; team_name: string }[] };
+          }
+          const userStart = Date.now();
+          const userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
+          console.log(`[PERFORMANCE] userService.findOne(assignedUserId) tomó: ${Date.now() - userStart}ms`);
+          
+          const teamsStart = Date.now();
+          const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+          console.log(`[PERFORMANCE] getAllTeamsByUser tomó: ${Date.now() - teamsStart}ms`);
+          
+          return { userAssigned, teams };
+        } catch (error) {
+          console.error(`[PERFORMANCE] Error en userAssignedData:`, error);
+          throw error;
+        }
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.userService.findOne(userId);
+        console.log(`[PERFORMANCE] userService.findOne(userId) tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.meetingService.findByparentIdLess(opportunity.id);
+        console.log(`[PERFORMANCE] meetingService.findByparentIdLess tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
+        console.log(`[PERFORMANCE] actionHistoryService.getRecordByTargetId tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.filesService.findByParentId(opportunity.id);
+        console.log(`[PERFORMANCE] filesService.findByParentId tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+    ]);
 
-    if(opportunity.assignedUserId){
-      userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
-      teams = await this.userService.getAllTeamsByUser(userAssigned.id);
-    }
-  
-    const user = await this.userService.findOne(userId);
+    const parallelTime = Date.now() - parallelStart;
+    console.log(`[PERFORMANCE] Operaciones paralelas completadas: ${parallelTime}ms`);
 
-    const meeting = await this.meetingService.findByparentIdLess(opportunity.id);
+    const { userAssigned, teams } = userAssignedData;
 
     let campainName: string = '';
     let subCampaignName: string = '';
@@ -587,14 +640,20 @@ export class OpportunityService {
         break;
     }
 
-
-    const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
-
+    const tokenStart = Date.now();
     const {tokenSv} = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+    console.log(`[PERFORMANCE] Token SV obtenido: ${Date.now() - tokenStart}ms`);
 
-    const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
-
-    const files = await this.filesService.findByParentId(opportunity.id);
+    // SV es externo: no debería tumbar el detalle si está lento/intermitente
+    let statusClient = false;
+    const statusClientStart = Date.now();
+    try {
+      statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
+      console.log(`[PERFORMANCE] StatusClient obtenido: ${Date.now() - statusClientStart}ms`);
+    } catch (e: any) {
+      // Dejar trazabilidad sin romper el endpoint
+      console.warn(`[PERFORMANCE] ⚠️ getStatusClient falló para ${opportunity.id} después de ${Date.now() - statusClientStart}ms: ${e?.message ?? e}`);
+    }
 
     // Asociar archivos con actionHistory basándose en la fecha de creación (dentro de 2 minutos)
     const actionHistoryWithFiles = actionHistory.map((historyItem) => {
@@ -627,6 +686,9 @@ export class OpportunityService {
       
       return historyWithFile;
     });
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[PERFORMANCE] ✅ findOneWithDetails completado en ${totalTime}ms para oportunidad: ${id}`);
 
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
   }
