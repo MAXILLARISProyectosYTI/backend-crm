@@ -1493,12 +1493,13 @@ export class OpportunityService {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
     });
-
+    console.log('opportunity', opportunity);
     if (!opportunity) {
       throw new NotFoundException("No se encontró la oportunidad");
     }
 
     const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId!);
+    console.log('campaign', campaign);
 
     const historyCLinic = opportunity.cClinicHistory;
 
@@ -1513,9 +1514,9 @@ export class OpportunityService {
     const digits = cleanedPhone.replace(/\D/g, '');
 
     const localNumber = digits.slice(-9);
-
+    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
-
+    console.log('redirectResponse', redirectResponse);
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
@@ -1536,4 +1537,6 @@ export class OpportunityService {
 
     return redirectResponse;
   }
+
+
 }

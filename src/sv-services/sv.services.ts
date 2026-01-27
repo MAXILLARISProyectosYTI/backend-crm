@@ -224,6 +224,9 @@ export class SvServices {
   }
 
   async addOpportunityToQueue(payload: PayloadAddOpportunityToQueueDto, tokenSv: string) {
+    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
+    console.log('payload', payload);
+    console.log('url', `${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`);
     try {
       const responseQueueAssignmentClosers = await axios.post(`${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`, payload, {
         headers: {
@@ -239,6 +242,12 @@ export class SvServices {
   }
 
   async getRedirectByOpportunityId(opportunityId: string, campaignName: string, phoneNumber: string, historyCLinic: string | undefined) {
+    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
+    console.log('opportunityId', opportunityId);
+    console.log('campaignName', campaignName);
+    console.log('phoneNumber', phoneNumber);
+    console.log('historyCLinic', historyCLinic);
+    console.log('url', `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`);
     try {
       const responseRedirectByOpportunityId = await axios.get(`${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`, {
         params: {
@@ -247,6 +256,12 @@ export class SvServices {
           historyCLinic: historyCLinic || ''
         }
       })
+      console.log('parameters', {
+        campaignName,
+        phoneNumber,
+        historyCLinic: historyCLinic || ''
+      });
+      console.log('url final', `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}?campaignName=${campaignName}&phoneNumber=${phoneNumber}&historyCLinic=${historyCLinic || ''}`);
       return responseRedirectByOpportunityId.data;
     } catch (error) {
       console.error('Error getRedirectByOpportunityId', error);
