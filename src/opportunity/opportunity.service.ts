@@ -539,6 +539,10 @@ export class OpportunityService {
   }
 
   async findOneWithDetails(id: string, userId: string) {
+    const startTime = Date.now();
+    console.log(`[PERFORMANCE] 🔍 findOneWithDetails iniciado para oportunidad: ${id}`);
+    
+    const opportunityStart = Date.now();
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -547,18 +551,67 @@ export class OpportunityService {
     if (!opportunity) {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
+    console.log(`[PERFORMANCE] Oportunidad obtenida: ${Date.now() - opportunityStart}ms`);
 
-    let userAssigned: User | null = null;
-    let teams: { team_id: string; team_name: string }[] = [];
+    // Paralelizar IO (BD) para bajar la latencia total
+    const parallelStart = Date.now();
+    const [
+      userAssignedData,
+      user,
+      meeting,
+      actionHistory,
+      files,
+    ] = await Promise.all([
+      (async () => {
+        const opStart = Date.now();
+        try {
+          if (!opportunity.assignedUserId) {
+            return { userAssigned: null as User | null, teams: [] as { team_id: string; team_name: string }[] };
+          }
+          const userStart = Date.now();
+          const userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
+          console.log(`[PERFORMANCE] userService.findOne(assignedUserId) tomó: ${Date.now() - userStart}ms`);
+          
+          const teamsStart = Date.now();
+          const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
+          console.log(`[PERFORMANCE] getAllTeamsByUser tomó: ${Date.now() - teamsStart}ms`);
+          
+          return { userAssigned, teams };
+        } catch (error) {
+          console.error(`[PERFORMANCE] Error en userAssignedData:`, error);
+          throw error;
+        }
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.userService.findOne(userId);
+        console.log(`[PERFORMANCE] userService.findOne(userId) tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.meetingService.findByparentIdLess(opportunity.id);
+        console.log(`[PERFORMANCE] meetingService.findByparentIdLess tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
+        console.log(`[PERFORMANCE] actionHistoryService.getRecordByTargetId tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+      (async () => {
+        const opStart = Date.now();
+        const result = await this.filesService.findByParentId(opportunity.id);
+        console.log(`[PERFORMANCE] filesService.findByParentId tomó: ${Date.now() - opStart}ms`);
+        return result;
+      })(),
+    ]);
 
-    if(opportunity.assignedUserId){
-      userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
-      teams = await this.userService.getAllTeamsByUser(userAssigned.id);
-    }
-  
-    const user = await this.userService.findOne(userId);
+    const parallelTime = Date.now() - parallelStart;
+    console.log(`[PERFORMANCE] Operaciones paralelas completadas: ${parallelTime}ms`);
 
-    const meeting = await this.meetingService.findByparentIdLess(opportunity.id);
+    const { userAssigned, teams } = userAssignedData;
 
     let campainName: string = '';
     let subCampaignName: string = '';
@@ -587,14 +640,20 @@ export class OpportunityService {
         break;
     }
 
-
-    const actionHistory = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
-
+    const tokenStart = Date.now();
     const {tokenSv} = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+    console.log(`[PERFORMANCE] Token SV obtenido: ${Date.now() - tokenStart}ms`);
 
-    const statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
-
-    const files = await this.filesService.findByParentId(opportunity.id);
+    // SV es externo: no debería tumbar el detalle si está lento/intermitente
+    let statusClient = false;
+    const statusClientStart = Date.now();
+    try {
+      statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
+      console.log(`[PERFORMANCE] StatusClient obtenido: ${Date.now() - statusClientStart}ms`);
+    } catch (e: any) {
+      // Dejar trazabilidad sin romper el endpoint
+      console.warn(`[PERFORMANCE] ⚠️ getStatusClient falló para ${opportunity.id} después de ${Date.now() - statusClientStart}ms: ${e?.message ?? e}`);
+    }
 
     // Asociar archivos con actionHistory basándose en la fecha de creación (dentro de 2 minutos)
     const actionHistoryWithFiles = actionHistory.map((historyItem) => {
@@ -627,6 +686,9 @@ export class OpportunityService {
       
       return historyWithFile;
     });
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[PERFORMANCE] ✅ findOneWithDetails completado en ${totalTime}ms para oportunidad: ${id}`);
 
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
   }
@@ -664,23 +726,14 @@ export class OpportunityService {
       }
     });
     
-    // Validación: Si la oportunidad está en "Cierre ganado", no permitir cambiar cSeguimientocliente a "En seguimiento"
-    // "Cierre ganado" tiene prioridad sobre "En seguimiento"
-    if (updateOpportunityDto.cSeguimientocliente === Enum_Following.EN_SEGUIMIENTO) {
-      // Si está en "Cierre ganado", no cambiar el cSeguimientocliente y mantener el stage en "Cierre ganado"
-      if (opportunity.stage === Enum_Stage.CIERRE_GANADO) {
-        // Eliminar cSeguimientocliente del updateData para que no se actualice
-        delete updateData.cSeguimientocliente;
-        // Asegurar que el stage se mantenga en "Cierre ganado" (no cambiar a "Seguimiento")
-        updateData.stage = Enum_Stage.CIERRE_GANADO;
-        console.log(`⚠️ Oportunidad ${id} está en "Cierre ganado", no se puede cambiar a "En seguimiento". Se mantiene en "Cierre ganado".`);
-      }
-      // NO cambiar automáticamente el stage cuando se actualiza el seguimiento
-      // El stage solo debe cambiar si se actualiza explícitamente en updateOpportunityDto.stage
-    }
+    // cSeguimientocliente y stage son independientes - se pueden cambiar por separado
+    // El campo cSeguimientocliente (Sin Seguimiento / En seguimiento) se controla con el botón "Reaccionar"
+    // El campo stage (Gestion Inicial, Seguimiento, etc.) se controla con el select de etapas
+    // Ambos campos pueden actualizarse independientemente sin restricciones entre ellos
+    
     // Si se actualiza cSeguimientocliente a "Sin Seguimiento" y el stage actual es "Seguimiento", 
     // revertir a "Gestion Inicial" (solo si no se está actualizando explícitamente el stage)
-    else if (updateOpportunityDto.cSeguimientocliente === Enum_Following.SIN_SEGUIMIENTO && 
+    if (updateOpportunityDto.cSeguimientocliente === Enum_Following.SIN_SEGUIMIENTO && 
              opportunity.stage === Enum_Stage.SEGUIMIENTO && 
              !updateOpportunityDto.stage) {
       updateData.stage = Enum_Stage.GESTION_INICIAL;
@@ -1028,16 +1081,9 @@ export class OpportunityService {
    * @param url URL completa del comprobante
    * @returns Ruta relativa que comienza con "Comprobantes/"
    */
-  private extractComprobantePath(url: string): string {
-    const comprobantesIndex = url.indexOf('Comprobantes/');
-    if (comprobantesIndex === -1) {
-      throw new Error(`No se encontró "Comprobantes/" en la URL: ${url}`);
-    }
-    return url.substring(comprobantesIndex);
-  }
-
   /**
    * Descarga las facturas desde URLs y las guarda en la base de datos
+   * Usa las URLs tal cual vienen del frontend, sin buscar o procesar nada adicional
    * @param opportunityId ID de la oportunidad
    * @param cFacturas Objeto con las URLs de las facturas
    * @returns Array con los IDs de los archivos guardados
@@ -1049,48 +1095,64 @@ export class OpportunityService {
     const downloadedFiles: { comprobante_soles?: number; comprobante_dolares?: number } = {};
 
     try {
-      // Descargar comprobante en soles si existe
+      // Descargar comprobante en soles si existe - usar URL tal cual viene del frontend
       if (cFacturas.comprobante_soles) {
-        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_soles);
-        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
-        
-        const response = await fetch(newUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        
-        const fileName = `comprobante_soles_${parentId}.pdf`;
-        const result = await this.filesService.createFileRecord(
-          parentId,
-          ENUM_TARGET_TYPE.OPPORTUNITY,
-          fileName,
-          buffer
-        );
-        downloadedFiles.comprobante_soles = result.id;
+        try {
+          // Usar la URL directamente del frontend, sin procesar ni buscar nada
+          const response = await fetch(cFacturas.comprobante_soles);
+          if (!response.ok) {
+            console.error(`Error al descargar comprobante_soles: ${response.status} ${response.statusText}`);
+            throw new Error(`Error HTTP ${response.status}: ${response.statusText}`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          
+          const fileName = `comprobante_soles_${parentId}.pdf`;
+          const result = await this.filesService.createFileRecord(
+            parentId,
+            ENUM_TARGET_TYPE.OPPORTUNITY,
+            fileName,
+            buffer
+          );
+          downloadedFiles.comprobante_soles = result.id;
+        } catch (error) {
+          console.error('Error al descargar comprobante_soles:', error);
+          // Continuar con el proceso aunque falle la descarga de un comprobante
+        }
       }
 
-      // Descargar comprobante en dólares si existe
+      // Descargar comprobante en dólares si existe - usar URL tal cual viene del frontend
       if (cFacturas.comprobante_dolares) {
-        const comprobantePath = this.extractComprobantePath(cFacturas.comprobante_dolares);
-        const newUrl = `${this.URL_FILES}/${comprobantePath}`; 
-        
-        const response = await fetch(newUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        
-        const fileName = `comprobante_dolares_${parentId}.pdf`;
-        const result = await this.filesService.createFileRecord(
-          parentId,
-          ENUM_TARGET_TYPE.OPPORTUNITY,
-          fileName,
-          buffer
-        );
-        downloadedFiles.comprobante_dolares = result.id;
+        try {
+          // Usar la URL directamente del frontend, sin procesar ni buscar nada
+          const response = await fetch(cFacturas.comprobante_dolares);
+          if (!response.ok) {
+            console.error(`Error al descargar comprobante_dolares: ${response.status} ${response.statusText}`);
+            throw new Error(`Error HTTP ${response.status}: ${response.statusText}`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          
+          const fileName = `comprobante_dolares_${parentId}.pdf`;
+          const result = await this.filesService.createFileRecord(
+            parentId,
+            ENUM_TARGET_TYPE.OPPORTUNITY,
+            fileName,
+            buffer
+          );
+          downloadedFiles.comprobante_dolares = result.id;
+        } catch (error) {
+          console.error('Error al descargar comprobante_dolares:', error);
+          // Continuar con el proceso aunque falle la descarga de un comprobante
+        }
       }
 
       return downloadedFiles;
     } catch (error) {
-      console.error('Error al descargar facturas:', error);
-      throw error;
+      console.error('Error general al descargar facturas:', error);
+      // No lanzar el error para que la actualización de oportunidad continúe
+      // solo retornar los archivos que se descargaron exitosamente
+      return downloadedFiles;
     }
   }
 
@@ -1431,12 +1493,13 @@ export class OpportunityService {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
     });
-
+    console.log('opportunity', opportunity);
     if (!opportunity) {
       throw new NotFoundException("No se encontró la oportunidad");
     }
 
     const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId!);
+    console.log('campaign', campaign);
 
     const historyCLinic = opportunity.cClinicHistory;
 
@@ -1451,9 +1514,9 @@ export class OpportunityService {
     const digits = cleanedPhone.replace(/\D/g, '');
 
     const localNumber = digits.slice(-9);
-
+    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
-
+    console.log('redirectResponse', redirectResponse);
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
@@ -1474,4 +1537,6 @@ export class OpportunityService {
 
     return redirectResponse;
   }
+
+
 }

@@ -16,10 +16,12 @@ import { FilesModule } from 'src/files/files.module';
 import { CampaignModule } from 'src/campaign/campaign.module';
 import { OpportunityPresave } from './opportunity-presave.entity';
 import { OpportunityPresaveService } from './opportunity-presave.service';
+import { ContractPresave } from './contract-presave.entity';
+import { ContractPresaveService } from './contract-presave.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, OpportunityPresave]),
+    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave]),
     ContactModule,
     MeetingModule,
     forwardRef(() => UserModule),
@@ -36,11 +38,13 @@ import { OpportunityPresaveService } from './opportunity-presave.service';
     OpportunityCronsService,
     SvServices,
     OpportunityPresaveService,
+    ContractPresaveService,
   ],
   exports: [
     OpportunityService, 
-    OpportunityWebSocketService, // Exportar para uso en otros módulos
+    OpportunityWebSocketService,
     OpportunityPresaveService,
+    ContractPresaveService,
   ],
 })
 export class OpportunityModule {}

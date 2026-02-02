@@ -16,22 +16,44 @@ export class ActionHistoryService {
   ) {}
 
   async getRecordByTargetId(targetId: string): Promise<ActionHistory[]> {
-    return await this.actionHistoryRepository
-      .createQueryBuilder('actionHistory')
-      .select([
-        'actionHistory.id',
-        'actionHistory.action',
-        'actionHistory.createdAt',
-        'actionHistory.data',
-        'user.id',
-        'user.userName',
-      ])
-      .leftJoin('actionHistory.user', 'user')
-      .where('actionHistory.targetId = :targetId', { targetId })
-      .andWhere('actionHistory.deleted = :deleted', { deleted: false })
-      .andWhere('actionHistory.action NOT ILIKE :action', { action: '%read%' })
-      .orderBy('actionHistory.createdAt', 'DESC')
-      .getMany();
+    const startTime = Date.now();
+    
+    // Evitar `NOT ILIKE '%read%'` en SQL: obliga a full scan y es carísimo.
+    // Traemos un lote acotado usando filtros indexables y filtramos `read` en memoria.
+    const rows = await this.actionHistoryRepository.find({
+      where: {
+        targetId,
+        deleted: false,
+      },
+      relations: ['user'],
+      select: {
+        id: true,
+        action: true,
+        createdAt: true,
+        data: true,
+        user: {
+          id: true,
+          userName: true,
+        },
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+      take: 500,
+    });
+
+    const queryTime = Date.now() - startTime;
+    const filtered = rows.filter((r) => !(r.action ?? '').toLowerCase().includes('read'));
+    const totalTime = Date.now() - startTime;
+    
+    if (queryTime > 500) {
+      console.warn(`[PERFORMANCE] ⚠️ getRecordByTargetId tardó ${queryTime}ms (total: ${totalTime}ms) para targetId: ${targetId}`);
+      console.warn(`[PERFORMANCE] Registros encontrados: ${rows.length}, después de filtrar 'read': ${filtered.length}`);
+    } else {
+      console.log(`[PERFORMANCE] ✓ getRecordByTargetId completado en ${totalTime}ms, registros: ${filtered.length}`);
+    }
+
+    return filtered;
   }
 
   async addRecord(actionHistory: CreateActionDto): Promise<ActionHistory> {
