@@ -3,4 +3,6 @@ export interface OpportunityWithUser {
   opportunity_name: string;
   assigned_user_id: string;
   assigned_user_user_name: string;
+  /** Fecha en que se asignó (createdAt de la oportunidad) */
+  assigned_at?: string;
 }

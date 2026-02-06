@@ -10,13 +10,31 @@ import { Opportunity } from '../opportunity/opportunity.entity';
 import { getTeamsBySubCampaing } from './utils/getTeamsBySubCampaing';
 import { orderListAlphabetic } from './utils/orderListAlphabetic';
 import { UserWithTeam } from './dto/user-with-team';
-import { CAMPAIGNS_IDS, TEAMS_IDS } from '../globals/ids';
+import { CAMPAIGNS_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 import { TeamUserService } from 'src/team-user/team-user.service';
+import type {
+  AssignmentQueueByCampusDto,
+  AssignmentQueueItem,
+  NextToAssignDto,
+  LastAssignedDto,
+  AssignmentQueuesBySedeDto,
+  SedeAssignmentDto,
+  CampañaEnSedeDto,
+  ColaPorSedeItemDto,
+  ColaItemDatosAdicionalesDto,
+  ColaUltimoAsignadoItemDto,
+  ColaSiguienteItemDto,
+} from './dto/assignment-queue.dto';
+import { formatHaceCuanto } from './utils/formatHaceCuanto';
+import { formatDateToLima } from './utils/formatDateToLima';
 import { RoleService } from 'src/role/role.service';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
+import { CampusTeamService } from 'src/campus-team/campus-team.service';
+import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
 import * as bcrypt from 'bcryptjs';
+
 export interface RoleSummary {
   id: string;
   name?: string;
@@ -36,6 +54,8 @@ export class UserService {
     private readonly teamUserService: TeamUserService,
     private readonly roleService: RoleService,
     private readonly idGeneratorService: IdGeneratorService,
+    private readonly campusTeamService: CampusTeamService,
+    private readonly assignmentQueueStateService: AssignmentQueueStateService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -438,33 +458,56 @@ export class UserService {
   }
 
   async getUsersBySubCampaignId(subCampaignId: string): Promise<User[]> {
-    const usersActives = await this.getUsersToAssign()
-
-    if(usersActives.length === 0){
-      return []
-    }
-
-    const teams = getTeamsBySubCampaing(subCampaignId)
-    
-    if(teams.length === 0){
-      throw new BadRequestException('No hay equipos asignados a esta subcampaña')
-    }
-
-    const usersByAllTeams = await this.getUserByAllTeams(teams)
-
-    // Filtrar usuarios que estén tanto en usersActives como en usersByAllTeams basándose en user.id
-    const teamUserIds = usersByAllTeams.map(teamUser => teamUser.user_id)
-    
-    // Obtener usuarios activos que también estén en los equipos
-    const filteredUsers = usersActives.filter(user => 
-      teamUserIds.includes(user.id)
-    )
-
-    return orderListAlphabetic(filteredUsers)
+    return this.getUsersBySubCampaignIdAndCampusId(subCampaignId, undefined);
   }
 
-  async getNextUserToAssign(subCampaignId: string): Promise<any> {
-    const listUsers = await this.getUsersBySubCampaignId(subCampaignId)
+  /**
+   * IDs de equipos permitidos para una sede y subcampaña (intersección subcampaña + campus_team).
+   * Usado para cola users-active y para resolver nombres de equipo por usuario.
+   */
+  private async getAllowedTeamIdsForCampusAndSubcampaign(
+    campusId: number,
+    subCampaignId: string,
+  ): Promise<string[]> {
+    let teams = getTeamsBySubCampaing(subCampaignId);
+    if (teams.length === 0) return [];
+    const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
+    if (campusTeamIds.length > 0) {
+      const allowed = teams.filter((t) => campusTeamIds.includes(t));
+      if (allowed.length > 0) teams = allowed;
+    }
+    return teams;
+  }
+
+  /**
+   * Usuarios asignables para una subcampaña y opcionalmente una sede.
+   * Si campusId viene y la sede tiene equipos configurados en campus_team, solo se usan esos equipos (intersección con equipos de la subcampaña).
+   */
+  async getUsersBySubCampaignIdAndCampusId(subCampaignId: string, campusId?: number): Promise<User[]> {
+    const usersActives = await this.getUsersToAssign();
+    if (usersActives.length === 0) return [];
+
+    let teams = getTeamsBySubCampaing(subCampaignId);
+    if (teams.length === 0) {
+      throw new BadRequestException('No hay equipos asignados a esta subcampaña');
+    }
+
+    if (campusId != null) {
+      const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
+      if (campusTeamIds.length > 0) {
+        const allowedTeams = teams.filter((t) => campusTeamIds.includes(t));
+        if (allowedTeams.length > 0) teams = allowedTeams;
+      }
+    }
+
+    const usersByAllTeams = await this.getUserByAllTeams(teams);
+    const teamUserIds = usersByAllTeams.map((teamUser) => teamUser.user_id);
+    const filteredUsers = usersActives.filter((user) => teamUserIds.includes(user.id));
+    return orderListAlphabetic(filteredUsers);
+  }
+
+  async getNextUserToAssign(subCampaignId: string, campusId?: number): Promise<any> {
+    const listUsers = await this.getUsersBySubCampaignIdAndCampusId(subCampaignId, campusId);
     let listUsersDefault: UserWithTeam[]
 
     // Si no hay usuarios activos, asignar por defecto
@@ -483,13 +526,33 @@ export class UserService {
           throw new BadRequestException('Subcampaña no reconocida para asignación por defecto')
       }
 
+      if (!listUsersDefault?.length) {
+        throw new BadRequestException('NO_USUARIOS_PARA_ASIGNAR');
+      }
       const userSelected = listUsersDefault[Math.floor(Math.random() * listUsersDefault.length)];
-      return await this.findOne(userSelected.user_id)
+      return await this.findOne(userSelected.user_id);
     }
 
-    const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId)
-    
-    const nextUser = getNextUser(listUsers, lastOpportunityAssigned)
+    // Cola estable: usar estado guardado cuando hay sede; si no, derivar de última oportunidad
+    if (campusId != null) {
+      const state = await this.assignmentQueueStateService.getState(campusId, subCampaignId);
+      if (state) {
+        const lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        const lastAssignedRef = {
+          opportunity_id: state.lastOpportunityId ?? '',
+          opportunity_name: '',
+          assigned_user_id: state.lastAssignedUserId,
+          assigned_user_user_name: lastUserName,
+        };
+        const nextUser = getNextUser(listUsers, lastAssignedRef);
+        if (nextUser) return nextUser;
+      }
+    }
+
+    const lastOpportunityAssigned = await this.opportunityService.getLastOpportunityAssigned(subCampaignId, campusId);
+    const nextUser = lastOpportunityAssigned
+      ? getNextUser(listUsers, lastOpportunityAssigned)
+      : listUsers[0];
 
     if(!nextUser){
       throw new BadRequestException('No se encontro el siguiente usuario a asignar')
@@ -512,6 +575,13 @@ export class UserService {
       .getRawMany();
   
     return teams;
+  }
+
+  /** Campus (sedes) a los que pertenece el usuario según sus equipos. Vacío si no tiene equipos en campus_team. */
+  async getCampusIdsByUser(userId: string): Promise<number[]> {
+    const teams = await this.getAllTeamsByUser(userId);
+    const teamIds = teams.map((t) => t.team_id).filter(Boolean);
+    return this.campusTeamService.getCampusIdsByTeamIds(teamIds);
   }
 
   async isAdmin(userId: string): Promise<boolean> {
@@ -554,7 +624,178 @@ export class UserService {
 
     return orderListAlphabetic(users);
   }
-  
+
+  /**
+   * Cola de asignación por sede y subcampaña: lista ordenada de usuarios,
+   * quién es el siguiente a asignar y quién fue el último asignado (con número y fecha).
+   * Usa assignment_queue_state cuando existe (cola estable); si no, deriva de oportunidades (fallback).
+   */
+  async getAssignmentQueueByCampus(campusId: number, subCampaignId: string): Promise<AssignmentQueueByCampusDto> {
+    const listUsers = await this.getUsersBySubCampaignIdAndCampusId(subCampaignId, campusId);
+    const state = await this.assignmentQueueStateService.getState(campusId, subCampaignId);
+
+    let nextUser: User | null = null;
+    let lastAssigned: LastAssignedDto | null = null;
+    let lastAssignedUserId: string | null = null;
+    let assignedAt = '';
+    let opportunityId: string | undefined;
+
+    if (state) {
+      lastAssignedUserId = state.lastAssignedUserId;
+      assignedAt = state.lastAssignedAt instanceof Date ? state.lastAssignedAt.toISOString() : String(state.lastAssignedAt);
+      opportunityId = state.lastOpportunityId ?? undefined;
+      if (listUsers.length > 0) {
+        const lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        const lastAssignedRef = {
+          opportunity_id: state.lastOpportunityId ?? '',
+          opportunity_name: '',
+          assigned_user_id: state.lastAssignedUserId,
+          assigned_user_user_name: lastUserName,
+        };
+        nextUser = getNextUser(listUsers, lastAssignedRef);
+      }
+    } else {
+      const lastOpp = await this.opportunityService.getLastOpportunityAssigned(subCampaignId, campusId);
+      lastAssignedUserId = lastOpp?.assigned_user_id ?? null;
+      assignedAt =
+        lastOpp?.assigned_at != null
+          ? typeof lastOpp.assigned_at === 'string'
+            ? lastOpp.assigned_at
+            : (lastOpp.assigned_at as Date)?.toISOString?.() ?? ''
+          : '';
+      opportunityId = lastOpp?.opportunity_id;
+      if (listUsers.length > 0) {
+        nextUser = lastOpp?.assigned_user_id ? getNextUser(listUsers, lastOpp) : listUsers[0];
+      }
+    }
+
+    const queue: AssignmentQueueItem[] = listUsers.map((user, index) => ({
+      user,
+      position: index + 1,
+      isNext: nextUser?.id === user.id,
+      isLastAssigned: lastAssignedUserId === user.id,
+    }));
+
+    const nextToAssign: NextToAssignDto | null =
+      nextUser != null
+        ? {
+            user: nextUser,
+            position: queue.find((q) => q.user.id === nextUser!.id)?.position ?? 0,
+          }
+        : null;
+
+    if (lastAssignedUserId) {
+      const lastUser = listUsers.find((u) => u.id === lastAssignedUserId);
+      if (lastUser) {
+        const position = queue.find((q) => q.user.id === lastUser.id)?.position ?? 0;
+        lastAssigned = {
+          user: lastUser,
+          position,
+          assignedAt,
+          opportunityId,
+        };
+      }
+    }
+
+    return {
+      campusId,
+      subCampaignId,
+      queue,
+      nextToAssign,
+      lastAssigned,
+    };
+  }
+
+  /**
+   * Orden: sede (padre) → dentro campañas → dentro ejecutivos (colas por tipo/team leader).
+   * Sin parámetros: devuelve todas las sedes con sus campañas y colas.
+   */
+  async getAssignmentQueues(): Promise<AssignmentQueuesBySedeDto> {
+    const campusIds = await this.campusTeamService.getAllCampusIds();
+    const subCampaignIds = [CAMPAIGNS_IDS.OI, CAMPAIGNS_IDS.OFM, CAMPAIGNS_IDS.APNEA];
+    const sedes: SedeAssignmentDto[] = [];
+
+    for (const campusId of campusIds) {
+      const campañas: CampañaEnSedeDto[] = [];
+
+      for (const subCampaignId of subCampaignIds) {
+        const data = await this.getAssignmentQueueByCampus(campusId, subCampaignId);
+        const lastDatesByUser = await this.opportunityService.getLastAssignmentDatesByUser(
+          subCampaignId,
+          campusId,
+        );
+
+        const allowedTeamIds = await this.getAllowedTeamIdsForCampusAndSubcampaign(campusId, subCampaignId);
+        const usersWithTeams = allowedTeamIds.length > 0 ? await this.getUserByAllTeams(allowedTeamIds) : [];
+        const teamNamesByUserId = new Map<string, string[]>();
+        for (const row of usersWithTeams) {
+          const arr = teamNamesByUserId.get(row.user_id) ?? [];
+          const name = (row.team_name ?? '').trim();
+          if (name && !arr.includes(name)) arr.push(name);
+          teamNamesByUserId.set(row.user_id, arr);
+        }
+
+        const getTeamName = (userId: string): string | null => {
+          const arr = teamNamesByUserId.get(userId);
+          return arr?.length ? arr.join(', ') : null;
+        };
+
+        const colaUltimoAsignado: ColaUltimoAsignadoItemDto[] = data.lastAssigned
+          ? [
+              {
+                user: data.lastAssigned.user,
+                numero: data.lastAssigned.position,
+                teamName: getTeamName(data.lastAssigned.user.id),
+                hora: formatDateToLima(data.lastAssigned.assignedAt) ?? data.lastAssigned.assignedAt ?? '',
+                opportunityId: data.lastAssigned.opportunityId,
+              },
+            ]
+          : [];
+
+        const colaSiguiente: ColaSiguienteItemDto[] = data.nextToAssign
+          ? [
+              {
+                user: data.nextToAssign.user,
+                numero: data.nextToAssign.position,
+                teamName: getTeamName(data.nextToAssign.user.id),
+                haceCuantoNoRecibe: formatHaceCuanto(
+                  lastDatesByUser[data.nextToAssign.user.id] ?? null,
+                ),
+              },
+            ]
+          : [];
+
+        const colaOrdenadaPorNombre: ColaPorSedeItemDto[] = data.queue.map((item) => {
+          const lastAt = lastDatesByUser[item.user.id] ?? null;
+          const datosAdicionales: ColaItemDatosAdicionalesDto = {
+            lastAssignedAt: formatDateToLima(lastAt),
+            haceCuantoNoRecibe: formatHaceCuanto(lastAt),
+          };
+          return {
+            user: item.user,
+            numero: item.position,
+            teamName: getTeamName(item.user.id),
+            isNext: item.isNext,
+            isLastAssigned: item.isLastAssigned,
+            datosAdicionales,
+          };
+        });
+
+        campañas.push({
+          subCampaignId,
+          subCampaignName: SUB_CAMPAIGN_NAMES[subCampaignId] ?? subCampaignId,
+          colaUltimoAsignado,
+          colaSiguiente,
+          colaOrdenadaPorNombre,
+        });
+      }
+
+      sedes.push({ campusId, campañas });
+    }
+
+    return { sedes };
+  }
+
   async getUsersByTeamLeader(userId: string) {
     const teams = await this.getAllTeamsByUser(userId);
 

@@ -19,6 +19,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { UserWithAssignmentsDto } from './dto/user-with-assignments.dto';
 import { CurrentUserAssignmentsDto } from './dto/current-user-assignments.dto';
 import { User } from './user.entity';
+import { AssignmentQueuesBySedeDto } from './dto/assignment-queue.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { Public } from 'src/auth/decorators/public.decorator';
 import { TEAMS_IDS } from 'src/globals/ids';
@@ -54,9 +55,13 @@ export class UserController {
     return orderListAlphabetic(await Promise.all(usersEntity))
   }
 
+  /**
+   * Colas de asignación. Orden: sede (padre) → dentro campañas → dentro ejecutivos (colas por tipo/team leader).
+   * En cada campaña: colaUltimoAsignado, colaSiguiente, colaOrdenadaPorNombre.
+   */
   @Get('users-active')
-  async usersActive() {
-    return await this.userService.getUsersCommercials();
+  async usersActive(): Promise<AssignmentQueuesBySedeDto> {
+    return await this.userService.getAssignmentQueues();
   }
 
   

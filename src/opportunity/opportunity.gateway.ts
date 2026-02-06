@@ -24,12 +24,9 @@ export class OpportunityGateway implements OnGatewayConnection, OnGatewayDisconn
   private readonly logger = new Logger(OpportunityGateway.name);
   private userSockets = new Map<string, Set<string>>(); // assignedUserId -> Set<socketId>
 
-  handleConnection(client: Socket) {
-    this.logger.log(`Cliente conectado: ${client.id}`);
-  }
+  handleConnection(_client: Socket) {}
 
   handleDisconnect(client: Socket) {
-    this.logger.log(`Cliente desconectado: ${client.id}`);
     
     // Remover el socket de todos los usuarios
     for (const [assignedUserId, socketIds] of this.userSockets.entries()) {
@@ -60,8 +57,7 @@ export class OpportunityGateway implements OnGatewayConnection, OnGatewayDisconn
       this.userSockets.set(assignedUserId, new Set());
     }
     this.userSockets.get(assignedUserId)!.add(client.id);
-    
-    this.logger.log(`Cliente ${client.id} se unió a la sala del usuario ${assignedUserId}`);
+
     client.emit('joined-user-room', { assignedUserId });
   }
 

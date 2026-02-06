@@ -23,8 +23,10 @@ import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ReprogramingReservationDto } from './dto/update-opportunity.dto';
+import { UpdateSedeAtencionDto } from './dto/update-sede-atencion.dto';
 import type { UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { Opportunity } from './opportunity.entity';
+import { CreateOpportunityResponse } from './dto/create-opportunity-response.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
 import { UpdateContactDto } from 'src/contact/dto/update-contact.dto';
@@ -65,9 +67,6 @@ export class OpportunityController {
     @Query('usuario') usuario: string,
     @Query('uuid-opportunity') uuidOpportunity: string
   ) {
-    console.log('usuario', usuario);
-    console.log('uuidOpportunity', uuidOpportunity);
-    
     // Obtener la respuesta base del redirect
     const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity);
     
@@ -78,7 +77,6 @@ export class OpportunityController {
       
       // Si ya fue facturada, no devolver presave
       if (alreadyInvoiced) {
-        console.log('📋 Oportunidad ya fue facturada (isPresaved=false), no se devuelve presave');
         return redirectResponse;
       }
       
@@ -87,7 +85,6 @@ export class OpportunityController {
       
       // Si existe presave, agregarlo a la respuesta con TODOS los campos
       if (presaveData) {
-        console.log('📦 Devolviendo presave para oportunidad:', uuidOpportunity);
         return {
           ...redirectResponse,
           presave: {
@@ -126,9 +123,8 @@ export class OpportunityController {
           }
         };
       }
-    } catch (error) {
+    } catch {
       // Si hay error con presave (tabla no existe, etc.), simplemente lo ignoramos
-      console.log('⚠️ Error al buscar presave (ignorando):', error.message);
     }
     
     return redirectResponse;
@@ -138,7 +134,6 @@ export class OpportunityController {
   @Post('presave')
   async createOrUpdatePresave(@Body() dto: CreateOpportunityPresaveDto) {
     try {
-      console.log('Creando/Actualizando presave para oportunidad:', dto.espoId);
       const result = await this.opportunityPresaveService.createOrUpdate(dto);
       return {
         success: true,
@@ -349,7 +344,18 @@ export class OpportunityController {
     return await this.opportunityService.findByStage(stage);
   }
 
- @Post('assigned/:userRequest')
+  /** Lista de sedes (campus) desde SV para autoasignación por sede. Requiere token del usuario. */
+  @Get('campuses')
+  async getCampuses(@Req() req: Request & { user: { userId: string } }) {
+    const user = await this.userService.findOne(req.user.userId);
+    if (!user.cUsersv || !user.cContraseaSv) {
+      throw new BadRequestException('Usuario no tiene credenciales de SV');
+    }
+    const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
+    return this.svServices.getCampuses(tokenSv);
+  }
+
+  @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
     @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean }
@@ -364,6 +370,15 @@ export class OpportunityController {
   ): Promise<Opportunity> {
     const userId = req.user.userId;
     return await this.opportunityService.findOneWithDetails(id, userId);
+  }
+
+  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad. Body: { campusAtencionId?: number | null }. */
+  @Patch(':id/sede-atencion')
+  async updateSedeAtencion(
+    @Param('id') id: string,
+    @Body() body: UpdateSedeAtencionDto,
+  ): Promise<Opportunity> {
+    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null);
   }
 
   @Patch(':id')
@@ -394,32 +409,26 @@ export class OpportunityController {
   }
 
   @Post('register')
-  @UseInterceptors(OpportunityFilesInterceptor) 
+  @UseInterceptors(OpportunityFilesInterceptor)
   async register(
     @Body() body: Omit<CreateOpportunityDto, 'files'>,
     @UploadedFiles() files: Express.Multer.File[],
-    @Req() req: Request & { user: { userId: string; userName: string } }
+    @Req() req: Request & { user: { userId: string; userName: string } },
+  ): Promise<CreateOpportunityResponse> {
+    const createData: CreateOpportunityDto = { ...body };
+    const result = await this.opportunityService.create(createData, req.user.userId);
 
-  ): Promise<Opportunity> {
-    
-    const createData: CreateOpportunityDto = {
-      ...body,
-    };
-
-    const opportunity = await this.opportunityService.create(createData, req.user.userId);
-    
-    // Guardar archivos en la base de datos
-    if (files && files.length > 0) {
+    if (result.status === 'success' && result.data.opportunity && files?.length > 0) {
       await this.fileUploadService.uploadFiles(
         files,
-        opportunity.id.toString(),
+        result.data.opportunity.id.toString(),
         'opportunities',
         FileType.ALL,
-        DirectoryType.OPPORTUNITIES
+        DirectoryType.OPPORTUNITIES,
       );
     }
 
-    return opportunity;
+    return result;
   }
 
   @Get('count-opportunities-assigned/:date')
@@ -430,25 +439,24 @@ export class OpportunityController {
   @Post('create-opportunity-with-manual-assign')
   @UseInterceptors(OpportunityFilesInterceptor)
   async createOpportunityWithManualAssign(
-    @Body()  body: Omit<CreateOpportunityDto, 'files'>, 
+    @Body() body: Omit<CreateOpportunityDto, 'files'>,
     @UploadedFiles() files: Express.Multer.File[],
-    @Req() req: Request & { user: { userId: string; userName: string } }
-  ) {
+    @Req() req: Request & { user: { userId: string; userName: string } },
+  ): Promise<CreateOpportunityResponse> {
     const userId = req.user.userId;
-    const opportunity = await this.opportunityService.createWithManualAssign(body, userId);
-    
-    // Guardar archivos en la base de datos
-    if (files && files.length > 0) {
+    const result = await this.opportunityService.createWithManualAssign(body, userId);
+
+    if (result.status === 'success' && result.data.opportunity && files?.length > 0) {
       await this.fileUploadService.uploadFiles(
         files,
-        opportunity.id.toString(),
+        result.data.opportunity.id.toString(),
         'opportunities',
         FileType.ALL,
-        DirectoryType.OPPORTUNITIES
+        DirectoryType.OPPORTUNITIES,
       );
     }
 
-    return opportunity;
+    return result;
   }
 
   @Put('update-opportunity-procces/:id')

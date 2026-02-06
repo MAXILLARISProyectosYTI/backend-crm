@@ -18,10 +18,12 @@ import { OpportunityPresave } from './opportunity-presave.entity';
 import { OpportunityPresaveService } from './opportunity-presave.service';
 import { ContractPresave } from './contract-presave.entity';
 import { ContractPresaveService } from './contract-presave.service';
+import { AssignmentQueueStateModule } from '../assignment-queue-state/assignment-queue-state.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave]),
+    AssignmentQueueStateModule,
     ContactModule,
     MeetingModule,
     forwardRef(() => UserModule),

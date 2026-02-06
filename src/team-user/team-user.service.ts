@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TeamUser } from './team-user.entity';
@@ -9,6 +9,54 @@ export class TeamUserService {
     @InjectRepository(TeamUser)
     private readonly teamUserRepository: Repository<TeamUser>,
   ) {}
+
+  /** Obtener asignación usuario-equipo (incluye eliminados). */
+  async getAssignment(teamId: string, userId: string): Promise<TeamUser | null> {
+    return await this.teamUserRepository.findOne({
+      where: { teamId, userId },
+    });
+  }
+
+  /** IDs de usuarios asignados a un equipo (no eliminados). */
+  async getUserIdsByTeamId(teamId: string): Promise<string[]> {
+    const rows = await this.teamUserRepository.find({
+      where: { teamId, deleted: false },
+      select: ['userId'],
+    });
+    return rows.map((r) => r.userId).filter((id): id is string => Boolean(id));
+  }
+
+  /** Asignar un usuario a un equipo. */
+  async addUserToTeam(teamId: string, userId: string): Promise<TeamUser> {
+    const existing = await this.teamUserRepository.findOne({
+      where: { teamId, userId },
+    });
+    if (existing) {
+      if (existing.deleted) {
+        existing.deleted = false;
+        return await this.teamUserRepository.save(existing);
+      }
+      throw new Error('El usuario ya está en este equipo');
+    }
+    const teamUser = this.teamUserRepository.create({
+      teamId,
+      userId,
+      deleted: false,
+    });
+    return await this.teamUserRepository.save(teamUser);
+  }
+
+  /** Quitar usuario del equipo (soft delete). */
+  async removeUserFromTeam(teamId: string, userId: string): Promise<void> {
+    const row = await this.teamUserRepository.findOne({
+      where: { teamId, userId },
+    });
+    if (!row) {
+      throw new NotFoundException('Asignación usuario-equipo no encontrada');
+    }
+    row.deleted = true;
+    await this.teamUserRepository.save(row);
+  }
 
   async createMany(teamsIds: string[], userId: string): Promise<TeamUser[]> {
     const teamUsers = teamsIds.map(teamId => this.teamUserRepository.create({

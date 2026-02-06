@@ -35,7 +35,7 @@ export class OpportunityWebSocketService {
       const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId.id);
       
       if (!isConnected) {
-        this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
+        //this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
         return;
       }
 
@@ -77,7 +77,7 @@ export class OpportunityWebSocketService {
       const isConnected = this.opportunityGateway.isUserConnected(opportunity.assignedUserId.id);
       
       if (!isConnected) {
-        this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
+        //this.logger.log(`Usuario ${opportunity.assignedUserId} no está conectado, notificación omitida`);
         return;
       }
 
@@ -127,7 +127,7 @@ export class OpportunityWebSocketService {
       const isConnected = this.opportunityGateway.isUserConnected(assignedUserId);
       
       if (!isConnected) {
-        this.logger.log(`Usuario ${assignedUserId} no está conectado, notificación omitida`);
+        //this.logger.log(`Usuario ${assignedUserId} no está conectado, notificación omitida`);
         return;
       }
 

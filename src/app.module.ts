@@ -19,6 +19,8 @@ import { TeamUserModule } from './team-user/team-user.module';
 import { TeamModule } from './team/team.module';
 import { KpiModule } from './kpi/kpi.module';
 import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
+import { CampusTeamModule } from './campus-team/campus-team.module';
+import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
 
 @Module({
   imports: [
@@ -52,6 +54,8 @@ import { ContractPricingModule } from './contract-pricing/contract-pricing.modul
     TeamModule,
     KpiModule,
     ContractPricingModule,
+    CampusTeamModule,
+    AssignmentQueueStateModule,
   ],
   controllers: [AppController],
   providers: [AppService],

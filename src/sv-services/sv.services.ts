@@ -3,6 +3,8 @@ import axios from "axios";
 import { BodyAddOpportunityToQueueDto, PayloadAddOpportunityToQueueDto } from "src/opportunities-closers/dto/queue-assignment-closers";
 import { UpdateQueueOpClosersDto } from "src/opportunities-closers/dto/update-op-closer.dto";
 import { CreateClinicHistoryCrmDto } from "src/opportunity/dto/clinic-history";
+import { PatientIsNewCrmResponse } from "./patient-is-new.types";
+import { CampusListResponse } from "./campus.types";
 
 @Injectable()
 export class SvServices {
@@ -14,20 +16,29 @@ export class SvServices {
   constructor(
   ) {}
 
-  async getPatientIsNew(phoneNumber: string, tokenSv: string){
+  async getCampuses(tokenSv: string): Promise<CampusListResponse> {
     try {
-      const responseClinicHistory = await axios.get<{
-        is_new: boolean;
-        patient: any;
-        complete: boolean;
-        dataReservation: any;
-        dataPayment: any
-      }>(`${this.URL_BACK_SV}/clinic-history/patient-is-new/${phoneNumber}`, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
+      const response = await axios.get<CampusListResponse>(`${this.URL_BACK_SV}/campus`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
       });
-  
+      return response.data;
+    } catch (error) {
+      console.error('Error getCampuses', error);
+      throw new BadRequestException('Error al obtener sedes (campus) desde SV');
+    }
+  }
+
+  async getPatientIsNew(phoneNumber: string, tokenSv: string): Promise<PatientIsNewCrmResponse> {
+    try {
+      const responseClinicHistory = await axios.get<PatientIsNewCrmResponse>(
+        `${this.URL_BACK_SV}/clinic-history/patient-is-new-crm/${phoneNumber}`,
+        {
+          headers: {
+            Authorization: `Bearer ${tokenSv}`
+          }
+        }
+      );
+
       return responseClinicHistory.data;
     } catch (error) {
       console.error('Error getPatientIsNew', error);
@@ -160,8 +171,6 @@ export class SvServices {
 
   async getIRHByComprobante(comprobante: string, tokenSv: string) {
     try {
-      console.log('comprobante', comprobante);
-      console.log('url', `${this.URL_BACK_SV}/service_billing_payments01/get-irh-by-comprobante`);
       const responsePatientSV = await axios.post(`${this.URL_BACK_SV}/service_billing_payments01/get-irh-by-comprobante`, { comprobante }, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
@@ -224,9 +233,6 @@ export class SvServices {
   }
 
   async addOpportunityToQueue(payload: PayloadAddOpportunityToQueueDto, tokenSv: string) {
-    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
-    console.log('payload', payload);
-    console.log('url', `${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`);
     try {
       const responseQueueAssignmentClosers = await axios.post(`${this.URL_BACK_SV}/opportunity-closers/add-quotation-to-queue`, payload, {
         headers: {
@@ -242,12 +248,6 @@ export class SvServices {
   }
 
   async getRedirectByOpportunityId(opportunityId: string, campaignName: string, phoneNumber: string, historyCLinic: string | undefined) {
-    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
-    console.log('opportunityId', opportunityId);
-    console.log('campaignName', campaignName);
-    console.log('phoneNumber', phoneNumber);
-    console.log('historyCLinic', historyCLinic);
-    console.log('url', `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`);
     try {
       const responseRedirectByOpportunityId = await axios.get(`${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`, {
         params: {
@@ -255,16 +255,9 @@ export class SvServices {
           phoneNumber,
           historyCLinic: historyCLinic || ''
         }
-      })
-      console.log('parameters', {
-        campaignName,
-        phoneNumber,
-        historyCLinic: historyCLinic || ''
       });
-      console.log('url final', `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}?campaignName=${campaignName}&phoneNumber=${phoneNumber}&historyCLinic=${historyCLinic || ''}`);
       return responseRedirectByOpportunityId.data;
-    } catch (error) {
-      console.error('Error getRedirectByOpportunityId', error);
+    } catch {
       throw new BadRequestException('Error al obtener el redirect por ID de oportunidad');
     }
   }

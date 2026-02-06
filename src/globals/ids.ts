@@ -25,6 +25,13 @@ export const CAMPAIGNS_IDS = {
   OFM: '6894e221746ae39ea',
 }
 
+/** Nombre legible de cada subcampaña (para respuestas API, ej. users-active) */
+export const SUB_CAMPAIGN_NAMES: Record<string, string> = {
+  [CAMPAIGNS_IDS.OI]: 'OI',
+  [CAMPAIGNS_IDS.OFM]: 'OFM',
+  [CAMPAIGNS_IDS.APNEA]: 'APNEA',
+}
+
 export const USERS_ID = {
   CRISTIAN_APNEA: '68aca6a8c35e7ddfc',
   AIREN_OI: '68a746b1bf67faf82'

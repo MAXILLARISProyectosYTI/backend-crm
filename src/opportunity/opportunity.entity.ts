@@ -237,4 +237,16 @@ export class Opportunity {
 
   @Column({ type: 'boolean', nullable: true, default: false, name: 'is_presaved' })
   isPresaved?: boolean;
+
+  /** Sede (campus) para cola de autoasignación por sede */
+  @Column({ type: 'integer', nullable: true, name: 'c_campus_id' })
+  cCampusId?: number;
+
+  /** Sede de atención (campus de atención) donde se atiende al paciente. NULL por defecto. */
+  @Column({ type: 'integer', nullable: true, name: 'c_campus_atencion_id' })
+  cCampusAtencionId?: number;
+
+  /** Metadata JSON: empresa/sede (campusId, campusName, companyId, companyCode, companyName) */
+  @Column({ type: 'text', nullable: true, name: 'c_metadata' })
+  cMetadata?: string;
 }

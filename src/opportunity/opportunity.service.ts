@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException,
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
-import { CreateOpportunityDto } from './dto/create-opportunity.dto';
+import { CreateOpportunityDto, DEFAULT_COMPANY } from './dto/create-opportunity.dto';
 import { ReprogramingReservationDto, UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
 import { ContactService } from 'src/contact/contact.service';
@@ -20,7 +20,6 @@ import { SvServices } from 'src/sv-services/sv.services';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
 import { UserWithTeam } from 'src/user/dto/user-with-team';
-import { DateTime } from 'luxon';
 import { hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
@@ -28,6 +27,13 @@ import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { EnumCodeFlow } from './dto/enumCodeManage';
 import { CampaignService } from 'src/campaign/campaign.service';
+import {
+  PatientIsNewCrmResponse,
+  PatientIsNewResponseCode,
+} from 'src/sv-services/patient-is-new.types';
+import { CreateOpportunityResponse } from './dto/create-opportunity-response.dto';
+import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
+import { CampusItem } from 'src/sv-services/campus.types';
 
 @Injectable()
 export class OpportunityService {
@@ -48,51 +54,154 @@ export class OpportunityService {
     private readonly actionHistoryService: ActionHistoryService,
     private readonly filesService: FilesService,
     private readonly campaignService: CampaignService,
+    private readonly assignmentQueueStateService: AssignmentQueueStateService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
+  /** Códigos que permiten crear oportunidad como paciente nuevo (sin datos previos en SV) */
+  private static readonly CODES_PACIENTE_NUEVO: PatientIsNewResponseCode[] = [
+    'PACIENTE_NUEVO',
+    'PACIENTE_ELIMINADO_SIN_DATOS',
+  ];
 
+  /** Códigos que indican paciente existente: se puede crear oportunidad solo si no está asignado */
+  private static readonly CODES_PACIENTE_EXISTENTE: PatientIsNewResponseCode[] = [
+    'PACIENTE_EXISTE_COMPLETO',
+    'PACIENTE_EXISTE_SOLO_RESERVA',
+    'PACIENTE_EXISTE_SOLO_PAGO',
+    'PACIENTE_EXISTE_MAS_6_MESES',
+    'PACIENTE_EXISTE_MENOS_6_MESES',
+  ];
+
+  /**
+   * Crea una nueva oportunidad (registro de lead).
+   * Flujo: validar teléfono → consultar paciente en SV → validar sede/empresa → crear contacto → asignar por cola (por sede) → crear oportunidad → enlazar con SV si aplica.
+   */
+  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<CreateOpportunityResponse> {
     let contact: Contact | null = null;
 
     try {
-
-      const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
-
-      if(existSamePhoneNumber){
-        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
+      // —— 1. Validar que no exista ya una oportunidad con el mismo teléfono ——
+      const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
+      if (existingByPhone) {
+        const assignedUser = existingByPhone.assignedUserId;
+        const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+        return {
+          status: 'error',
+          code: 'TELEFONO_YA_REGISTRADO',
+          message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+          data: {},
+        };
       }
 
+      // —— 2. Token SV y consultar si el paciente es nuevo o existente en el sistema vertical ——
       const user = await this.userService.findOne(userId);
+      const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+      const dataSv: PatientIsNewCrmResponse = await this.svServices.getPatientIsNew(
+        createOpportunityDto.phoneNumber,
+        tokenSv,
+      );
 
-      const {tokenSv} = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
-
-      const {complete, dataPayment, dataReservation, is_new, patient} = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
-
-      if(!is_new){
-        throw new ConflictException('El paciente ya existe en el sistema vertical');
+      if (dataSv.status === 'error' || dataSv.code === 'ERROR') {
+        return {
+          status: 'error',
+          code: dataSv.code,
+          message: dataSv.message,
+          data: dataSv.data,
+        };
       }
 
-      // Creamos el contacto
+      // —— 3. Determinar si podemos crear: paciente nuevo, eliminado sin datos, o existente (no asignado) ——
+      const { code, data: svData } = dataSv;
+      const isPacienteNuevo = OpportunityService.CODES_PACIENTE_NUEVO.includes(code);
+      const isPacienteExistente = OpportunityService.CODES_PACIENTE_EXISTENTE.includes(code);
+
+      if (isPacienteExistente && svData.is_assigned) {
+        return {
+          status: 'error',
+          code: 'PACIENTE_YA_ASIGNADO',
+          message: 'El paciente ya está asignado a otro ejecutivo',
+          data: svData,
+        };
+      }
+
+      if (!isPacienteNuevo && !isPacienteExistente) {
+        return {
+          status: 'error',
+          code: dataSv.code,
+          message: dataSv.message ?? 'No se puede crear la oportunidad',
+          data: svData,
+        };
+      }
+
+      // —— 4. Validar sede (campus) y empresa: obtener lista de SV, validar que existan y coincidan ——
+      // Form Data envía todos los valores como string; normalizar a number para comparar con la respuesta de SV
+      let campusId: number | undefined = Number(createOpportunityDto.campusId);
+      if (Number.isNaN(campusId)) campusId = undefined;
+      const metadata: { campusId?: number; campusName?: string; companyId?: number; companyCode?: string; companyName?: string } = {};
+
+      const campuses = await this.svServices.getCampuses(tokenSv);
+      let campus: CampusItem | undefined = campuses.find((c: CampusItem) => c.id === campusId);
+      if (campusId != null && campusId !== 0 && !campus) {
+        return {
+          status: 'error',
+          code: 'CAMPUS_INVALIDO',
+          message: 'La sede (campus) indicada no existe',
+          data: {},
+        };
+      }
+
+      // Si no se envió empresa: por defecto la de menor id del campus (ej. Arequipa → LATAM; Lima → Maxillaris)
+      let company = createOpportunityDto.company;
+      if (campus?.companies?.length) {
+        if (!company) {
+          const sorted = [...campus.companies].sort((a, b) => a.id - b.id);
+          company = { id: sorted[0].id, code: sorted[0].code, name: sorted[0].name };
+        } else {
+          const companyInCampus = campus.companies.find((co) => co.id === company!.id);
+          if (!companyInCampus) {
+            return {
+              status: 'error',
+              code: 'EMPRESA_NO_PERTENECE_A_SEDE',
+              message: 'La empresa indicada no pertenece a la sede seleccionada',
+              data: {},
+            };
+          }
+          company = { id: companyInCampus.id, code: companyInCampus.code, name: companyInCampus.name };
+        }
+      } else if (!company) {
+        company = DEFAULT_COMPANY;
+      }
+
+      if (campus) {
+        metadata.campusId = campus.id;
+        metadata.campusName = campus.name;
+        if (company) {
+          const companyInCampus = campus.companies?.find((co) => co.id === company!.id);
+          if (companyInCampus) {
+            metadata.companyId = companyInCampus.id;
+            metadata.companyCode = companyInCampus.code;
+            metadata.companyName = companyInCampus.name;
+          }
+        }
+      }
+
+      // —— 5. Crear contacto en el CRM ——
       const payloadContact: CreateContactDto = {
         firstName: createOpportunityDto.name,
         lastName: createOpportunityDto.name,
         phoneNumber: createOpportunityDto.phoneNumber,
-      }
-
+      };
       contact = await this.contactService.create(payloadContact);
 
-      // Verificamos si es hora de asignar
+      // —— 6. Asignar ejecutivo por cola (solo en horario laboral; cola por subcampaña y por sede) ——
       const isTimeToAssign = timeToAssing();
-
-      let userToAssign: User | null = null
-
-      // Asignamos la oportunidad en caso de que sea hora de asignar
+      let userToAssign: User | null = null;
       if (isTimeToAssign) {
-        userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.subCampaignId);
-      } 
+        userToAssign = await this.userService.getNextUserToAssign(createOpportunityDto.subCampaignId, campusId);
+      }
 
-      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
-
+      // —— 7. Crear oportunidad con datos base, sede, metadata y enlace SV ——
+      const today = new Date();
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
         name: contact.firstName,
@@ -105,115 +214,121 @@ export class OpportunityService {
         cCanal: createOpportunityDto.channel,
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
-      }
-
-      // Asignamos el usuario en caso de que sea hora de asignar
+      };
       if (userToAssign) {
         payloadOpportunity.assignedUserId = userToAssign;
-      } 
-
-      // Agregamos la observación en caso de que exista
-      if(createOpportunityDto.observation){
+      }
+      if (createOpportunityDto.observation) {
         payloadOpportunity.cObs = createOpportunityDto.observation;
+      }
+      if (campusId != null) {
+        payloadOpportunity.cCampusId = campusId;
+      }
+      if (Object.keys(metadata).length > 0) {
+        payloadOpportunity.cMetadata = JSON.stringify(metadata);
       }
 
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
-
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id}&uuid-opportunity=${savedOpportunity.id}`;
+      const newOpportunity = await this.update(savedOpportunity.id, { cConctionSv }, userId);
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
-
-      // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
-      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
-        espoId: newOpportunity.id,
+      // Estado estable de cola: registrar asignación (sede + subcampaña) para que users-active sea consistente
+      if (userToAssign && campusId != null) {
+        await this.assignmentQueueStateService.recordAssignment(
+          campusId,
+          createOpportunityDto.subCampaignId,
+          userToAssign.id,
+          savedOpportunity.id,
+        );
       }
 
-      // En caso que el ya exista en la SV y pase como oportunidad nueva, actualizamos la oportunidad con los datos del paciente y agreamos el id del paciente en la tabla intermediaria
-      if(patient && !complete){
+      // —— 8. Si el paciente ya existía en SV: completar oportunidad con datos del paciente y enlazar en SV ——
+      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
+        espoId: newOpportunity.id,
+      };
+
+      if (isPacienteExistente && svData.patient) {
+        const patient = svData.patient;
+        const complete = svData.complete;
+        const dataReservation = svData.data_reservation;
+        const dataPayment = svData.data_payment;
+        const clientData = svData.client_data;
+
         payloadClinicHistory.patientId = patient.id;
 
         const rawPayload: UpdateOpportunityDto = {
           cClinicHistory: patient.history,
-          cLastNameFather: patient.attorney,
-          cCustomerDocumentType: patient.invoise_type_document,
-          cCustomerDocument: patient.invoise_num_document,
+          cCustomerDocumentType: clientData?.document_type ?? 'DNI',
+          cCustomerDocument: clientData?.document_number ?? patient.documentNumber,
           cPatientsname: patient.name,
           cPatientsPaternalLastName: patient.lastNameFather,
           cPatientsMaternalLastName: patient.lastNameMother,
           cPatientDocument: patient.documentNumber,
           cPatientDocumentType: 'DNI',
         };
-      
-        // Filtrar solo atributos con valor
         const payloadToUpdate = Object.entries(rawPayload)
-          .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
-      
-        await this.update(newOpportunity.id, payloadToUpdate, userId);
+        await this.update(newOpportunity.id, payloadToUpdate as UpdateOpportunityDto, userId);
+
+        if (complete && dataPayment) {
+          payloadClinicHistory.id_payment = dataPayment.payment_id;
+          if (dataReservation) {
+            const payloadUpdateReservation: UpdateOpportunityDto = {
+              cAppointment: dataReservation.reservation_appointment,
+              cDateReservation: dataReservation.reservation_date,
+              cDoctor: dataReservation.doctor_name,
+              cEnvironment: dataReservation.environment_name,
+              cSpecialty: dataReservation.specialty_name,
+              cTariff: dataReservation.tariff_name,
+            };
+            await this.update(newOpportunity.id, payloadUpdateReservation, userId);
+            payloadClinicHistory.id_reservation = dataReservation.reservation_id;
+          }
+        }
       }
 
-      // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
-      if(complete){
+      // —— 9. Registrar el enlace oportunidad–paciente en el sistema vertical ——
+      await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
-        // Contruimos el payload para actualizar la oportunidad con los datos del paciente
-        // Construimos con datos de los pagos por que es lo minimo que debe tener
-        const payloadUpdateComplete: UpdateOpportunityDto = {
-          cClinicHistory: patient.history,
-          cLastNameFather: patient.attorney,
-          cCustomerDocumentType: patient.invoise_type_document,
-          cCustomerDocument: patient.invoise_num_document,
-          cPatientsname: patient.name,
-          cPatientsPaternalLastName: patient.lastNameFather,
-          cPatientsMaternalLastName: patient.lastNameMother,
-          cPatientDocument: patient.documentNumber,
-          cPatientDocumentType: 'DNI',
-        }
-
-        // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.payment_id;
-        payloadClinicHistory.patientId = patient.id;
-
-        // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
-        if(dataReservation){
-          payloadUpdateComplete.cAppointment = dataReservation.reservation_appointment;
-          payloadUpdateComplete.cDateReservation = dataReservation.reservation_date;
-          payloadUpdateComplete.cDoctor = dataReservation.doctor_name;
-          payloadUpdateComplete.cEnvironment = dataReservation.environment_name;
-          payloadUpdateComplete.cSpecialty = dataReservation.specialty_name;
-          payloadUpdateComplete.cTariff = dataReservation.tariff_name;
-
-          // Agregamos el id de la reserva en la tabla intermediaria
-          payloadClinicHistory.id_reservation = dataReservation.id;
-        }
-
-        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
-      }
-
-
-      await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);   
-      
-      // Notificar por WebSocket si tiene assignedUserId
+      // —— 10. Notificar por WebSocket si hay ejecutivo asignado ——
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
 
+      // —— 11. Registrar en historial de acciones ——
       await this.actionHistoryService.addRecord({
         targetId: newOpportunity.id,
         target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
-        userId: userId,
+        userId,
         message: 'Oportunidad creada',
       });
 
-      return newOpportunity;
-
-    } catch (error) {
-      // Eliminamos el contacto en caso de error
-      if(contact){
-        await this.contactService.softDelete(contact.id);
+      return {
+        status: 'success',
+        code: 'OPORTUNIDAD_CREADA',
+        message: 'Oportunidad creada correctamente',
+        data: { opportunity: newOpportunity },
+      };
+    } catch (error: any) {
+      if (contact) {
+        try {
+          await this.contactService.softDelete(contact.id);
+        } catch {
+          // ignorar si falla el soft delete
+        }
       }
-
-      throw new BadRequestException(error.message);
+      const message = error?.message ?? 'Error al crear la oportunidad';
+      if (message === 'NO_USUARIOS_PARA_ASIGNAR') {
+        return {
+          status: 'error',
+          code: 'SIN_USUARIOS_PARA_ASIGNAR',
+          message: 'No hay usuarios disponibles para asignar en esta campaña/sede.',
+          data: {},
+        };
+      }
+      throw new BadRequestException(message);
     }
   }
 
@@ -264,7 +379,7 @@ export class OpportunityService {
         nextRefName = `${baseName} REF-${nextRef}`;
       }
 
-      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+      const today = new Date();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -328,7 +443,7 @@ export class OpportunityService {
     await this.websocketService.notifyOpportunityUpdate(opportunity, opportunity.stage);
 
     opportunity.assignedUserId = user;
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+    opportunity.modifiedAt = new Date();
     opportunity.cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assignedUserId}&uuid-opportunity=${opportunityId}`;
 
     await this.actionHistoryService.addRecord({
@@ -338,7 +453,18 @@ export class OpportunityService {
       message: 'Oportunidad asignada manualmente',
     });
 
-    return await this.opportunityRepository.save(opportunity);
+    const saved = await this.opportunityRepository.save(opportunity);
+
+    if (opportunity.cCampusId != null && opportunity.cSubCampaignId) {
+      await this.assignmentQueueStateService.recordAssignment(
+        opportunity.cCampusId,
+        opportunity.cSubCampaignId,
+        assignedUserId,
+        opportunityId,
+      );
+    }
+
+    return saved;
 
   }
 
@@ -370,42 +496,128 @@ export class OpportunityService {
     return countOpportunitiesAssigned;
   }
 
-  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<Opportunity> {
+  async createWithManualAssign(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<CreateOpportunityResponse> {
     let contact: Contact | null = null;
-      
+
     try {
-      
-      const existSamePhoneNumber = await this.existSamePhoneNumber(createOpportunityDto.phoneNumber);
+      const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
+      if (existingByPhone) {
+        const assignedUser = existingByPhone.assignedUserId;
+        const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+        return {
+          status: 'error',
+          code: 'TELEFONO_YA_REGISTRADO',
+          message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+          data: {},
+        };
+      }
+
+      if (!createOpportunityDto.assignedUserId) {
+        return {
+          status: 'error',
+          code: 'ASIGNADO_REQUERIDO',
+          message: 'El ejecutivo a asignar (assignedUserId) es requerido',
+          data: {},
+        };
+      }
 
       const user = await this.userService.findOne(userId);
+      const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+      const dataSv = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
 
-      const {tokenSv} = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
-
-      const { is_new, patient, complete, dataReservation, dataPayment } = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
-
-      if(!is_new){
-        throw new ConflictException('El paciente ya existe en el sistema vertical');
+      if (dataSv.status === 'error' || dataSv.code === 'ERROR') {
+        return {
+          status: 'error',
+          code: dataSv.code,
+          message: dataSv.message,
+          data: dataSv.data,
+        };
       }
 
-      if(existSamePhoneNumber){
-        throw new ConflictException('Ya existe una oportunidad con este número de teléfono');
+      const { code, data: svData } = dataSv;
+      const isPacienteNuevo = OpportunityService.CODES_PACIENTE_NUEVO.includes(code);
+      const isPacienteExistente = OpportunityService.CODES_PACIENTE_EXISTENTE.includes(code);
+
+      if (isPacienteExistente && svData.is_assigned) {
+        return {
+          status: 'error',
+          code: 'PACIENTE_YA_ASIGNADO',
+          message: 'El paciente ya está asignado a otro ejecutivo',
+          data: svData,
+        };
       }
-      // Creamos el contacto
+      if (!isPacienteNuevo && !isPacienteExistente) {
+        return {
+          status: 'error',
+          code: dataSv.code,
+          message: dataSv.message ?? 'No se puede crear la oportunidad',
+          data: svData,
+        };
+      }
+
+      // Misma validación de sede (campus) y empresa que create()
+      let campusId: number | undefined = Number(createOpportunityDto.campusId);
+      if (Number.isNaN(campusId)) campusId = undefined;
+      const metadata: { campusId?: number; campusName?: string; companyId?: number; companyCode?: string; companyName?: string } = {};
+
+      const campuses = await this.svServices.getCampuses(tokenSv);
+      let campus: CampusItem | undefined = campuses.find((c: CampusItem) => c.id === campusId);
+      if (campusId != null && campusId !== 0 && !campus) {
+        return {
+          status: 'error',
+          code: 'CAMPUS_INVALIDO',
+          message: 'La sede (campus) indicada no existe',
+          data: {},
+        };
+      }
+
+      let company = createOpportunityDto.company;
+      if (campus?.companies?.length) {
+        if (!company) {
+          const sorted = [...campus.companies].sort((a, b) => a.id - b.id);
+          company = { id: sorted[0].id, code: sorted[0].code, name: sorted[0].name };
+        } else {
+          const companyInCampus = campus.companies.find((co) => co.id === company!.id);
+          if (!companyInCampus) {
+            return {
+              status: 'error',
+              code: 'EMPRESA_NO_PERTENECE_A_SEDE',
+              message: 'La empresa indicada no pertenece a la sede seleccionada',
+              data: {},
+            };
+          }
+          company = { id: companyInCampus.id, code: companyInCampus.code, name: companyInCampus.name };
+        }
+      } else if (!company) {
+        company = DEFAULT_COMPANY;
+      }
+
+      if (campus) {
+        metadata.campusId = campus.id;
+        metadata.campusName = campus.name;
+        if (company) {
+          const companyInCampus = campus.companies?.find((co) => co.id === company!.id);
+          if (companyInCampus) {
+            metadata.companyId = companyInCampus.id;
+            metadata.companyCode = companyInCampus.code;
+            metadata.companyName = companyInCampus.name;
+          }
+        }
+      }
+
       const payloadContact: CreateContactDto = {
         firstName: createOpportunityDto.name,
         lastName: createOpportunityDto.name,
         phoneNumber: createOpportunityDto.phoneNumber,
-      }
+      };
       contact = await this.contactService.create(payloadContact);
 
-      // Obtenemos el usuario asignado
-      const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId!);
-
-      const today = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+      const assignedUser = await this.userService.findOne(createOpportunityDto.assignedUserId);
+      const today = new Date();
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
-        name: `${contact.firstName} REF-`,
+        name: contact.firstName,
         createdAt: today,
         cNumeroDeTelefono: createOpportunityDto.phoneNumber,
         closeDate: today,
@@ -416,90 +628,70 @@ export class OpportunityService {
         contactId: contact.id,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
         assignedUserId: assignedUser,
-      }
-
-      // Agregamos la observación en caso de que exista
-      if(createOpportunityDto.observation){
+      };
+      if (createOpportunityDto.observation) {
         payloadOpportunity.cObs = createOpportunityDto.observation;
+      }
+      if (campusId != null) {
+        payloadOpportunity.cCampusId = campusId;
+      }
+      if (Object.keys(metadata).length > 0) {
+        payloadOpportunity.cMetadata = JSON.stringify(metadata);
       }
 
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
-
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
-      
       const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${createOpportunityDto.assignedUserId}&uuid-opportunity=${savedOpportunity.id}`;
+      let newOpportunity = await this.update(savedOpportunity.id, { cConctionSv }, userId);
 
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
-
-      // Contruimos el payload para la tabla intermediaria entre el CRM y el sistema vertical
-      const payloadClinicHistory: CreateClinicHistoryCrmDto = {
-        espoId: newOpportunity.id,
+      // Si la sede de la oportunidad no coincide con la sede del ejecutivo asignado: éxito pero con observación
+      if (newOpportunity.cCampusId != null && assignedUser) {
+        const userCampusIds = await this.userService.getCampusIdsByUser(assignedUser.id);
+        if (userCampusIds.length > 0 && !userCampusIds.includes(newOpportunity.cCampusId)) {
+          const obsSede = 'Sede de la oportunidad distinta a la sede del ejecutivo asignado.';
+          const newObs = newOpportunity.cObs ? `${newOpportunity.cObs}\n${obsSede}` : obsSede;
+          newOpportunity = await this.update(newOpportunity.id, { cObs: newObs }, userId);
+        }
       }
 
-      // En caso que el ya exista en la SV y pase como oportunidad nueva, actualizamos la oportunidad con los datos del paciente y agreamos el id del paciente en la tabla intermediaria
-      if(patient && !complete){
-        payloadClinicHistory.patientId = patient.id;
+      const payloadClinicHistory: CreateClinicHistoryCrmDto = { espoId: newOpportunity.id };
+      const { patient, complete, data_reservation: dataReservation, data_payment: dataPayment, client_data: clientData } = dataSv.data;
 
+      if (patient && (isPacienteExistente || !dataSv.data.is_new)) {
+        payloadClinicHistory.patientId = patient.id;
         const rawPayload: UpdateOpportunityDto = {
           cClinicHistory: patient.history,
-          cLastNameFather: patient.attorney,
-          cCustomerDocumentType: patient.invoise_type_document,
-          cCustomerDocument: patient.invoise_num_document,
+          cCustomerDocumentType: clientData?.document_type ?? 'DNI',
+          cCustomerDocument: clientData?.document_number ?? patient.documentNumber,
           cPatientsname: patient.name,
           cPatientsPaternalLastName: patient.lastNameFather,
           cPatientsMaternalLastName: patient.lastNameMother,
           cPatientDocument: patient.documentNumber,
           cPatientDocumentType: 'DNI',
         };
-      
-        // Filtrar solo atributos con valor
         const payloadToUpdate = Object.entries(rawPayload)
-          .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
           .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
-      
-        await this.update(newOpportunity.id, payloadToUpdate, userId);
-      }
+        await this.update(newOpportunity.id, payloadToUpdate as UpdateOpportunityDto, userId);
 
-      // En caso que el paciente ya exista en la SV y pase como oportunidad nueva, y ademas ya marque como completado, actualizamos la oportunidad con el id del paciente en la tabla intermediaria
-      if(complete){
-
-        // Contruimos el payload para actualizar la oportunidad con los datos del paciente
-        // Construimos con datos de los pagos por que es lo minimo que debe tener
-        const payloadUpdateComplete: UpdateOpportunityDto = {
-          cClinicHistory: patient.history,
-          cLastNameFather: patient.attorney,
-          cCustomerDocumentType: patient.invoise_type_document,
-          cCustomerDocument: patient.invoise_num_document,
-          cPatientsname: patient.name,
-          cPatientsPaternalLastName: patient.lastNameFather,
-          cPatientsMaternalLastName: patient.lastNameMother,
-          cPatientDocument: patient.documentNumber,
-          cPatientDocumentType: 'DNI',
+        if (complete && dataPayment) {
+          payloadClinicHistory.id_payment = dataPayment.payment_id;
+          if (dataReservation) {
+            await this.update(newOpportunity.id, {
+              cAppointment: dataReservation.reservation_appointment,
+              cDateReservation: dataReservation.reservation_date,
+              cDoctor: dataReservation.doctor_name,
+              cEnvironment: dataReservation.environment_name,
+              cSpecialty: dataReservation.specialty_name,
+              cTariff: dataReservation.tariff_name,
+            }, userId);
+            payloadClinicHistory.id_reservation = dataReservation.reservation_id;
+          }
         }
-
-        // Agregamos el id del pago y el id del paciente en la tabla intermediaria
-        payloadClinicHistory.id_payment = dataPayment.payment_id;
-        payloadClinicHistory.patientId = patient.id;
-
-        // En caso que tenga datos de la reserva, actualizamos la oportunidad con los datos de la reserva
-        if(dataReservation){
-          payloadUpdateComplete.cAppointment = dataReservation.reservation_appointment;
-          payloadUpdateComplete.cDateReservation = dataReservation.reservation_date;
-          payloadUpdateComplete.cDoctor = dataReservation.doctor_name;
-          payloadUpdateComplete.cEnvironment = dataReservation.environment_name;
-          payloadUpdateComplete.cSpecialty = dataReservation.specialty_name;
-          payloadUpdateComplete.cTariff = dataReservation.tariff_name;
-
-          // Agregamos el id de la reserva en la tabla intermediaria
-          payloadClinicHistory.id_reservation = dataReservation.reservation_id;
-        }
-
-        await this.update(newOpportunity.id, payloadUpdateComplete, userId);
       }
 
       await this.svServices.createClinicHistoryCrm(payloadClinicHistory, tokenSv);
 
-      // Notificar por WebSocket si tiene assignedUserId
       if (newOpportunity.assignedUserId) {
         await this.websocketService.notifyNewOpportunity(newOpportunity);
       }
@@ -511,25 +703,50 @@ export class OpportunityService {
         message: 'Oportunidad creada',
       });
 
-      return newOpportunity;
-    } catch (error) {
-      throw new BadRequestException(error.message);
+      return {
+        status: 'success',
+        code: 'OPORTUNIDAD_CREADA',
+        message: 'Oportunidad creada correctamente',
+        data: { opportunity: newOpportunity },
+      };
+    } catch (error: any) {
+      if (contact) {
+        try {
+          await this.contactService.softDelete(contact.id);
+        } catch {
+          // ignorar si falla el soft delete
+        }
+      }
+      const message = error?.message ?? 'Error al crear la oportunidad';
+      return {
+        status: 'error',
+        code: 'ERROR_CREACION',
+        message,
+        data: {},
+      };
     }
   }
 
   async existSamePhoneNumber(phoneNumber: string): Promise<boolean> {
     const response = await this.opportunityRepository.find({
-      where: { 
-        cNumeroDeTelefono: ILike(`%${phoneNumber}%`), 
-        deleted: false 
+      where: {
+        cNumeroDeTelefono: ILike(`%${phoneNumber}%`),
+        deleted: false,
       },
     });
+    return response.length > 0;
+  }
 
-    if(response.length > 0){
-      return true;
-    }
-
-    return false;
+  /** Devuelve la primera oportunidad con ese teléfono (y usuario asignado) si existe, para mostrar a quién pertenece. */
+  async findOneByPhoneNumber(phoneNumber: string): Promise<Opportunity | null> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: {
+        cNumeroDeTelefono: ILike(`%${phoneNumber}%`),
+        deleted: false,
+      },
+      relations: ['assignedUserId'],
+    });
+    return opportunity ?? null;
   }
 
   async findAll(): Promise<Opportunity[]> {
@@ -539,10 +756,6 @@ export class OpportunityService {
   }
 
   async findOneWithDetails(id: string, userId: string) {
-    const startTime = Date.now();
-    console.log(`[PERFORMANCE] 🔍 findOneWithDetails iniciado para oportunidad: ${id}`);
-    
-    const opportunityStart = Date.now();
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -551,10 +764,8 @@ export class OpportunityService {
     if (!opportunity) {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
-    console.log(`[PERFORMANCE] Oportunidad obtenida: ${Date.now() - opportunityStart}ms`);
 
     // Paralelizar IO (BD) para bajar la latencia total
-    const parallelStart = Date.now();
     const [
       userAssignedData,
       user,
@@ -568,48 +779,18 @@ export class OpportunityService {
           if (!opportunity.assignedUserId) {
             return { userAssigned: null as User | null, teams: [] as { team_id: string; team_name: string }[] };
           }
-          const userStart = Date.now();
           const userAssigned = await this.userService.findOne(opportunity.assignedUserId.id);
-          console.log(`[PERFORMANCE] userService.findOne(assignedUserId) tomó: ${Date.now() - userStart}ms`);
-          
-          const teamsStart = Date.now();
           const teams = await this.userService.getAllTeamsByUser(userAssigned.id);
-          console.log(`[PERFORMANCE] getAllTeamsByUser tomó: ${Date.now() - teamsStart}ms`);
-          
           return { userAssigned, teams };
         } catch (error) {
-          console.error(`[PERFORMANCE] Error en userAssignedData:`, error);
           throw error;
         }
       })(),
-      (async () => {
-        const opStart = Date.now();
-        const result = await this.userService.findOne(userId);
-        console.log(`[PERFORMANCE] userService.findOne(userId) tomó: ${Date.now() - opStart}ms`);
-        return result;
-      })(),
-      (async () => {
-        const opStart = Date.now();
-        const result = await this.meetingService.findByparentIdLess(opportunity.id);
-        console.log(`[PERFORMANCE] meetingService.findByparentIdLess tomó: ${Date.now() - opStart}ms`);
-        return result;
-      })(),
-      (async () => {
-        const opStart = Date.now();
-        const result = await this.actionHistoryService.getRecordByTargetId(opportunity.id);
-        console.log(`[PERFORMANCE] actionHistoryService.getRecordByTargetId tomó: ${Date.now() - opStart}ms`);
-        return result;
-      })(),
-      (async () => {
-        const opStart = Date.now();
-        const result = await this.filesService.findByParentId(opportunity.id);
-        console.log(`[PERFORMANCE] filesService.findByParentId tomó: ${Date.now() - opStart}ms`);
-        return result;
-      })(),
+      (async () => this.userService.findOne(userId))(),
+      (async () => this.meetingService.findByparentIdLess(opportunity.id))(),
+      (async () => this.actionHistoryService.getRecordByTargetId(opportunity.id))(),
+      (async () => this.filesService.findByParentId(opportunity.id))(),
     ]);
-
-    const parallelTime = Date.now() - parallelStart;
-    console.log(`[PERFORMANCE] Operaciones paralelas completadas: ${parallelTime}ms`);
 
     const { userAssigned, teams } = userAssignedData;
 
@@ -640,19 +821,14 @@ export class OpportunityService {
         break;
     }
 
-    const tokenStart = Date.now();
     const {tokenSv} = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
-    console.log(`[PERFORMANCE] Token SV obtenido: ${Date.now() - tokenStart}ms`);
 
     // SV es externo: no debería tumbar el detalle si está lento/intermitente
     let statusClient = false;
-    const statusClientStart = Date.now();
     try {
       statusClient = await this.svServices.getStatusClient(opportunity.id, tokenSv);
-      console.log(`[PERFORMANCE] StatusClient obtenido: ${Date.now() - statusClientStart}ms`);
-    } catch (e: any) {
-      // Dejar trazabilidad sin romper el endpoint
-      console.warn(`[PERFORMANCE] ⚠️ getStatusClient falló para ${opportunity.id} después de ${Date.now() - statusClientStart}ms: ${e?.message ?? e}`);
+    } catch {
+      // Ignorar fallo de SV para no romper el endpoint
     }
 
     // Asociar archivos con actionHistory basándose en la fecha de creación (dentro de 2 minutos)
@@ -687,10 +863,18 @@ export class OpportunityService {
       return historyWithFile;
     });
 
-    const totalTime = Date.now() - startTime;
-    console.log(`[PERFORMANCE] ✅ findOneWithDetails completado en ${totalTime}ms para oportunidad: ${id}`);
-
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
+  }
+
+  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad. */
+  async updateSedeAtencion(id: string, campusAtencionId: number | null): Promise<Opportunity> {
+    await this.getOneWithEntity(id);
+    const value = campusAtencionId ?? null;
+    await this.opportunityRepository.update(
+      { id },
+      { cCampusAtencionId: value, modifiedAt: new Date() } as Partial<Opportunity>,
+    );
+    return this.getOneWithEntity(id);
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
@@ -717,8 +901,8 @@ export class OpportunityService {
     // Excluir campos internos que no deben guardarse en la base de datos
     const updateData: Partial<Opportunity> = {};
     Object.keys(updateOpportunityDto).forEach(key => {
-      // Excluir campos que empiezan con _ (campos internos)
-      if (key.startsWith('_')) return;
+      // Excluir campos internos y createdAt (no se debe sobrescribir la fecha de creación)
+      if (key.startsWith('_') || key === 'createdAt') return;
       
       const value = updateOpportunityDto[key as keyof UpdateOpportunityDto];
       if (value !== undefined) {
@@ -739,8 +923,8 @@ export class OpportunityService {
       updateData.stage = Enum_Stage.GESTION_INICIAL;
     }
     
-    // Actualizar timestamp de modificación
-    updateData.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+    // Actualizar timestamp de modificación (siempre UTC)
+    updateData.modifiedAt = new Date();
     
     // Actualizar la entidad directamente y guardar para asegurar que los cambios se reflejen
     Object.assign(opportunity, updateData);
@@ -748,6 +932,16 @@ export class OpportunityService {
     
     // Obtener la oportunidad actualizada con relaciones
     const updatedOpportunity = await this.getOneWithEntity(id);
+
+    // Estado estable de cola: si se cambió el usuario asignado, actualizar estado por sede + subcampaña
+    if (updateData.assignedUserId != null && updatedOpportunity.cCampusId != null && updatedOpportunity.cSubCampaignId && updatedOpportunity.assignedUserId?.id) {
+      await this.assignmentQueueStateService.recordAssignment(
+        updatedOpportunity.cCampusId,
+        updatedOpportunity.cSubCampaignId,
+        updatedOpportunity.assignedUserId.id,
+        updatedOpportunity.id,
+      );
+    }
     
     // No notificar por WebSocket si solo se actualiza la tipificación
     if (!isOnlyTypificationUpdate) {
@@ -981,29 +1175,75 @@ export class OpportunityService {
   async softDelete(id: string): Promise<Opportunity> {
     const opportunity = await this.getOneWithEntity(id);
     opportunity.deleted = true;
-    opportunity.modifiedAt = DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate();
+    opportunity.modifiedAt = new Date();
     return await this.opportunityRepository.save(opportunity);
   }
 
-  async getLastOpportunityAssigned(subCampaignId: string): Promise<OpportunityWithUser> {
-    const opportunity = await this.opportunityRepository
+  async getLastOpportunityAssigned(subCampaignId: string, campusId?: number): Promise<OpportunityWithUser> {
+    const qb = this.opportunityRepository
       .createQueryBuilder('o')
       .select([
         'o.id as opportunity_id',
         'o.name as opportunity_name',
         'o.assignedUserId as assigned_user_id',
         'u.userName as assigned_user_user_name',
+        'o.createdAt as assigned_at',
       ])
       .leftJoin('user', 'u', 'u.id = o.assignedUserId')
       .where('o.assignedUserId IS NOT NULL')
-      .andWhere('o.c_sub_campaign_id = :subCampaignId', { subCampaignId })
+      .andWhere('o.cSubCampaignId = :subCampaignId', { subCampaignId })
       .andWhere('o.deleted = false')
-      .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' })
+      .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' });
+
+    if (campusId != null) {
+      qb.andWhere('o.cCampusId = :campusId', { campusId });
+    }
+
+    const opportunity = await qb
       .orderBy('o.createdAt', 'DESC')
+      .addOrderBy('o.id', 'DESC')
       .getRawOne();
 
-    
     return opportunity;
+  }
+
+  /** Fecha de la última oportunidad asignada a un usuario en esta cola (sede + subcampaña). */
+  async getLastAssignmentDateForUser(
+    userId: string,
+    subCampaignId: string,
+    campusId?: number,
+  ): Promise<Date | null> {
+    const map = await this.getLastAssignmentDatesByUser(subCampaignId, campusId);
+    return map[userId] ?? null;
+  }
+
+  /** Última fecha de asignación por usuario en esta cola (una sola consulta). */
+  async getLastAssignmentDatesByUser(
+    subCampaignId: string,
+    campusId?: number,
+  ): Promise<Record<string, Date>> {
+    const qb = this.opportunityRepository
+      .createQueryBuilder('o')
+      .select('o.assignedUserId', 'userId')
+      .addSelect('MAX(o.createdAt)', 'lastAt')
+      .where('o.assignedUserId IS NOT NULL')
+      .andWhere('o.cSubCampaignId = :subCampaignId', { subCampaignId })
+      .andWhere('o.deleted = false')
+      .andWhere('o.name NOT ILIKE :name', { name: '%REF-%' })
+      .groupBy('o.assignedUserId');
+
+    if (campusId != null) {
+      qb.andWhere('o.cCampusId = :campusId', { campusId });
+    }
+
+    const rows = await qb.getRawMany();
+    const out: Record<string, Date> = {};
+    for (const r of rows) {
+      const id = (r as any).userId ?? (r as any).user_id ?? (r as any).assigned_user_id;
+      const at = (r as any).lastAt ?? (r as any).last_at;
+      if (id && at) out[id] = at instanceof Date ? at : new Date(at);
+    }
+    return out;
   }
 
   async getOpportunityByName(name: string): Promise<Opportunity[]> {
@@ -1263,7 +1503,7 @@ export class OpportunityService {
           { id: opportunityId },
           { 
             stage: Enum_Stage.CIERRE_GANADO,
-            modifiedAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate()
+            modifiedAt: new Date()
           }
         );
 
@@ -1493,13 +1733,11 @@ export class OpportunityService {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
     });
-    console.log('opportunity', opportunity);
     if (!opportunity) {
       throw new NotFoundException("No se encontró la oportunidad");
     }
 
     const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId!);
-    console.log('campaign', campaign);
 
     const historyCLinic = opportunity.cClinicHistory;
 
@@ -1514,9 +1752,7 @@ export class OpportunityService {
     const digits = cleanedPhone.replace(/\D/g, '');
 
     const localNumber = digits.slice(-9);
-    console.log('/** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** *//** */');
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
-    console.log('redirectResponse', redirectResponse);
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
@@ -1524,7 +1760,7 @@ export class OpportunityService {
         { id: opportunityId },
         { 
           stage: Enum_Stage.CIERRE_GANADO,
-          modifiedAt: DateTime.now().setZone("America/Lima").plus({hours: 5}).toJSDate()
+          modifiedAt: new Date()
         }
       );
 

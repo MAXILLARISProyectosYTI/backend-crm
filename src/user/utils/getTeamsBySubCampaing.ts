@@ -5,7 +5,13 @@ export const getTeamsBySubCampaing = (subCampaignId: string): string[] => {
     return [TEAMS_IDS.EJ_COMERCIAL_OI];
   }
   if(subCampaignId === CAMPAIGNS_IDS.OFM){
-    return [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL];
+    return [
+      TEAMS_IDS.EJ_COMERCIAL,
+      TEAMS_IDS.TEAM_LEADERS_COMERCIALES,
+      TEAMS_IDS.TEAM_FIORELLA,
+      TEAMS_IDS.TEAM_VERONICA,
+      TEAMS_IDS.TEAM_MICHELL,
+    ];
   }
   if(subCampaignId === CAMPAIGNS_IDS.APNEA){
     return [TEAMS_IDS.EJ_COMERCIAL_APNEA];
