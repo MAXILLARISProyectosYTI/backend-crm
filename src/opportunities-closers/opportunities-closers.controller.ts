@@ -15,7 +15,7 @@ export class OpportunitiesClosersController {
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '10',
     @Query('search') search?: string
-  ): Promise<{ opportunities: OpportunitiesClosers[], total: number, page: number, totalPages: number }> {
+  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null })[], total: number, page: number, totalPages: number }> {
     const pageNumber = parseInt(page, 10);
     const limitNumber = parseInt(limit, 10);
     

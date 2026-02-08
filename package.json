@@ -7,6 +7,8 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
+    "migration:run": "node -r dotenv/config -r ts-node/register ./node_modules/typeorm/cli.js migration:run -d migraciones/data-source.ts",
+    "migration:revert": "node -r dotenv/config -r ts-node/register ./node_modules/typeorm/cli.js migration:revert -d migraciones/data-source.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -47,6 +49,7 @@
     "typeorm": "^0.3.27"
   },
   "devDependencies": {
+    "dotenv": "^16.4.5",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
     "@nestjs/cli": "^11.0.0",

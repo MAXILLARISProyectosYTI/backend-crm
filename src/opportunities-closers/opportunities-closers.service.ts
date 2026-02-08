@@ -41,11 +41,13 @@ export class OpportunitiesClosersService {
     page: number = 1,
     limit: number = 10,
     search?: string
-  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string })[], total: number, page: number, totalPages: number }> {
+  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null })[], total: number, page: number, totalPages: number }> {
     const queryBuilder = this.opportunitiesClosersRepository
       .createQueryBuilder('op')
       .leftJoin('user', 'u', 'u.id = op.assignedUserId')
       .addSelect('u.userName', 'assigned_user_name')
+      .leftJoin('opportunity', 'o', 'o.id = op.opportunity_id')
+      .addSelect('o.c_campus_atencion_id', 'c_campus_atencion_id')
       .where('op.deleted = :deleted', { deleted: false });
 
     if (search && search.trim()) {
@@ -65,11 +67,28 @@ export class OpportunitiesClosersService {
       .take(limit)
       .getRawAndEntities();
 
-    // Mapear los resultados para incluir el nombre del usuario
-    const opportunities = entities.map((entity, index) => ({
-      ...entity,
-      assignedUserName: raw[index]?.assigned_user_name || null,
-    }));
+    // Nombres de sede de atención desde SV (sin hardcodear)
+    let campusNameById = new Map<number, string>();
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const campuses = await this.svServices.getCampuses(tokenSv);
+      campusNameById = new Map(campuses.map((c) => [c.id, c.name]));
+    } catch {
+      // Si falla SV, sedeAtencion quedará null
+    }
+
+    // Mapear los resultados para incluir nombre del usuario y sede de atención
+    const opportunities = entities.map((entity, index) => {
+      const campusAtencionId = raw[index]?.c_campus_atencion_id != null
+        ? Number(raw[index].c_campus_atencion_id)
+        : null;
+      const sedeAtencion = campusAtencionId != null ? campusNameById.get(campusAtencionId) ?? null : null;
+      return {
+        ...entity,
+        assignedUserName: raw[index]?.assigned_user_name || null,
+        sedeAtencion: sedeAtencion ?? null,
+      };
+    });
 
     const totalPages = Math.ceil(total / limit);
 
