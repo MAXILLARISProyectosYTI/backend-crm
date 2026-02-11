@@ -67,26 +67,31 @@ export class OpportunitiesClosersService {
       .take(limit)
       .getRawAndEntities();
 
-    // Nombres de sede de atención desde SV (sin hardcodear)
+    // Nombres de sede de atención desde SV; sede por defecto = campus id 1 (Lima) en SV
     let campusNameById = new Map<number, string>();
+    let defaultSede = 'Lima'; // fallback si SV no responde o no existe campus id 1
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
       const campuses = await this.svServices.getCampuses(tokenSv);
       campusNameById = new Map(campuses.map((c) => [c.id, c.name]));
+      const sedeId1 = campuses.find((c) => c.id === 1);
+      if (sedeId1?.name) defaultSede = sedeId1.name;
     } catch {
-      // Si falla SV, sedeAtencion quedará null
+      // Si falla SV, se usa fallback 'Lima'
     }
 
-    // Mapear los resultados para incluir nombre del usuario y sede de atención
+    // Mapear: sede de atención viene de opportunity (c_campus_atencion_id); si no tiene, por defecto sede id 1 de SV (Lima)
     const opportunities = entities.map((entity, index) => {
       const campusAtencionId = raw[index]?.c_campus_atencion_id != null
         ? Number(raw[index].c_campus_atencion_id)
         : null;
-      const sedeAtencion = campusAtencionId != null ? campusNameById.get(campusAtencionId) ?? null : null;
+      const sedeAtencion = campusAtencionId != null
+        ? (campusNameById.get(campusAtencionId) ?? defaultSede)
+        : defaultSede;
       return {
         ...entity,
         assignedUserName: raw[index]?.assigned_user_name || null,
-        sedeAtencion: sedeAtencion ?? null,
+        sedeAtencion,
       };
     });
 
