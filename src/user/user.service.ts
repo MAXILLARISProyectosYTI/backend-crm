@@ -462,8 +462,9 @@ export class UserService {
   }
 
   /**
-   * IDs de equipos permitidos para una sede y subcampaña (intersección subcampaña + campus_team).
-   * Usado para cola users-active y para resolver nombres de equipo por usuario.
+   * IDs de equipos permitidos para una sede y subcampaña.
+   * Si la sede tiene equipos en campus_team: usa la intersección con la subcampaña;
+   * si la intersección es vacía, usa los equipos de la sede para que la sede muestre solo sus usuarios (ej. campus 15 = Equipo Arequipa).
    */
   private async getAllowedTeamIdsForCampusAndSubcampaign(
     campusId: number,
@@ -474,14 +475,15 @@ export class UserService {
     const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
     if (campusTeamIds.length > 0) {
       const allowed = teams.filter((t) => campusTeamIds.includes(t));
-      if (allowed.length > 0) teams = allowed;
+      teams = allowed.length > 0 ? allowed : campusTeamIds;
     }
     return teams;
   }
 
   /**
    * Usuarios asignables para una subcampaña y opcionalmente una sede.
-   * Si campusId viene y la sede tiene equipos configurados en campus_team, solo se usan esos equipos (intersección con equipos de la subcampaña).
+   * Si campusId viene y la sede tiene equipos en campus_team: usa intersección con la subcampaña;
+   * si la intersección es vacía, usa solo los equipos de la sede (ej. campus 15 solo muestra su equipo).
    */
   async getUsersBySubCampaignIdAndCampusId(subCampaignId: string, campusId?: number): Promise<User[]> {
     const usersActives = await this.getUsersToAssign();
@@ -496,7 +498,7 @@ export class UserService {
       const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
       if (campusTeamIds.length > 0) {
         const allowedTeams = teams.filter((t) => campusTeamIds.includes(t));
-        if (allowedTeams.length > 0) teams = allowedTeams;
+        teams = allowedTeams.length > 0 ? allowedTeams : campusTeamIds;
       }
     }
 
