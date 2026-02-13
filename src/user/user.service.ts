@@ -10,7 +10,7 @@ import { Opportunity } from '../opportunity/opportunity.entity';
 import { getTeamsBySubCampaing } from './utils/getTeamsBySubCampaing';
 import { orderListAlphabetic } from './utils/orderListAlphabetic';
 import { UserWithTeam } from './dto/user-with-team';
-import { CAMPAIGNS_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
+import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 import { TeamUserService } from 'src/team-user/team-user.service';
@@ -809,10 +809,13 @@ export class UserService {
     const isTeamLeaderMichel = teams.some(team => team.team_id === TEAMS_IDS.TEAM_MICHELL) && teams.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     const isUserApneas = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
     const isUserOi = teams.some(team => team.team_id === TEAMS_IDS.EJ_COMERCIAL_OI);
-    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL]);
+    const userRoles = await this.roleService.getCurrentRoleUsers(userId);
+    const hasTeamLeaderRole = userRoles.some(ru => ru.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
+    const isTeamLeaderArequipa = teams.some(team => team.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
+    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA]);
 
     if(isOwnerOrTI || user.type === 'admin') {
-      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL];
+      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA];
       const usersByTeam = allUsers.filter(user => teamsUsers.some(team => user.team_id === team));
       return usersByTeam;
     }
@@ -870,6 +873,24 @@ export class UserService {
       }
       return filteredUsers;
     }
+
+    if (isTeamLeaderArequipa) {
+      const filteredUsers = allUsers.filter(u => u.team_id === TEAMS_IDS.TEAM_AREQUIPA);
+      const userInList = filteredUsers.some(u => u.user_id === userId);
+      if (!userInList) {
+        const userTeam = teams.find(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA);
+        if (userTeam?.team_name) {
+          filteredUsers.push({
+            user_id: userId,
+            user_name: user.userName || '',
+            team_id: TEAMS_IDS.TEAM_AREQUIPA,
+            team_name: userTeam.team_name,
+          });
+        }
+      }
+      return filteredUsers;
+    }
+
     if(isUserApneas) {
       return allUsers.filter(user => user.team_id === TEAMS_IDS.EJ_COMERCIAL_APNEA);
     }
