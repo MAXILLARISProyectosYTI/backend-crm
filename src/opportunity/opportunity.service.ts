@@ -13,7 +13,7 @@ import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
-import { CAMPAIGNS_IDS, TEAMS_IDS } from 'src/globals/ids';
+import { CAMPAIGNS_IDS, ROLES_IDS, TEAMS_IDS } from 'src/globals/ids';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -1063,18 +1063,28 @@ export class OpportunityService {
     
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     let team: string = '';
-    let users: UserWithTeam[] = []
+    let users: UserWithTeam[] = [];
+
+    // Team leader Arequipa: está en TEAM_AREQUIPA y tiene rol Team Leader Comercial
+    const userWithRoles = await this.userService.findOne(userRequest);
+    const roles = (userWithRoles as { roles?: { roleId?: string }[] }).roles ?? [];
+    const hasTeamLeaderRole = roles.some(r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
+    const isTeamLeaderArequipa = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
     
-    if(isTeamLeader){
-      if(teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_FIORELLA)){
+    if (isTeamLeader) {
+      if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA)) {
         team = TEAMS_IDS.TEAM_FIORELLA;
-      } else if(teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_MICHELL)){
+      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_MICHELL)) {
         team = TEAMS_IDS.TEAM_MICHELL;
-      } else if (teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_VERONICA)){
+      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_VERONICA)) {
         team = TEAMS_IDS.TEAM_VERONICA;
       }
-
-      users = await this.userService.getUserByAllTeams([team]);
+      if (team) {
+        users = await this.userService.getUserByAllTeams([team]);
+      }
+    } else if (isTeamLeaderArequipa) {
+      team = TEAMS_IDS.TEAM_AREQUIPA;
+      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
     }
 
 
@@ -1091,10 +1101,9 @@ export class OpportunityService {
       if (isTIorOwner || isAdmin || isAssistent) {
         // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
         // Solo mantiene el filtro de deleted = false que ya está aplicado
-      } else if (isTeamLeader) {
-        // Si es team leader, buscar oportunidades de todos los usuarios de su equipo incluyendo al team leader
-        const userIds = users.length > 0 ? users.map(user => user.user_id) : [];
-        // Incluir al team leader en la lista de usuarios
+      } else if (isTeamLeader || isTeamLeaderArequipa) {
+        // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
+        const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
         if (!userIds.includes(userRequest)) {
           userIds.push(userRequest);
         }
@@ -1693,16 +1702,29 @@ export class OpportunityService {
   }
 
   async isForRefer(userId: string) {
-  
-    const validTeams = [
+    const teams = await this.userService.getAllTeamsByUser(userId);
+
+    // Equipos que por sí solos indican team leader (globales)
+    const validTeamsGlobal = [
       TEAMS_IDS.TEAM_LEADERS_COMERCIALES,
       TEAMS_IDS.TEAM_OWNER,
       TEAMS_IDS.TEAM_TI,
     ];
+    if (validTeamsGlobal.some(t => teams.some(team => team.team_id === t)))
+      return true;
 
-    const teams = await this.userService.getAllTeamsByUser(userId);
-  
-    return validTeams.some(validTeam => teams.some(team => team.team_id === validTeam));
+    // Equipo Arequipa: solo es "for refer" si tiene rol Team Leader Comercial (no todos los del equipo)
+    const isInArequipa = teams.some(team => team.team_id === TEAMS_IDS.TEAM_AREQUIPA);
+    if (isInArequipa) {
+      const user = await this.userService.findOne(userId);
+      const roles = (user as { roles?: { roleId?: string }[] }).roles ?? [];
+      const hasTeamLeaderRole = roles.some(
+        r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL,
+      );
+      return hasTeamLeaderRole;
+    }
+
+    return false;
   }
 
   async getOpportunitiesByPhoneNumber(phoneNumber: string): Promise<Opportunity> {
