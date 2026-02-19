@@ -5,6 +5,7 @@ import { UpdateQueueOpClosersDto } from "src/opportunities-closers/dto/update-op
 import { CreateClinicHistoryCrmDto } from "src/opportunity/dto/clinic-history";
 import { PatientIsNewCrmResponse } from "./patient-is-new.types";
 import { CampusListResponse } from "./campus.types";
+import { QuotationListResponse } from "./quotation-list.types";
 
 @Injectable()
 export class SvServices {
@@ -229,6 +230,52 @@ export class SvServices {
     } catch (error) {
       console.log('error', error);
       throw new BadRequestException('Error al obtener las cotizaciones de SV');
+    }
+  }
+
+  /**
+   * Listado de cotizaciones (todas o paginado). Contrato: docs/sv-api-requirements.md
+   * GET /quotation/list — page, limit (máx. 500), dateFrom, dateTo, status opcionales.
+   */
+  async getQuotationsAll(
+    tokenSv: string,
+    params?: {
+      page?: number;
+      limit?: number;
+      dateFrom?: string;
+      dateTo?: string;
+      status?: number;
+    },
+  ): Promise<QuotationListResponse> {
+    try {
+      const query: Record<string, number | string | undefined> = {
+        page: params?.page ?? 1,
+        limit: Math.min(params?.limit ?? 500, 500),
+      };
+      if (params?.dateFrom) query.dateFrom = params.dateFrom;
+      if (params?.dateTo) query.dateTo = params.dateTo;
+      if (params?.status !== undefined && params?.status !== null) query.status = params.status;
+
+      const response = await axios.get<QuotationListResponse>(
+        `${this.URL_BACK_SV}/quotation/list`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: query,
+        },
+      );
+      const data = response.data;
+      if (Array.isArray(data)) {
+        return { data: data as any, total: data.length };
+      }
+      return {
+        data: data.data ?? [],
+        total: data.total,
+        page: data.page,
+        totalPages: data.totalPages,
+      };
+    } catch (error) {
+      console.error('Error getQuotationsAll', error);
+      throw new BadRequestException('Error al obtener el listado de cotizaciones desde SV');
     }
   }
 

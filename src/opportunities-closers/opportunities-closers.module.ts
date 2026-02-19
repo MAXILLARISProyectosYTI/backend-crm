@@ -9,6 +9,7 @@ import { FilesModule } from 'src/files/files.module';
 import { ActionHistoryModule } from 'src/action-history/action-history.module';
 import { OpportunitiesClosersCronsService } from './opportunity-closers-crons.service';
 import { OpportunityModule } from 'src/opportunity/opportunity.module';
+import { CampusTeamModule } from 'src/campus-team/campus-team.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { OpportunityModule } from 'src/opportunity/opportunity.module';
     FilesModule,
     ActionHistoryModule,
     OpportunityModule,
+    CampusTeamModule,
   ],
   controllers: [OpportunitiesClosersController],
   providers: [OpportunitiesClosersService, SvServices, OpportunitiesClosersCronsService],
