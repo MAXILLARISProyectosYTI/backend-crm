@@ -1,4 +1,4 @@
-import { HttpException, Injectable, NotFoundException } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not } from 'typeorm';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
@@ -13,10 +13,22 @@ import { FilesService } from 'src/files/files.service';
 import { User } from 'src/user/user.entity';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
+import { OpportunityService } from 'src/opportunity/opportunity.service';
+import { OpportunitiesClosersCronsService } from './opportunity-closers-crons.service';
 
 @Injectable()
 export class OpportunitiesClosersService {
+  private readonly logger = new Logger(OpportunitiesClosersService.name);
   private readonly URL_DOWNLOAD_FILES = process.env.URL_DOWNLOAD_FILES;
+  /** Base URL para manager_leads; nunca localhost. Por defecto https://crm.maxillaris.pe/ */
+  private readonly URL_FRONT_MANAGER_LEADS = this.normalizeManagerLeadsBase(process.env.URL_FRONT_MANAGER_LEADS);
+
+  private normalizeManagerLeadsBase(envUrl?: string): string {
+    const base = (envUrl || 'https://crm.maxillaris.pe/').trim();
+    if (base.includes('localhost')) return 'https://crm.maxillaris.pe/';
+    return base.endsWith('/') ? base : `${base}/`;
+  }
+
   constructor(
     @InjectRepository(OpportunitiesClosers)
     private readonly opportunitiesClosersRepository: Repository<OpportunitiesClosers>,
@@ -25,6 +37,9 @@ export class OpportunitiesClosersService {
     private readonly filesService: FilesService,
     private readonly actionHistoryService: ActionHistoryService,
     private readonly idGeneratorService: IdGeneratorService,
+    private readonly opportunityService: OpportunityService,
+    @Inject(forwardRef(() => OpportunitiesClosersCronsService))
+    private readonly opportunitiesClosersCronsService: OpportunitiesClosersCronsService,
   ) {}
 
   async createOpportunityCloser(payload: Partial<OpportunitiesClosers>) {
@@ -40,54 +55,121 @@ export class OpportunitiesClosersService {
   async findAll(
     page: number = 1,
     limit: number = 10,
-    search?: string
+    search?: string,
+    assignedToUserId?: string,
   ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null })[], total: number, page: number, totalPages: number }> {
-    const queryBuilder = this.opportunitiesClosersRepository
-      .createQueryBuilder('op')
-      .leftJoin('user', 'u', 'u.id = op.assignedUserId')
-      .addSelect('u.userName', 'assigned_user_name')
-      .leftJoin('opportunity', 'o', 'o.id = op.opportunity_id')
-      .addSelect('o.c_campus_atencion_id', 'c_campus_atencion_id')
-      .where('op.deleted = :deleted', { deleted: false });
+    const buildQuery = () => {
+      const qb = this.opportunitiesClosersRepository
+        .createQueryBuilder('op')
+        .leftJoin('user', 'u', 'u.id = op.assignedUserId')
+        .addSelect('u.userName', 'assigned_user_name')
+        .where('op.deleted = :deleted', { deleted: false });
+      if (search?.trim()) {
+        qb.andWhere('(op.name ILIKE :search OR op.hCPatient ILIKE :search)', { search: `%${search.trim()}%` });
+      }
+      return qb;
+    };
 
-    if (search && search.trim()) {
-      queryBuilder.andWhere(
-        '(op.name ILIKE :search OR op.hCPatient ILIKE :search)',
-        { search: `%${search.trim()}%` }
-      );
+    let total = await buildQuery().getCount();
+    let entities: OpportunitiesClosers[];
+    let raw: any[];
+
+    if (search?.trim() && total === 0 && assignedToUserId) {
+      try {
+        this.logger.log(`[findAll] Info que llega: search="${search?.trim()}", page=${page}, limit=${limit}, assignedToUserId=${assignedToUserId}`);
+        const token = await this.svServices.getTokenSvAdmin();
+        const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search.trim());
+        this.logger.log(`[findAll] Respuesta SV (raw): cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`);
+        const byQuotationId = new Map<string, typeof resultsFromSv[0]>();
+        for (const item of resultsFromSv) {
+          const key = String(item.id);
+          if (!byQuotationId.has(key)) byQuotationId.set(key, item);
+        }
+        this.logger.log(`[findAll] Después de dedup por cotizacion_id: cantidad=${byQuotationId.size}`);
+        let inserted = 0;
+        let skippedExists = 0;
+        let skippedBadQuotationId = 0;
+        for (const item of byQuotationId.values()) {
+          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
+          if (Number.isNaN(quotationId)) {
+            skippedBadQuotationId++;
+            this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
+            continue;
+          }
+          const exists = await this.existsOpportunityCloserByQuotationId(String(item.id));
+          if (exists) {
+            skippedExists++;
+            this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
+            continue;
+          }
+          const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(item.history);
+          const opportunityId = oportunidades?.length ? oportunidades[0].id : undefined;
+          this.logger.log(`[findAll] Asignación: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
+          const payload = {
+            assignedUserId: assignedToUserId,
+            name: item.name,
+            status: statesCRM.PENDIENTE,
+            hCPatient: item.history,
+            ...(opportunityId && { opportunityId }),
+            cotizacionId: String(quotationId),
+          };
+          this.logger.log(`[findAll] Guardado (payload): ${JSON.stringify(payload)}`);
+          const create = await this.createOpportunityCloser(payload);
+          this.logger.log(`[findAll] Guardado (resultado create): id=${create.id}, cotizacionId=${create.cotizacionId}, assignedUserId=${create.assignedUserId}`);
+          const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
+          await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
+          inserted++;
+        }
+        total = await buildQuery().getCount();
+        this.logger.log(`[findAll] Resumen: insertados=${inserted}, omitidos_ya_en_cola=${skippedExists}, omitidos_cotizacion_id_inválido=${skippedBadQuotationId}, total después de insertar: ${total}`);
+      } catch (err) {
+        this.logger.warn(`[findAll] Error al obtener SV o insertar: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
-    // Obtener el total primero
-    const total = await queryBuilder.getCount();
-
-    // Obtener entidades y datos raw
-    const { entities, raw } = await queryBuilder
+    const effectivePage = total > 0 && (page - 1) * limit >= total ? 1 : page;
+    if (effectivePage !== page) {
+      this.logger.log(`[findAll] Página ${page} quedaría vacía (total=${total}); se devuelve página 1 para mostrar los registros insertados`);
+    }
+    const queryBuilder = buildQuery();
+    const result = await queryBuilder
       .orderBy('op.createdAt', 'DESC')
-      .skip((page - 1) * limit)
+      .skip((effectivePage - 1) * limit)
       .take(limit)
       .getRawAndEntities();
+    entities = result.entities;
+    raw = result.raw;
 
-    // Nombres de sede de atención desde SV; sede por defecto = campus id 1 (Lima) en SV
-    let campusNameById = new Map<number, string>();
-    let defaultSede = 'Lima'; // fallback si SV no responde o no existe campus id 1
-    try {
-      const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const campuses = await this.svServices.getCampuses(tokenSv);
-      campusNameById = new Map(campuses.map((c) => [c.id, c.name]));
-      const sedeId1 = campuses.find((c) => c.id === 1);
-      if (sedeId1?.name) defaultSede = sedeId1.name;
-    } catch {
-      // Si falla SV, se usa fallback 'Lima'
+    const defaultSede = 'Lima';
+    const sedeByHistory = new Map<string, string>();
+    const uniqueHistories = [...new Set(entities.map((e) => e.hCPatient).filter((h): h is string => !!h?.trim()))];
+    if (uniqueHistories.length > 0) {
+      let tokenSv: string | undefined;
+      try {
+        const token = await this.svServices.getTokenSvAdmin();
+        tokenSv = token.tokenSv;
+      } catch {
+        // Sin token no se consulta SV; todas usarán defaultSede
+      }
+      if (tokenSv) {
+        const results = await Promise.allSettled(
+          uniqueHistories.map((history) => this.svServices.getSedeByClinicHistory(history, tokenSv)),
+        );
+        results.forEach((result, i) => {
+          const history = uniqueHistories[i];
+          const name = result.status === 'fulfilled' ? (result.value?.campusName ?? null) : null;
+          if (name) {
+            sedeByHistory.set(history, name);
+            this.logger.log(`[findAll] Sede por historia: ${history} -> ${name}`);
+          } else {
+            this.logger.log(`[findAll] Sede por historia: ${history} -> sin dato en SV, se usará default "${defaultSede}"`);
+          }
+        });
+      }
     }
 
-    // Mapear: sede de atención viene de opportunity (c_campus_atencion_id); si no tiene, por defecto sede id 1 de SV (Lima)
     const opportunities = entities.map((entity, index) => {
-      const campusAtencionId = raw[index]?.c_campus_atencion_id != null
-        ? Number(raw[index].c_campus_atencion_id)
-        : null;
-      const sedeAtencion = campusAtencionId != null
-        ? (campusNameById.get(campusAtencionId) ?? defaultSede)
-        : defaultSede;
+      const sedeAtencion = (entity.hCPatient && sedeByHistory.get(entity.hCPatient)) ?? defaultSede;
       return {
         ...entity,
         assignedUserName: raw[index]?.assigned_user_name || null,
@@ -96,13 +178,9 @@ export class OpportunitiesClosersService {
     });
 
     const totalPages = Math.ceil(total / limit);
-
-    return {
-      opportunities,
-      total,
-      page,
-      totalPages,
-    };
+    const response = { opportunities, total, page: effectivePage, totalPages };
+    this.logger.log(`[findAll] Resultado final: total=${total}, page=${effectivePage}, totalPages=${totalPages}, opportunities.length=${opportunities.length}, ids=${opportunities.slice(0, 5).map((o) => o.id).join(', ')}${opportunities.length > 5 ? '...' : ''}`);
+    return response;
   }
 
   async getOneWithDetails(id: string) {

@@ -5,7 +5,7 @@ import { UpdateQueueOpClosersDto } from "src/opportunities-closers/dto/update-op
 import { CreateClinicHistoryCrmDto } from "src/opportunity/dto/clinic-history";
 import { PatientIsNewCrmResponse } from "./patient-is-new.types";
 import { CampusListResponse } from "./campus.types";
-import { QuotationListResponse } from "./quotation-list.types";
+import { QuotationListResponse, QuotationListItem } from "./quotation-list.types";
 
 @Injectable()
 export class SvServices {
@@ -26,6 +26,35 @@ export class SvServices {
     } catch (error) {
       console.error('Error getCampuses', error);
       throw new BadRequestException('Error al obtener sedes (campus) desde SV');
+    }
+  }
+
+  /**
+   * Sede (campus) asociada a una historia clínica; según contrato debe venir de facturación.
+   * GET /clinic-history/sede-by-clinic-history/:clinicHistory — ver docs/sv-api-requirements.md
+   * Acepta respuesta con campusName/campus_name y campusId/campus_id.
+   */
+  async getSedeByClinicHistory(
+    clinicHistory: string,
+    tokenSv: string,
+  ): Promise<{ campusId?: number; campusName?: string } | null> {
+    try {
+      const encoded = encodeURIComponent(clinicHistory);
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/clinic-history/sede-by-clinic-history/${encoded}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      const raw = response.data;
+      const data = raw?.data != null ? raw.data : raw;
+      if (!data || (data.campusName == null && data.campus_name == null && data.campusId == null && data.campus_id == null)) {
+        return null;
+      }
+      const campusName = data.campusName ?? data.campus_name ?? null;
+      const campusId = data.campusId ?? data.campus_id ?? null;
+      return { campusId: campusId != null ? Number(campusId) : undefined, campusName: campusName != null ? String(campusName) : undefined };
+    } catch (err) {
+      console.error('getSedeByClinicHistory error', clinicHistory, err instanceof Error ? err.message : err);
+      return null;
     }
   }
 
@@ -276,6 +305,27 @@ export class SvServices {
     } catch (error) {
       console.error('Error getQuotationsAll', error);
       throw new BadRequestException('Error al obtener el listado de cotizaciones desde SV');
+    }
+  }
+
+  /**
+   * Búsqueda en SV cuando el CRM no tiene resultados. GET /quotation/search?q= — ver docs/sv-api-requirements.md
+   */
+  async getQuotationSearch(tokenSv: string, q: string): Promise<QuotationListItem[]> {
+    if (!q?.trim()) return [];
+    try {
+      const response = await axios.get<{ data?: QuotationListItem[] }>(
+        `${this.URL_BACK_SV}/quotation/search`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: { q: q.trim() },
+        },
+      );
+      const data = response.data;
+      if (Array.isArray(data)) return data as QuotationListItem[];
+      return Array.isArray(data?.data) ? data.data : [];
+    } catch {
+      return [];
     }
   }
 

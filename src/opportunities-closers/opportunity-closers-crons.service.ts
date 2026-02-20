@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, forwardRef } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { OpportunityService } from "src/opportunity/opportunity.service";
 import { SvServices } from "src/sv-services/sv.services";
@@ -13,14 +13,22 @@ import { CampusTeamService } from "src/campus-team/campus-team.service";
 
 const MAX_QUOTATIONS_PER_RUN = 500;
 
+/** Base URL para manager_leads; nunca localhost. Por defecto https://crm.maxillaris.pe/ */
+function getManagerLeadsBase(envUrl?: string): string {
+  const base = (envUrl || 'https://crm.maxillaris.pe/').trim();
+  if (base.includes('localhost')) return 'https://crm.maxillaris.pe/';
+  return base.endsWith('/') ? base : `${base}/`;
+}
+
 @Injectable()
 export class OpportunitiesClosersCronsService {
 
-  private readonly URL_FRONT = process.env.URL_FRONT_MANAGER_LEADS;
+  private readonly URL_FRONT = getManagerLeadsBase(process.env.URL_FRONT_MANAGER_LEADS);
 
   constructor(
     private readonly svServices: SvServices,
     private readonly opportunityService: OpportunityService,
+    @Inject(forwardRef(() => OpportunitiesClosersService))
     private readonly opportunitiesClosersService: OpportunitiesClosersService,
     private readonly userService: UserService,
     private readonly campusTeamService: CampusTeamService,

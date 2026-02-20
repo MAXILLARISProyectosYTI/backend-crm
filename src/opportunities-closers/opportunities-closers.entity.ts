@@ -9,6 +9,7 @@ import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
 @Index('idx_c_oportunidad_cerradora_name', ['name', 'deleted'])
 @Index('idx_c_oportunidad_cerradora_opportunity_id', ['opportunityId'])
 @Index('uniq_c_oportunidad_cerradora_created_at_id', ['createdAt', 'id'], { unique: true })
+@Index('uniq_c_oportunidad_cerradora_cotizacion_id', ['cotizacionId'], { unique: true })
 export class OpportunitiesClosers {
   @PrimaryColumn({ type: 'varchar', length: 17 })
   id: string;
