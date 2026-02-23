@@ -23,6 +23,10 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
+# Zona horaria Lima, Perú
+RUN apk add --no-cache tzdata
+ENV TZ=America/Lima
+
 # Crear usuario no root para seguridad
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nestjs -u 1001
