@@ -264,6 +264,15 @@ export class OpportunitiesClosersService {
     return updatedOpportunity;
   }
 
+  /**
+   * Asigna la oportunidad cerradora al usuario indicado y actualiza la URL con el nuevo usuario asignado.
+   */
+  async assignToCurrentUser(opportunityCloserId: string, userId: string): Promise<OpportunitiesClosers> {
+    const opportunity = await this.getOneWithEntity(opportunityCloserId);
+    const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${opportunity.id}&cotizacion=${opportunity.cotizacionId}&usuario=${userId}`;
+    return this.update(opportunityCloserId, { assignedUserId: userId, url }, userId);
+  }
+
   async lostOpportunity(opportunityCloserId: string, userId: string, reason: string, subReason: string) {
     await this.update(opportunityCloserId, {
       status: statesCRM.PERDIDO,

@@ -1,4 +1,4 @@
-import { Body, ConflictException, Controller, Get, NotFoundException, Param, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, NotFoundException, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Request } from 'express';
 import { OpportunitiesClosersService } from './opportunities-closers.service';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
@@ -53,6 +53,21 @@ export class OpportunitiesClosersController {
   @Get('by-id/:id')
   getById(@Param('id') id: string) {
     return this.opportunitiesClosersService.getOneWithDetails(id);
+  }
+
+  /**
+   * Asigna la oportunidad cerradora al usuario que hace la petición (por token) y actualiza la URL del asignado.
+   */
+  @Patch(':id/assign-me')
+  async assignToMe(
+    @Param('id') id: string,
+    @Req() req: Request & { user?: { userId: string } },
+  ) {
+    const userId = req?.user?.userId;
+    if (!userId) {
+      throw new NotFoundException('Usuario no identificado');
+    }
+    return this.opportunitiesClosersService.assignToCurrentUser(id, userId);
   }
 
   /**
