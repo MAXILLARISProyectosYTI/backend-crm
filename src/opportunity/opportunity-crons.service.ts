@@ -45,7 +45,20 @@ export class OpportunityCronsService {
   async runCronAt3PM() {
     console.log('cron de las 3:00pm');
     return this.assignUnassignedOpportunitiesDaily();
-  }  
+  }
+
+  /** Cada 5 minutos: consultar estado de facturación de O.S pendientes (invoice-mifact-v3). */
+  @Cron('*/5 * * * *')
+  async runCheckInvoiceStatusForServiceOrders() {
+    try {
+      const updated = await this.opportunityService.checkInvoiceStatusForPendingServiceOrders();
+      if (updated > 0) {
+        console.log('[Cron] O.S facturadas detectadas y oportunidad actualizada', { count: updated });
+      }
+    } catch (err) {
+      console.error('[Cron] Error en runCheckInvoiceStatusForServiceOrders', err);
+    }
+  }
 
   // DESACTIVADO temporalmente — descomentar la línea siguiente para volver a activar el cron de reasignación
   // @Cron('*/2 * * * * *')

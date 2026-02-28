@@ -249,4 +249,13 @@ export class Opportunity {
   /** Metadata JSON: empresa/sede (campusId, campusName, companyId, companyCode, companyName) */
   @Column({ type: 'text', nullable: true, name: 'c_metadata' })
   cMetadata?: string;
+
+  /**
+   * Sub-estado de facturación cuando stage = Cierre ganado.
+   * - null: sin sub-estado (ej. cierre sin factura aún).
+   * - factura_directa: se cerró con factura (URLs enviadas por front).
+   * - orden_servicio_pendiente_factura: se cerró con O.S; se consulta invoice-status hasta que esté facturada.
+   */
+  @Column({ type: 'varchar', length: 60, nullable: true, name: 'c_facturacion_sub_estado' })
+  cFacturacionSubEstado?: string;
 }

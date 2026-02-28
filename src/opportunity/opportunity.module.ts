@@ -1,6 +1,7 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Opportunity } from './opportunity.entity';
+import { OpportunityServiceOrder } from './opportunity-service-order.entity';
 import { OpportunityService } from './opportunity.service';
 import { OpportunityController } from './opportunity.controller';
 import { OpportunityGateway } from './opportunity.gateway';
@@ -22,7 +23,7 @@ import { AssignmentQueueStateModule } from '../assignment-queue-state/assignment
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave]),
+    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave, OpportunityServiceOrder]),
     AssignmentQueueStateModule,
     ContactModule,
     MeetingModule,

@@ -67,67 +67,103 @@ export class OpportunityController {
     @Query('usuario') usuario: string,
     @Query('uuid-opportunity') uuidOpportunity: string
   ) {
-    // Obtener la respuesta base del redirect
     const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity);
-    
-    // Intentar buscar presave, pero si falla, continuar sin él
+    let response = redirectResponse;
+
     try {
-      // Primero verificar si ya fue facturada (isPresaved = false)
       const alreadyInvoiced = await this.opportunityPresaveService.checkIfAlreadyInvoiced(uuidOpportunity);
-      
-      // Si ya fue facturada, no devolver presave
-      if (alreadyInvoiced) {
-        return redirectResponse;
-      }
-      
-      // Buscar presave solo si no ha sido facturada
-      const presaveData = await this.opportunityPresaveService.findByEspoId(uuidOpportunity);
-      
-      // Si existe presave, agregarlo a la respuesta con TODOS los campos
-      if (presaveData) {
-        return {
-          ...redirectResponse,
-          presave: {
-            // Datos del cliente
-            documentType: presaveData.documentType,
-            documentNumber: presaveData.documentNumber,
-            name: presaveData.name,
-            lastNameFather: presaveData.lastNameFather,
-            lastNameMother: presaveData.lastNameMother,
-            cellphone: presaveData.cellphone,
-            email: presaveData.email,
-            address: presaveData.address,
-            attorney: presaveData.attorney,
-            invoiseTypeDocument: presaveData.invoiseTypeDocument,
-            invoiseNumDocument: presaveData.invoiseNumDocument,
-            // Datos de facturación
-            doctorId: presaveData.doctorId,
-            businessLineId: presaveData.businessLineId,
-            specialtyId: presaveData.specialtyId,
-            tariffId: presaveData.tariffId,
-            fechaAbono: presaveData.fechaAbono,
-            metodoPago: presaveData.metodoPago,
-            cuentaBancaria: presaveData.cuentaBancaria,
-            numeroOperacion: presaveData.numeroOperacion,
-            moneda: presaveData.moneda,
-            montoPago: presaveData.montoPago,
-            description: presaveData.description,
-            vouchersData: presaveData.vouchersData,
-            // Datos adicionales
-            paymentType: presaveData.paymentType,
-            companyType: presaveData.companyType,
-            exchangeRate: presaveData.exchangeRate,
-            // Datos del paciente creado (si aplica)
-            clinicHistory: presaveData.clinicHistory,
-            clinicHistoryId: presaveData.clinicHistoryId,
-          }
-        };
+      const isComplete = await this.opportunityService.isCompleteForRedirect(uuidOpportunity);
+
+      if (!alreadyInvoiced && !isComplete) {
+        const presaveData = await this.opportunityPresaveService.findByEspoId(uuidOpportunity);
+        if (presaveData) {
+          response = {
+            ...redirectResponse,
+            presave: {
+              documentType: presaveData.documentType,
+              documentNumber: presaveData.documentNumber,
+              name: presaveData.name,
+              lastNameFather: presaveData.lastNameFather,
+              lastNameMother: presaveData.lastNameMother,
+              cellphone: presaveData.cellphone,
+              email: presaveData.email,
+              address: presaveData.address,
+              attorney: presaveData.attorney,
+              invoiseTypeDocument: presaveData.invoiseTypeDocument,
+              invoiseNumDocument: presaveData.invoiseNumDocument,
+              doctorId: presaveData.doctorId,
+              businessLineId: presaveData.businessLineId,
+              specialtyId: presaveData.specialtyId,
+              tariffId: presaveData.tariffId,
+              fechaAbono: presaveData.fechaAbono,
+              metodoPago: presaveData.metodoPago,
+              cuentaBancaria: presaveData.cuentaBancaria,
+              numeroOperacion: presaveData.numeroOperacion,
+              moneda: presaveData.moneda,
+              montoPago: presaveData.montoPago,
+              description: presaveData.description,
+              vouchersData: presaveData.vouchersData,
+              paymentType: presaveData.paymentType,
+              companyType: presaveData.companyType,
+              exchangeRate: presaveData.exchangeRate,
+              clinicHistory: presaveData.clinicHistory,
+              clinicHistoryId: presaveData.clinicHistoryId,
+            }
+          };
+        }
       }
     } catch {
-      // Si hay error con presave (tabla no existe, etc.), simplemente lo ignoramos
+      // Si hay error con presave, se ignora y se devuelve solo redirectResponse
     }
-    
-    return redirectResponse;
+
+    const ordenesServicio = await this.opportunityService.getOrdenesServicioForRedirect(uuidOpportunity);
+    response = {
+      ...response,
+      tieneOrdenesServicio: ordenesServicio.length > 0,
+      ordenesServicio,
+    };
+
+    // Si no hay payment pero sí O.S facturadas, rellenar payment con la factura de la primera O.S (misma estructura).
+    if (response?.payment == null) {
+      const facturasOS = await this.opportunityService.getFacturasOrdenesServicioForRedirect(uuidOpportunity);
+      if (facturasOS.length > 0) {
+        const primera = facturasOS[0];
+        response = {
+          ...response,
+          payment: {
+            id: primera.id,
+            id_service_order: primera.serviceOrderId,
+            url_invoice_soles: primera.url_invoice_soles ?? '',
+            url_invoice_dolares: primera.url_invoice_dolares ?? '',
+          },
+        };
+      }
+    }
+
+    // Flujo completado = datos paciente + datos reserva + (facturación O O.S). Entonces code 0 y traer reserva/pago.
+    const flowComplete = await this.opportunityService.isFlowCompleteForRedirect(uuidOpportunity);
+    if (flowComplete && response?.code !== 0) {
+      response = {
+        ...response,
+        code: 0,
+        message: 'Flujo completado. Datos de paciente, reserva y facturación u orden de servicio registrados.',
+      };
+    }
+
+    // Si el flujo está completo, consultar reserva y pago en SV para devolver todo el flujo completo.
+    if (flowComplete) {
+      const fullFlow = await this.opportunityService.getFullFlowDataForRedirect(uuidOpportunity);
+      if (fullFlow.reservation != null || fullFlow.payment != null) {
+        response = {
+          ...response,
+          ...(response?.reservation == null && fullFlow.reservation != null && { reservation: fullFlow.reservation }),
+          ...(response?.payment == null && fullFlow.payment != null && { payment: fullFlow.payment }),
+        };
+      }
+    }
+
+    console.log('[GET /opportunity/redirect] Respuesta', JSON.stringify(response, null, 2));
+    return response;
   }
 
   @Public()
@@ -466,6 +502,9 @@ export class OpportunityController {
     @Req() req: Request & { user: { userId: string; userName: string } }
   ) {
     const userId = req.user.userId;
+    console.log('body', body);
+    console.log('id', id);
+    console.log('userId', userId);
     return this.opportunityService.updateOpportunityWithFacturas(id, body, userId);
   }
 

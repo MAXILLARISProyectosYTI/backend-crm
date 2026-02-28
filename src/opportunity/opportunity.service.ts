@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException,
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
+import { OpportunityServiceOrder } from './opportunity-service-order.entity';
+import { FacturacionSubEstado } from './opportunity-service-order.entity';
 import { CreateOpportunityDto, DEFAULT_COMPANY } from './dto/create-opportunity.dto';
 import { ReprogramingReservationDto, UpdateOpportunityDto, UpdateOpportunityProcces } from './dto/update-opportunity.dto';
 import { OpportunityWebSocketService } from './opportunity-websocket.service';
@@ -44,6 +46,8 @@ export class OpportunityService {
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
+    @InjectRepository(OpportunityServiceOrder)
+    private readonly opportunityServiceOrderRepository: Repository<OpportunityServiceOrder>,
     private readonly websocketService: OpportunityWebSocketService,
     private readonly contactService: ContactService,
     @Inject(forwardRef(() => UserService))
@@ -1405,12 +1409,181 @@ export class OpportunityService {
     }
   }
 
+  /**
+   * Consulta metódicamente el estado de facturación de las O.S asociadas a la oportunidad.
+   * Para cada O.S con facturado=false llama GET invoice-mifact-v3/service-order/:id/invoice-status.
+   * Si alguna está facturada: actualiza la fila, descarga las URLs como facturas, marca isPresaved=false y cFacturacionSubEstado=factura_directa.
+   * @returns true si se actualizó la oportunidad (se descargaron facturas de alguna O.S)
+   */
+  private async checkAndUpdateInvoiceStatusForOpportunityServiceOrders(opportunityId: string): Promise<boolean> {
+    const pendientes = await this.opportunityServiceOrderRepository.find({
+      where: { opportunityId, facturado: false },
+      order: { id: 'ASC' },
+    });
+    if (pendientes.length === 0) return false;
+
+    const token = await this.svServices.getTokenInvoiceMifact();
+    if (!token) {
+      console.warn('[checkAndUpdateInvoiceStatusForOpportunityServiceOrders] No se pudo obtener token invoice-mifact; se omite consulta');
+      return false;
+    }
+
+    let opportunityUpdated = false;
+    for (const oso of pendientes) {
+      const status = await this.svServices.getInvoiceStatusByServiceOrderId(oso.serviceOrderId, token);
+      await this.opportunityServiceOrderRepository.update(
+        { id: oso.id },
+        { lastCheckedAt: new Date() },
+      );
+      if (!status?.facturado || !status.urls) continue;
+
+      await this.opportunityServiceOrderRepository.update(
+        { id: oso.id },
+        {
+          facturado: true,
+          urlSoles: status.urls.soles ?? undefined,
+          urlDolares: status.urls.dolares ?? undefined,
+          invoiceResultHeadId: status.invoice_result_head_id ?? undefined,
+          lastCheckedAt: new Date(),
+        },
+      );
+      const cFacturas = {
+        comprobante_soles: status.urls.soles ?? null,
+        comprobante_dolares: status.urls.dolares ?? null,
+      };
+      await this.downloadFacturasFromURLs(opportunityId, cFacturas);
+      await this.opportunityRepository.update(
+        { id: opportunityId },
+        { isPresaved: false, cFacturacionSubEstado: FacturacionSubEstado.FACTURA_DIRECTA },
+      );
+      opportunityUpdated = true;
+      console.log('[updateOpportunityWithFacturas] O.S facturada y facturas descargadas', { serviceOrderId: oso.serviceOrderId, opportunityId });
+      break; // una O.S facturada es suficiente para completar
+    }
+    return opportunityUpdated;
+  }
+
+  /**
+   * Consulta estado de facturación para todas las oportunidades con O.S pendientes (para uso del cron).
+   * @param opportunityId si se pasa, solo se revisa esta oportunidad
+   * @returns cantidad de oportunidades que se actualizaron (se descargaron facturas de alguna O.S)
+   */
+  async checkInvoiceStatusForPendingServiceOrders(opportunityId?: string): Promise<number> {
+    if (opportunityId) {
+      const updated = await this.checkAndUpdateInvoiceStatusForOpportunityServiceOrders(opportunityId);
+      return updated ? 1 : 0;
+    }
+    const pendientes = await this.opportunityServiceOrderRepository
+      .createQueryBuilder('oso')
+      .select('oso.opportunity_id')
+      .distinct(true)
+      .where('oso.facturado = :facturado', { facturado: false })
+      .getRawMany<{ opportunity_id: string }>();
+    let count = 0;
+    for (const { opportunity_id } of pendientes) {
+      const updated = await this.checkAndUpdateInvoiceStatusForOpportunityServiceOrders(opportunity_id);
+      if (updated) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Indica si la oportunidad debe tratarse como "cierre ganado" / completa para el redirect:
+   * no devolver presave cuando ya tiene facturación, reservación, datos del paciente u órdenes de servicio (O.S).
+   */
+  async isCompleteForRedirect(opportunityId: string): Promise<boolean> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+    });
+    if (!opportunity) return false;
+
+    if (opportunity.isPresaved === false) return true;
+    if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+    if (opportunity.cDateReservation && opportunity.cAppointment) return true;
+    if (opportunity.cClinicHistory) return true;
+
+    const osCount = await this.opportunityServiceOrderRepository.count({
+      where: { opportunityId },
+    });
+    if (osCount > 0) return true;
+
+    return false;
+  }
+
+  /**
+   * Flujo completado = datos del paciente + datos de la reserva + (facturación O orden de servicio).
+   * Se usa en redirect para devolver code 0 cuando el proceso está completo.
+   */
+  async isFlowCompleteForRedirect(opportunityId: string): Promise<boolean> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+    });
+    if (!opportunity) return false;
+
+    const hasPatient = !!opportunity.cClinicHistory;
+    const hasReservation = !!(opportunity.cDateReservation && opportunity.cAppointment);
+    const hasFacturacion = opportunity.isPresaved === false;
+    const osCount = await this.opportunityServiceOrderRepository.count({ where: { opportunityId } });
+    const hasOS = osCount > 0;
+
+    return hasPatient && hasReservation && (hasFacturacion || hasOS);
+  }
+
+  /**
+   * Órdenes de servicio (O.S) asociadas a la oportunidad para incluir en la respuesta del redirect.
+   */
+  async getOrdenesServicioForRedirect(opportunityId: string): Promise<{ serviceOrderId: number; facturado: boolean }[]> {
+    const list = await this.opportunityServiceOrderRepository.find({
+      where: { opportunityId },
+      order: { id: 'ASC' },
+    });
+    return list.map((o) => ({ serviceOrderId: o.serviceOrderId, facturado: o.facturado === true }));
+  }
+
+  /**
+   * Facturas de las O.S ya facturadas (url_soles, url_dolares, id) para incluir en redirect, formato tipo payment.
+   */
+  async getFacturasOrdenesServicioForRedirect(
+    opportunityId: string,
+  ): Promise<{ serviceOrderId: number; id: number; url_invoice_soles?: string; url_invoice_dolares?: string }[]> {
+    const list = await this.opportunityServiceOrderRepository.find({
+      where: { opportunityId, facturado: true },
+      order: { id: 'ASC' },
+    });
+    return list
+      .filter((o) => o.invoiceResultHeadId != null)
+      .map((o) => ({
+        serviceOrderId: o.serviceOrderId,
+        id: o.invoiceResultHeadId!,
+        ...(o.urlSoles && { url_invoice_soles: o.urlSoles }),
+        ...(o.urlDolares && { url_invoice_dolares: o.urlDolares }),
+      }));
+  }
+
+  /**
+   * Consulta en SV reserva y pago para incluir en redirect cuando el flujo está completo.
+   */
+  async getFullFlowDataForRedirect(opportunityId: string): Promise<{ reservation?: unknown; payment?: unknown }> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      return await this.svServices.getFullFlowDataByOpportunityId(opportunityId, tokenSv);
+    } catch {
+      return {};
+    }
+  }
+
   async updateOpportunityWithFacturas(
     opportunityId: string,
     body: UpdateOpportunityProcces,
     userId: string,
   ) {
-  
+    console.log('[updateOpportunityWithFacturas] Inicio', {
+      opportunityId,
+      userId,
+      bodyKeys: Object.keys(body),
+      cFacturas: body.cFacturas ? { ...body.cFacturas } : undefined,
+    });
+
     // --- Configuración de campos ---
     const mainFields = [
       "cLastNameFather",
@@ -1437,33 +1610,59 @@ export class OpportunityService {
     const onlyAppointment = hasFields(appointmentFields, body) && !hasFields(mainFields, body);
     const hasMainData = hasFields(mainFields, body);
     const hasAppointmentData = hasFields(appointmentFields, body);
+
+    console.log('[updateOpportunityWithFacturas] Detección de caso', {
+      onlyAppointment,
+      hasMainData,
+      hasAppointmentData,
+    });
   
     // --- Construir payload ---
     let payload: Record<string, any> = {};
   
     if (onlyAppointment) {
       payload = pickFields(appointmentFields, body);
+      console.log('[updateOpportunityWithFacturas] Caso: solo cita → payload solo appointmentFields', { payload });
     } else if (hasMainData && !hasAppointmentData) {
       payload = pickFields(mainFields, body);
+      console.log('[updateOpportunityWithFacturas] Caso: solo datos principales → payload solo mainFields', { payload });
     } else if (hasMainData && hasAppointmentData) {
       payload = {
         ...pickFields(mainFields, body),
         ...pickFields(appointmentFields, body),
       };
+      console.log('[updateOpportunityWithFacturas] Caso: datos principales + cita → payload combinado', { payload });
     } else {
       payload = { ...body };
+      console.log('[updateOpportunityWithFacturas] Caso: otro → payload completo del body', { payload });
     }
 
     // Actualizar la oportunidad con los campos del payload
+    console.log('[updateOpportunityWithFacturas] Actualizando oportunidad en BD...');
     let newOpportunity = (await this.update(opportunityId, payload, userId)) as Opportunity;
+    console.log('[updateOpportunityWithFacturas] Oportunidad actualizada', {
+      id: newOpportunity.id,
+      name: newOpportunity.name,
+      stage: newOpportunity.stage,
+    });
 
+    // Consultar metódicamente estado de facturación de O.S asociadas (cada vez que se llama el endpoint)
+    const osUpdated = await this.checkAndUpdateInvoiceStatusForOpportunityServiceOrders(opportunityId);
+    if (osUpdated) {
+      newOpportunity = (await this.getOneWithEntity(opportunityId)) as Opportunity;
+      console.log('[updateOpportunityWithFacturas] Oportunidad recargada tras actualización por O.S facturada');
+    }
+
+    console.log('[updateOpportunityWithFacturas] Registrando en actionHistory (oportunidad actualizada)...');
     await this.actionHistoryService.addRecord({
       targetId: newOpportunity.id,
       target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
       userId,
       message: 'Oportunidad actualizada',
     });
+
     if (onlyAppointment || hasAppointmentData) {
+      console.log('[updateOpportunityWithFacturas] Creando meeting/reunión por datos de cita...');
       let dateStart = newOpportunity.cDateReservation;
       let dateEnd = newOpportunity.cDateReservation;
       const [startTime, endTime] = newOpportunity.cAppointment!.split("-").map((s) => s.trim());
@@ -1483,6 +1682,11 @@ export class OpportunityService {
       };
 
       const meetingCreated = await this.meetingService.create(payload);
+      console.log('[updateOpportunityWithFacturas] Meeting creado', {
+        meetingId: meetingCreated.id,
+        dateStart,
+        dateEnd,
+      });
 
       await this.actionHistoryService.addRecord({
         targetId: meetingCreated.id,
@@ -1490,36 +1694,49 @@ export class OpportunityService {
         userId,
         message: 'Actividad creada',
       });
+      console.log('[updateOpportunityWithFacturas] Registrado en actionHistory (actividad creada)');
     }
 
+    console.log('[updateOpportunityWithFacturas] Obteniendo usuario y token SV...');
     const user = await this.userService.findOne(userId);
     const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+    console.log('[updateOpportunityWithFacturas] Token SV obtenido');
 
     if (body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
+      console.log('[updateOpportunityWithFacturas] Hay facturas en body → descargando facturas desde URLs...');
       await this.downloadFacturasFromURLs(opportunityId, body.cFacturas);
+      console.log('[updateOpportunityWithFacturas] Facturas descargadas');
       
       // Si hay facturas, marcar is_presaved = false (ya no está preguardado, está facturado)
       await this.opportunityRepository.update(
         { id: opportunityId },
         { isPresaved: false }
       );
+      console.log('[updateOpportunityWithFacturas] Oportunidad marcada isPresaved=false');
 
       // Si hay facturas Y hay historia clínica (paciente creado), marcar como cierre ganado
-      // Verificar si el paciente está creado (cClinicHistory en el body o ya en la oportunidad)
       const hasClinicHistory = body.cClinicHistory || newOpportunity.cClinicHistory;
+      console.log('[updateOpportunityWithFacturas] Verificación cierre ganado', {
+        hasClinicHistory: !!hasClinicHistory,
+        stageActual: newOpportunity.stage,
+      });
+
       if (hasClinicHistory && newOpportunity.stage !== Enum_Stage.CIERRE_GANADO) {
         await this.opportunityRepository.update(
           { id: opportunityId },
           { 
             stage: Enum_Stage.CIERRE_GANADO,
-            modifiedAt: new Date()
+            modifiedAt: new Date(),
+            cFacturacionSubEstado: FacturacionSubEstado.FACTURA_DIRECTA,
           }
         );
+        console.log('[updateOpportunityWithFacturas] Etapa actualizada a CIERRE_GANADO (factura directa)');
 
         // Notificar por WebSocket si tiene assignedUserId
         const updatedOpportunity = await this.getOneWithEntity(opportunityId);
         if (updatedOpportunity.assignedUserId) {
           await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, newOpportunity.stage);
+          console.log('[updateOpportunityWithFacturas] Notificación WebSocket enviada');
         }
 
         // Actualizar newOpportunity para retornar el estado actualizado
@@ -1527,7 +1744,52 @@ export class OpportunityService {
       }
     }
 
+    // Órdenes de servicio (O.S): guardar asociación, sub-estado "pendiente factura", y consultar invoice-status
+    if (body.cOrdenesServicio?.length) {
+      console.log('[updateOpportunityWithFacturas] Procesando Órdenes de Servicio', { cOrdenesServicio: body.cOrdenesServicio });
+      const metadataByOs = body.cOrdenesServicioMetadata || {};
+      for (const serviceOrderId of body.cOrdenesServicio) {
+        const existing = await this.opportunityServiceOrderRepository.findOne({
+          where: { opportunityId, serviceOrderId },
+        });
+        if (!existing) {
+          const meta = metadataByOs[serviceOrderId];
+          await this.opportunityServiceOrderRepository.save({
+            opportunityId,
+            serviceOrderId,
+            metadata: meta ? JSON.stringify(meta) : undefined,
+            facturado: false,
+          });
+          console.log('[updateOpportunityWithFacturas] O.S creada', { serviceOrderId });
+        }
+      }
+      const hasClinicHistoryOs = body.cClinicHistory || newOpportunity.cClinicHistory;
+      await this.opportunityRepository.update(
+        { id: opportunityId },
+        { cFacturacionSubEstado: FacturacionSubEstado.ORDEN_SERVICIO_PENDIENTE_FACTURA },
+      );
+      if (hasClinicHistoryOs && newOpportunity.stage !== Enum_Stage.CIERRE_GANADO) {
+        await this.opportunityRepository.update(
+          { id: opportunityId },
+          { stage: Enum_Stage.CIERRE_GANADO, modifiedAt: new Date() },
+        );
+        console.log('[updateOpportunityWithFacturas] Etapa actualizada a CIERRE_GANADO (O.S pendiente factura)');
+        const updatedOpp = await this.getOneWithEntity(opportunityId);
+        if (updatedOpp.assignedUserId) {
+          await this.websocketService.notifyOpportunityUpdate(updatedOpp, newOpportunity.stage);
+        }
+        newOpportunity = updatedOpp as Opportunity;
+      }
+      const osUpdatedAfter = await this.checkAndUpdateInvoiceStatusForOpportunityServiceOrders(opportunityId);
+      if (osUpdatedAfter) {
+        newOpportunity = (await this.getOneWithEntity(opportunityId)) as Opportunity;
+        console.log('[updateOpportunityWithFacturas] O.S ya facturada; oportunidad recargada');
+      }
+    }
+
+    console.log('[updateOpportunityWithFacturas] Consultando clinicHistoryCrm en SV...');
     const clinicHistoryCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
+    console.log('[updateOpportunityWithFacturas] clinicHistoryCrm', { existe: !!clinicHistoryCrm });
 
     if(clinicHistoryCrm) {
       let payloadUpdateClinicHistoryCrm: Partial<CreateClinicHistoryCrmDto> = {};
@@ -1535,38 +1797,53 @@ export class OpportunityService {
       if (onlyAppointment) {
         if(!body.reservationId) throw new BadRequestException('El campo reservationId no puede estar vacío');
         payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
+        console.log('[updateOpportunityWithFacturas] Actualización CRM: solo cita → id_reservation', body.reservationId);
       } else if (hasMainData && !hasAppointmentData) {
         if(body.cFacturas?.comprobante_soles) {
           const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
           payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+          console.log('[updateOpportunityWithFacturas] IRH por comprobante_soles', { id: irh.id });
         } else if (body.cFacturas?.comprobante_dolares) {
           const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
           payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+          console.log('[updateOpportunityWithFacturas] IRH por comprobante_dolares', { id: irh.id });
         }
   
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
+        console.log('[updateOpportunityWithFacturas] Paciente por historia clínica (solo main)', { patientId: patient.ch_id });
       } else if (hasMainData && hasAppointmentData) {
         if(!body.reservationId) throw new BadRequestException('El campo reservationId no puede estar vacío');
   
         if(body.cFacturas?.comprobante_soles) {
           const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_soles, tokenSv);
           payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+          console.log('[updateOpportunityWithFacturas] IRH por comprobante_soles (main+cita)', { id: irh.id });
         } else if (body.cFacturas?.comprobante_dolares) {
           const irh = await this.svServices.getIRHByComprobante(body.cFacturas.comprobante_dolares, tokenSv);
           payloadUpdateClinicHistoryCrm.id_payment = irh.id;
+          console.log('[updateOpportunityWithFacturas] IRH por comprobante_dolares (main+cita)', { id: irh.id });
         }
         const patient = await this.svServices.getPatientByClinicHistory(body.cClinicHistory!, tokenSv);
   
         payloadUpdateClinicHistoryCrm.id_reservation = body.reservationId;
         payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
+        console.log('[updateOpportunityWithFacturas] Actualización CRM: main+cita', {
+          id_reservation: body.reservationId,
+          patientId: patient.ch_id,
+        });
       }
   
       if (Object.keys(payloadUpdateClinicHistoryCrm).length > 0) {
+        console.log('[updateOpportunityWithFacturas] Actualizando clinicHistoryCrm en SV', payloadUpdateClinicHistoryCrm);
         await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, payloadUpdateClinicHistoryCrm);
+        console.log('[updateOpportunityWithFacturas] clinicHistoryCrm actualizado en SV');
+      } else {
+        console.log('[updateOpportunityWithFacturas] Sin campos para actualizar en clinicHistoryCrm, se omite');
       }
     }
 
+    console.log('[updateOpportunityWithFacturas] Fin exitoso', { opportunityId });
     return {
       success: true,
       message: "Opportunity updated successfully",
