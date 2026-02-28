@@ -11,10 +11,13 @@ import { QuotationListResponse, QuotationListItem } from "./quotation-list.types
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
-  /** Base URL del servicio invoice-mifact-v3 (ej. http://host/invoice-mifact-v3). Usado para estado de facturación por O.S. */
+  /** Base URL del servicio invoice-mifact-v3 (ej. http://host/api). Usado para estado de facturación por O.S. */
   private readonly URL_INVOICE_MIFACT_V3 = process.env.URL_INVOICE_MIFACT_V3 || '';
   private readonly usernameSv = process.env.USERNAME_ADMIN;
   private readonly passwordSv = process.env.PASSWORD_ADMIN;
+  /** Credenciales para login en invoice-mifact-v3. Si no se definen, se usan USERNAME_ADMIN y PASSWORD_ADMIN. */
+  private readonly invoiceMifactUsername = process.env.INVOICE_MIFACT_USERNAME || process.env.USERNAME_ADMIN || '';
+  private readonly invoiceMifactPassword = process.env.INVOICE_MIFACT_PASSWORD ?? process.env.PASSWORD_ADMIN ?? '';
 
   constructor(
   ) {}
@@ -217,12 +220,45 @@ export class SvServices {
   }
 
   /**
-   * Consulta si una orden de servicio (O.S) está facturada.
-   * GET /invoice-mifact-v3/service-order/:serviceOrderId/invoice-status
-   * Excluye status_invoice 105 (nota de crédito) y 107 (eliminado). Retorna el último comprobante válido.
-   * @returns null si URL_INVOICE_MIFACT_V3 no está configurada
+   * Obtiene token para el servicio invoice-mifact-v3 (login).
+   * POST {URL_INVOICE_MIFACT_V3}/auth/signin con username/password.
+   * Usa INVOICE_MIFACT_USERNAME e INVOICE_MIFACT_PASSWORD si están definidos; si no, USERNAME_ADMIN y PASSWORD_ADMIN.
+   * @returns token o null si no hay URL/credenciales o falla el login
    */
-  async getInvoiceStatusByServiceOrderId(serviceOrderId: number): Promise<{
+  async getTokenInvoiceMifact(): Promise<string | null> {
+    if (!this.URL_INVOICE_MIFACT_V3) return null;
+    if (!this.invoiceMifactUsername || this.invoiceMifactPassword === undefined || this.invoiceMifactPassword === null) {
+      console.warn('Credenciales invoice-mifact no configuradas (INVOICE_MIFACT_USERNAME / INVOICE_MIFACT_PASSWORD o USERNAME_ADMIN / PASSWORD_ADMIN)');
+      return null;
+    }
+    try {
+      const base = this.URL_INVOICE_MIFACT_V3.replace(/\/$/, '');
+      const loginUrl = `${base}/auth/signin`;
+      const response = await axios.post<{ token?: string; access_token?: string }>(loginUrl, {
+        username: this.invoiceMifactUsername,
+        password: this.invoiceMifactPassword,
+      }, { timeout: 10000 });
+      const token = response.data?.token ?? response.data?.access_token;
+      return token ?? null;
+    } catch (error) {
+      console.error('Error getTokenInvoiceMifact (login invoice-mifact-v3)', error);
+      return null;
+    }
+  }
+
+  /**
+   * Consulta si una orden de servicio (O.S) está facturada.
+   * GET {URL_INVOICE_MIFACT_V3}/service-order/:serviceOrderId/invoice-status
+   * Requiere login previo: se usa getTokenInvoiceMifact() si no se pasa token.
+   * Excluye status_invoice 105 (nota de crédito) y 107 (eliminado). Retorna el último comprobante válido.
+   * @param serviceOrderId ID de la orden de servicio
+   * @param token Opcional; si no se pasa, se obtiene con getTokenInvoiceMifact()
+   * @returns null si URL no configurada o falla login/request
+   */
+  async getInvoiceStatusByServiceOrderId(
+    serviceOrderId: number,
+    token?: string | null,
+  ): Promise<{
     facturado: boolean;
     urls?: { soles?: string; dolares?: string };
     invoice_result_head_id?: number;
@@ -231,10 +267,16 @@ export class SvServices {
       console.warn('URL_INVOICE_MIFACT_V3 no configurada; no se puede consultar estado de facturación por O.S');
       return null;
     }
+    const authToken = token ?? await this.getTokenInvoiceMifact();
+    if (!authToken) {
+      console.warn('No se pudo obtener token para invoice-mifact-v3');
+      return null;
+    }
     try {
       const url = `${this.URL_INVOICE_MIFACT_V3.replace(/\/$/, '')}/service-order/${serviceOrderId}/invoice-status`;
       const response = await axios.get<{ facturado: boolean; urls?: { soles?: string; dolares?: string }; invoice_result_head_id?: number }>(url, {
         timeout: 15000,
+        headers: { Authorization: `Bearer ${authToken}` },
       });
       return response.data;
     } catch (error) {
@@ -385,6 +427,30 @@ export class SvServices {
       return responseRedirectByOpportunityId.data;
     } catch {
       throw new BadRequestException('Error al obtener el redirect por ID de oportunidad');
+    }
+  }
+
+  /**
+   * Obtiene reserva y pago para flujo completo (cuando clinic_history_crm tiene id_reservation e id_payment).
+   * GET {URL_BACK_SV}/opportunities/full-flow-data/:opportunityId
+   * El backend SV debe implementar este endpoint y devolver { reservation?, payment? } según clinic_history_crm.
+   */
+  async getFullFlowDataByOpportunityId(
+    opportunityId: string,
+    tokenSv: string,
+  ): Promise<{ reservation?: unknown; payment?: unknown }> {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/opportunities/full-flow-data/${opportunityId}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      const data = response.data?.data ?? response.data ?? {};
+      return {
+        reservation: data.reservation ?? undefined,
+        payment: data.payment ?? undefined,
+      };
+    } catch {
+      return {};
     }
   }
 

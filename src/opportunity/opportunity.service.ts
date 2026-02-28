@@ -1422,9 +1422,15 @@ export class OpportunityService {
     });
     if (pendientes.length === 0) return false;
 
+    const token = await this.svServices.getTokenInvoiceMifact();
+    if (!token) {
+      console.warn('[checkAndUpdateInvoiceStatusForOpportunityServiceOrders] No se pudo obtener token invoice-mifact; se omite consulta');
+      return false;
+    }
+
     let opportunityUpdated = false;
     for (const oso of pendientes) {
-      const status = await this.svServices.getInvoiceStatusByServiceOrderId(oso.serviceOrderId);
+      const status = await this.svServices.getInvoiceStatusByServiceOrderId(oso.serviceOrderId, token);
       await this.opportunityServiceOrderRepository.update(
         { id: oso.id },
         { lastCheckedAt: new Date() },
@@ -1479,6 +1485,91 @@ export class OpportunityService {
       if (updated) count++;
     }
     return count;
+  }
+
+  /**
+   * Indica si la oportunidad debe tratarse como "cierre ganado" / completa para el redirect:
+   * no devolver presave cuando ya tiene facturación, reservación, datos del paciente u órdenes de servicio (O.S).
+   */
+  async isCompleteForRedirect(opportunityId: string): Promise<boolean> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+    });
+    if (!opportunity) return false;
+
+    if (opportunity.isPresaved === false) return true;
+    if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+    if (opportunity.cDateReservation && opportunity.cAppointment) return true;
+    if (opportunity.cClinicHistory) return true;
+
+    const osCount = await this.opportunityServiceOrderRepository.count({
+      where: { opportunityId },
+    });
+    if (osCount > 0) return true;
+
+    return false;
+  }
+
+  /**
+   * Flujo completado = datos del paciente + datos de la reserva + (facturación O orden de servicio).
+   * Se usa en redirect para devolver code 0 cuando el proceso está completo.
+   */
+  async isFlowCompleteForRedirect(opportunityId: string): Promise<boolean> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+    });
+    if (!opportunity) return false;
+
+    const hasPatient = !!opportunity.cClinicHistory;
+    const hasReservation = !!(opportunity.cDateReservation && opportunity.cAppointment);
+    const hasFacturacion = opportunity.isPresaved === false;
+    const osCount = await this.opportunityServiceOrderRepository.count({ where: { opportunityId } });
+    const hasOS = osCount > 0;
+
+    return hasPatient && hasReservation && (hasFacturacion || hasOS);
+  }
+
+  /**
+   * Órdenes de servicio (O.S) asociadas a la oportunidad para incluir en la respuesta del redirect.
+   */
+  async getOrdenesServicioForRedirect(opportunityId: string): Promise<{ serviceOrderId: number; facturado: boolean }[]> {
+    const list = await this.opportunityServiceOrderRepository.find({
+      where: { opportunityId },
+      order: { id: 'ASC' },
+    });
+    return list.map((o) => ({ serviceOrderId: o.serviceOrderId, facturado: o.facturado === true }));
+  }
+
+  /**
+   * Facturas de las O.S ya facturadas (url_soles, url_dolares, id) para incluir en redirect, formato tipo payment.
+   */
+  async getFacturasOrdenesServicioForRedirect(
+    opportunityId: string,
+  ): Promise<{ serviceOrderId: number; id: number; url_invoice_soles?: string; url_invoice_dolares?: string }[]> {
+    const list = await this.opportunityServiceOrderRepository.find({
+      where: { opportunityId, facturado: true },
+      order: { id: 'ASC' },
+    });
+    return list
+      .filter((o) => o.invoiceResultHeadId != null)
+      .map((o) => ({
+        serviceOrderId: o.serviceOrderId,
+        id: o.invoiceResultHeadId!,
+        ...(o.urlSoles && { url_invoice_soles: o.urlSoles }),
+        ...(o.urlDolares && { url_invoice_dolares: o.urlDolares }),
+      }));
+  }
+
+  /**
+   * Consulta en SV reserva y pago para incluir en redirect cuando el flujo está completo.
+   */
+  async getFullFlowDataForRedirect(opportunityId: string): Promise<{ reservation?: unknown; payment?: unknown }> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      return await this.svServices.getFullFlowDataByOpportunityId(opportunityId, tokenSv);
+    } catch {
+      return {};
+    }
   }
 
   async updateOpportunityWithFacturas(

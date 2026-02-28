@@ -135,8 +135,12 @@ El backend consulta **GET** `{URL_INVOICE_MIFACT_V3}/service-order/:serviceOrder
 
 ### 6.1 Uso en el CRM
 
-- **Variable de entorno:** `URL_INVOICE_MIFACT_V3` (URL base del servicio, ej. `http://localhost:3200/api`).
-- **Método en backend:** `SvServices.getInvoiceStatusByServiceOrderId(serviceOrderId: number)`.
+- **Variable de entorno:** `URL_INVOICE_MIFACT_V3` (URL base del servicio, ej. `http://localhost:5111/api`).
+- **Login:** El API requiere autenticación. El CRM obtiene un token antes de consultar invoice-status:
+  - **POST** `{URL_INVOICE_MIFACT_V3}/auth/signin` con cuerpo `{ "username": "...", "password": "..." }`.
+  - Por defecto se usan `USERNAME_ADMIN` y `PASSWORD_ADMIN`. Si el servicio de facturación usa otras credenciales, definir `INVOICE_MIFACT_USERNAME` e `INVOICE_MIFACT_PASSWORD` en `.env`.
+- **Métodos en backend:** `SvServices.getTokenInvoiceMifact()` (obtiene el token), `SvServices.getInvoiceStatusByServiceOrderId(serviceOrderId, token?)` (consulta estado; si no se pasa token, se obtiene con login).
+- Las peticiones a **GET** `.../service-order/:id/invoice-status` se envían con cabecera `Authorization: Bearer <token>`.
 
 ### 6.2 Contrato del endpoint externo
 
