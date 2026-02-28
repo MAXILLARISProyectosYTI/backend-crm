@@ -466,6 +466,9 @@ export class OpportunityController {
     @Req() req: Request & { user: { userId: string; userName: string } }
   ) {
     const userId = req.user.userId;
+    console.log('body', body);
+    console.log('id', id);
+    console.log('userId', userId);
     return this.opportunityService.updateOpportunityWithFacturas(id, body, userId);
   }
 

@@ -11,9 +11,11 @@ import { QuotationListResponse, QuotationListItem } from "./quotation-list.types
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  /** Base URL del servicio invoice-mifact-v3 (ej. http://host/invoice-mifact-v3). Usado para estado de facturación por O.S. */
+  private readonly URL_INVOICE_MIFACT_V3 = process.env.URL_INVOICE_MIFACT_V3 || '';
   private readonly usernameSv = process.env.USERNAME_ADMIN;
   private readonly passwordSv = process.env.PASSWORD_ADMIN;
-  
+
   constructor(
   ) {}
 
@@ -211,6 +213,33 @@ export class SvServices {
     } catch (error) {
       console.error('Error getIRHByComprobante', error);
       throw new BadRequestException('Error al obtener el IRH por comprobante en SV');
+    }
+  }
+
+  /**
+   * Consulta si una orden de servicio (O.S) está facturada.
+   * GET /invoice-mifact-v3/service-order/:serviceOrderId/invoice-status
+   * Excluye status_invoice 105 (nota de crédito) y 107 (eliminado). Retorna el último comprobante válido.
+   * @returns null si URL_INVOICE_MIFACT_V3 no está configurada
+   */
+  async getInvoiceStatusByServiceOrderId(serviceOrderId: number): Promise<{
+    facturado: boolean;
+    urls?: { soles?: string; dolares?: string };
+    invoice_result_head_id?: number;
+  } | null> {
+    if (!this.URL_INVOICE_MIFACT_V3) {
+      console.warn('URL_INVOICE_MIFACT_V3 no configurada; no se puede consultar estado de facturación por O.S');
+      return null;
+    }
+    try {
+      const url = `${this.URL_INVOICE_MIFACT_V3.replace(/\/$/, '')}/service-order/${serviceOrderId}/invoice-status`;
+      const response = await axios.get<{ facturado: boolean; urls?: { soles?: string; dolares?: string }; invoice_result_head_id?: number }>(url, {
+        timeout: 15000,
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getInvoiceStatusByServiceOrderId', serviceOrderId, error);
+      return null;
     }
   }
 

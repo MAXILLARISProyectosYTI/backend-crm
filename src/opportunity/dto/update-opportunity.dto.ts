@@ -309,6 +309,10 @@ export interface UpdateOpportunityProcces {
     comprobante_soles: string | null;
     comprobante_dolares: string | null;
   };
+  /** Órdenes de servicio (O.S) asociadas. Cierre ganado puede ser con factura directa o con O.S (se consulta invoice-status metódicamente). */
+  cOrdenesServicio?: number[]; // serviceOrderId[]
+  /** Metadata opcional por O.S: { [serviceOrderId]: { descripcion?, numero_os?, ... } } */
+  cOrdenesServicioMetadata?: Record<number, Record<string, unknown>>;
   // DATOS DE LA CITA
   cAppointment?: string | null;
   cDateReservation?: string | null;
