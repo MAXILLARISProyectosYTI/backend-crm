@@ -38,7 +38,7 @@ export class AuthService {
       { sub: user.id, type: 'refresh' },
       {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m') as any,
       }
     );
 
@@ -79,7 +79,7 @@ export class AuthService {
         { sub: user.id, type: 'refresh' },
         {
           secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-          expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+          expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m') as any,
         }
       );
 
@@ -108,7 +108,7 @@ export class AuthService {
       { sub: user.id, type: 'refresh' },
       {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m') as any,
       }
     );
 
@@ -136,7 +136,7 @@ export class AuthService {
       { sub: user.id, type: 'refresh' },
       {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m'),
+        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '5m') as any,
       }
     );
   
