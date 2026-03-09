@@ -2028,6 +2028,30 @@ export class OpportunityService {
     return opportunities;
   }
 
+  /**
+   * Retorna un mapa { clinicHistory → cSubCampaignId } para un lote de historias clínicas.
+   * Hace una sola query a la BD: eficiente para uso en listados paginados.
+   */
+  async getSubCampaignIdsByClinicHistories(histories: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!histories.length) return result;
+
+    const rows = await this.opportunityRepository
+      .createQueryBuilder('o')
+      .select(['o.cClinicHistory', 'o.cSubCampaignId'])
+      .where('o.cClinicHistory IN (:...histories)', { histories })
+      .andWhere('o.deleted = false')
+      .andWhere('o.cSubCampaignId IS NOT NULL')
+      .getMany();
+
+    for (const row of rows) {
+      if (row.cClinicHistory && row.cSubCampaignId && !result.has(row.cClinicHistory)) {
+        result.set(row.cClinicHistory, row.cSubCampaignId);
+      }
+    }
+    return result;
+  }
+
   async redirectToManager(_usuario: string, opportunityId: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
