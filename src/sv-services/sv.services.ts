@@ -131,12 +131,12 @@ export class SvServices {
       })
   
       const data = responseStatusClient.data;
-  
-     if(data.id_payment && data.id_reservation && data.patientId && data.espoId) {
-      return true
-     }  else {
+      // Mostrar botón Historia Clínica cuando el paciente está vinculado (patientId + espoId).
+      // Para pago con factura también hay id_payment/id_reservation; para efectivo solo patientId+espoId.
+      if (data.patientId && data.espoId) {
+        return true;
+      }
       return false;
-     }
   
     } catch (error) {
       console.error('Error getStatusClient', error);
