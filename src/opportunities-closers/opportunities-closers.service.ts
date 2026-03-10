@@ -5,6 +5,7 @@ import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
 import { DateTime } from 'luxon';
 import { statesCRM } from './dto/enum-types.enum';
+import { SUB_CAMPAIGN_NAMES } from 'src/globals/ids';
 import { SvServices } from 'src/sv-services/sv.services';
 import { UserService } from 'src/user/user.service';
 import { DetalleCotizacionDto } from './dto/detail-quotations.dto';
@@ -57,7 +58,7 @@ export class OpportunitiesClosersService {
     limit: number = 10,
     search?: string,
     assignedToUserId?: string,
-  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null })[], total: number, page: number, totalPages: number }> {
+  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null })[], total: number, page: number, totalPages: number }> {
     // Historias del cliente cuando hay search: vienen del endpoint externo; usamos para filtrar "todas las cotizaciones del cliente"
     let clientHistories: string[] = [];
 
@@ -152,15 +153,29 @@ export class OpportunitiesClosersService {
     const defaultSede = 'Lima';
     const sedeByHistory = new Map<string, string>();
     const uniqueHistories = [...new Set(entities.map((e) => e.hCPatient).filter((h): h is string => !!h?.trim()))];
+
+    // Lookup batch: sede (SV) + subcampaña/tratamiento por historia clínica (CRM) + tratamiento por cotización (SV)
+    let subCampaignByHistory = new Map<string, string>();
+    let treatmentByCotizacion: Record<number, { tipo: 'OI' | 'OFM' | 'APNEA'; fecha: string | null }> = {};
+
+    let tokenSv: string | undefined;
+    try {
+      const token = await this.svServices.getTokenSvAdmin();
+      tokenSv = token.tokenSv;
+    } catch {
+      // Sin token no se consulta SV
+    }
+
     if (uniqueHistories.length > 0) {
-      let tokenSv: string | undefined;
+      // Buscar tratamiento en CRM (fallback 1: por oportunidad vinculada)
       try {
-        const token = await this.svServices.getTokenSvAdmin();
-        tokenSv = token.tokenSv;
-      } catch {
-        // Sin token no se consulta SV; todas usarán defaultSede
+        subCampaignByHistory = await this.opportunityService.getSubCampaignIdsByClinicHistories(uniqueHistories);
+      } catch (err) {
+        this.logger.warn(`[findAll] Error subcampañas por historia: ${err instanceof Error ? err.message : String(err)}`);
       }
+
       if (tokenSv) {
+        // Sede en SV (una llamada por historia — ya existía)
         const results = await Promise.allSettled(
           uniqueHistories.map((history) => this.svServices.getSedeByClinicHistory(history, tokenSv)),
         );
@@ -171,18 +186,62 @@ export class OpportunitiesClosersService {
             sedeByHistory.set(history, name);
             this.logger.log(`[findAll] Sede por historia: ${history} -> ${name}`);
           } else {
-            this.logger.log(`[findAll] Sede por historia: ${history} -> sin dato en SV, se usará default "${defaultSede}"`);
+            this.logger.log(`[findAll] Sede por historia: ${history} -> sin dato en SV, default "${defaultSede}"`);
           }
         });
       }
     }
 
+    // Fallback 2 (definitivo): consultar SV por cotizacionId para todos los registros con cotizacionId
+    // (para obtener tipo de tratamiento Y fecha de cotización)
+    if (tokenSv) {
+      const quotationIds = entities
+        .filter((e) => !!e.cotizacionId)
+        .map((e) => Number(e.cotizacionId))
+        .filter((id) => !isNaN(id));
+
+      if (quotationIds.length > 0) {
+        try {
+          treatmentByCotizacion = await this.svServices.getTreatmentTypesByQuotationIds(tokenSv, quotationIds);
+          this.logger.log(`[findAll] Tratamientos por cotización SV: ${Object.keys(treatmentByCotizacion).length} resultados para ${quotationIds.length} cotizaciones`);
+        } catch (err) {
+          this.logger.warn(`[findAll] Error tratamientos por cotización: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
     const opportunities = entities.map((entity, index) => {
       const sedeAtencion = (entity.hCPatient && sedeByHistory.get(entity.hCPatient)) ?? defaultSede;
+
+      // Fecha de cotización desde SV (siempre disponible si hay cotizacionId)
+      let fechaCotizacion: string | null = null;
+      if (entity.cotizacionId) {
+        const svData = treatmentByCotizacion[Number(entity.cotizacionId)];
+        if (svData?.fecha) fechaCotizacion = svData.fecha;
+      }
+
+      // Prioridad 1: JOIN directo por opportunityId (c_sub_campaign_id del JOIN)
+      const rawSubCampaignId: string | null = raw[index]?.c_sub_campaign_id ?? null;
+      let tipoTratamiento: string | null = rawSubCampaignId ? (SUB_CAMPAIGN_NAMES[rawSubCampaignId] ?? null) : null;
+
+      // Prioridad 2: oportunidad CRM por historia clínica
+      if (!tipoTratamiento && entity.hCPatient && subCampaignByHistory.has(entity.hCPatient)) {
+        const id = subCampaignByHistory.get(entity.hCPatient)!;
+        tipoTratamiento = SUB_CAMPAIGN_NAMES[id] ?? null;
+      }
+
+      // Prioridad 3 (definitivo): tipo de tratamiento desde SV por cotizacionId
+      if (!tipoTratamiento && entity.cotizacionId) {
+        const svData = treatmentByCotizacion[Number(entity.cotizacionId)];
+        if (svData?.tipo) tipoTratamiento = svData.tipo;
+      }
+
       return {
         ...entity,
         assignedUserName: raw[index]?.assigned_user_name || null,
         sedeAtencion,
+        tipoTratamiento,
+        fechaCotizacion,
       };
     });
 

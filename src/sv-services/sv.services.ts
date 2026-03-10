@@ -131,12 +131,12 @@ export class SvServices {
       })
   
       const data = responseStatusClient.data;
-  
-     if(data.id_payment && data.id_reservation && data.patientId && data.espoId) {
-      return true
-     }  else {
+      // Mostrar botón Historia Clínica cuando el paciente está vinculado (patientId + espoId).
+      // Para pago con factura también hay id_payment/id_reservation; para efectivo solo patientId+espoId.
+      if (data.patientId && data.espoId) {
+        return true;
+      }
       return false;
-     }
   
     } catch (error) {
       console.error('Error getStatusClient', error);
@@ -382,6 +382,28 @@ export class SvServices {
   /**
    * Búsqueda en SV cuando el CRM no tiene resultados. GET /quotation/search?q= — ver docs/sv-api-requirements.md
    */
+  /**
+   * POST /quotation/treatment-types — Devuelve OI|OFM|APNEA por lote de cotizacionIds.
+   * Una sola query al SV para toda la página de cerradoras.
+   */
+  async getTreatmentTypesByQuotationIds(
+    tokenSv: string,
+    quotationIds: number[],
+  ): Promise<Record<number, { tipo: 'OI' | 'OFM' | 'APNEA'; fecha: string | null }>> {
+    if (!quotationIds.length) return {};
+    try {
+      const response = await axios.post<Record<number, { tipo: 'OI' | 'OFM' | 'APNEA'; fecha: string | null }>>(
+        `${this.URL_BACK_SV}/quotation/treatment-types`,
+        { quotationIds },
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data ?? {};
+    } catch (err) {
+      console.error('getTreatmentTypesByQuotationIds error', err instanceof Error ? err.message : err);
+      return {};
+    }
+  }
+
   async getQuotationSearch(tokenSv: string, q: string): Promise<QuotationListItem[]> {
     if (!q?.trim()) return [];
     try {
