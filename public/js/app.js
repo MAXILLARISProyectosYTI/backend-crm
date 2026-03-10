@@ -1,7 +1,7 @@
 // Configuración
 const CONFIG = {
-    serverUrl: 'http://161.132.211.235:8993',
-    websocketUrl: 'ws://161.132.211.135:8993',
+    serverUrl: 'https://api.crm.maxillaris.pe',
+    websocketUrl: 'wss://api.crm.maxillaris.pe',
     // serverUrl: 'http://161.132.211.235:8993',
     // websocketUrl: 'ws://161.132.211.235:8993',
     reconnectAttempts: 5,
