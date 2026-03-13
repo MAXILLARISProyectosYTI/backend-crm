@@ -394,9 +394,10 @@ export class OpportunityController {
   @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean }
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, body.userSearch, body.stage, body.isPresaved);
+    const userSearch = (typeof body?.userSearch === 'string' && body.userSearch.trim()) ? body.userSearch.trim() : undefined;
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
   } 
 
   @Get(':id')

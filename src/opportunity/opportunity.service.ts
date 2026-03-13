@@ -1054,7 +1054,10 @@ export class OpportunityService {
     search?: string,
     userSearch?: string,
     stage?: Enum_Stage,
-    isPresaved?: boolean
+    isPresaved?: boolean,
+    dateFrom?: string,
+    dateTo?: string,
+    campaignFilter?: string
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
@@ -1145,6 +1148,24 @@ export class OpportunityService {
     // Filtro por oportunidades preguardadas
     if (isPresaved === true) {
       queryBuilder.andWhere('opportunity.isPresaved = :isPresaved', { isPresaved: true });
+    }
+
+    // Filtro por rango de fechas (close_date en formato YYYY-MM-DD): desde, hasta o ambos
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (dateFrom && dateRegex.test(dateFrom)) {
+      queryBuilder.andWhere('opportunity.close_date >= :dateFrom', { dateFrom });
+    }
+    if (dateTo && dateRegex.test(dateTo)) {
+      queryBuilder.andWhere('opportunity.close_date <= :dateTo', { dateTo });
+    }
+
+    // Filtro por campaña (subcampaña): OI, OFM, APNEA
+    const allowedCampaigns = ['OI', 'OFM', 'APNEA'];
+    if (campaignFilter && allowedCampaigns.includes(campaignFilter.toUpperCase())) {
+      const subCampaignId = CAMPAIGNS_IDS[campaignFilter.toUpperCase() as keyof typeof CAMPAIGNS_IDS];
+      if (subCampaignId) {
+        queryBuilder.andWhere('opportunity.c_sub_campaign_id = :campaignFilterId', { campaignFilterId: subCampaignId });
+      }
     }
 
     // Usar ordenamiento diferente según el tipo de usuario
