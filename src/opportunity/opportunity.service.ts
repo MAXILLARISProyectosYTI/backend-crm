@@ -15,7 +15,7 @@ import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
-import { CAMPAIGNS_IDS, ROLES_IDS, TEAMS_IDS } from 'src/globals/ids';
+import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from 'src/globals/ids';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -879,6 +879,100 @@ export class OpportunityService {
       { cCampusAtencionId: value, modifiedAt: new Date() } as Partial<Opportunity>,
     );
     return this.getOneWithEntity(id);
+  }
+
+  /**
+   * Compara solo sede CRM vs SV (por historia clínica). Devuelve si hay match y si la oportunidad
+   * provino de otra campaña (cSeTrasfOtroServi) para que el front muestre el botón flotante y el modal.
+   * No se compara campaña vs subcampaña.
+   */
+  async getSedeSvMatch(id: string): Promise<{
+    match: boolean;
+    crmSede: string;
+    crmCampusId: number | null;
+    svSede: string | null;
+    svCampusId: number | null;
+    transferredFromCampaign: string | null;
+    currentCampaignName: string | null;
+  }> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id },
+      select: [
+        'id',
+        'cClinicHistory',
+        'cCampusId',
+        'cCampusAtencionId',
+        'cMetadata',
+        'campaignId',
+        'cSeTrasfOtroServi',
+        'stage',
+      ],
+    });
+    if (!opportunity) {
+      throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
+    }
+
+    let crmSede = 'No especificada';
+    if (opportunity.cMetadata) {
+      try {
+        const meta = JSON.parse(opportunity.cMetadata) as { campusName?: string };
+        if (meta?.campusName) crmSede = meta.campusName;
+      } catch {
+        // ignorar
+      }
+    }
+    const crmCampusId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? null;
+
+    let svSede: string | null = null;
+    let svCampusId: number | null = null;
+    if (opportunity.cClinicHistory?.trim()) {
+      let svResult: { campusId?: number; campusName?: string } | null = null;
+      try {
+        const { tokenSv } = await this.svServices.getTokenSvAdmin();
+        svResult = await this.svServices.getSedeByClinicHistory(opportunity.cClinicHistory.trim(), tokenSv);
+      } catch {
+        // ignorar
+      }
+      if (svResult && (svResult.campusId != null || svResult.campusName)) {
+        svCampusId = svResult.campusId != null ? svResult.campusId : null;
+        svSede = svResult.campusName ?? null;
+      }
+    }
+
+    // Si el SV no devuelve sede (svCampusId null), no hay info suficiente para detectar discrepancia → match.
+    // Solo hay mismatch cuando SV sí devuelve una sede distinta a la del CRM.
+    const sedeMatch =
+      svCampusId == null ||
+      (crmCampusId != null && crmCampusId === svCampusId);
+
+    const currentCampaignName =
+      (opportunity.campaignId && SUB_CAMPAIGN_NAMES[opportunity.campaignId]) || null;
+    const originService = opportunity.cSeTrasfOtroServi?.trim() || null;
+    const hasClinicHistory = !!opportunity.cClinicHistory?.trim();
+    // Una transferencia real OI→OFM requiere:
+    // 1. Sentinel distinto de FORCE_INITIAL (ya regularizada).
+    // 2. cSeTrasfOtroServi difiere de la campaña actual.
+    // 3. Tiene historia clínica (pasó por el SV).
+    // 4. Stage === "Cierre Ganado": cerró el flujo anterior. Sin esto, cSeTrasfOtroServi="OI"
+    //    es simplemente el valor por defecto de oportunidades OFM nativas → falso positivo.
+    const isCierreGanado = opportunity.stage === Enum_Stage.CIERRE_GANADO;
+    const transferredFromCampaign =
+      originService === 'FORCE_INITIAL'
+        ? null
+        : originService && currentCampaignName && hasClinicHistory && isCierreGanado &&
+          originService.toLowerCase() !== currentCampaignName.toLowerCase()
+          ? originService
+          : null;
+
+    return {
+      match: sedeMatch,
+      crmSede,
+      crmCampusId,
+      svSede,
+      svCampusId,
+      transferredFromCampaign,
+      currentCampaignName,
+    };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
@@ -2096,7 +2190,17 @@ export class OpportunityService {
     const digits = cleanedPhone.replace(/\D/g, '');
 
     const localNumber = digits.slice(-9);
-    const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
+    // forceInitialFlow SOLO cuando el usuario presionó "Aplicar" en el helper de discrepancias.
+    // El frontend guarda el sentinel "FORCE_INITIAL" en cSeTrasfOtroServi.
+    // Así no afecta flujos nativos de ninguna campaña.
+    const forceInitialFlow = opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL';
+    const redirectResponse = await this.svServices.getRedirectByOpportunityId(
+      opportunityId,
+      campaign.name!,
+      localNumber,
+      historyCLinic,
+      forceInitialFlow,
+    );
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {

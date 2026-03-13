@@ -400,6 +400,12 @@ export class OpportunityController {
     return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
   } 
 
+  /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
+  @Get(':id/sede-sv-match')
+  async getSedeSvMatch(@Param('id') id: string) {
+    return this.opportunityService.getSedeSvMatch(id);
+  }
+
   @Get(':id')
   async findOne(
     @Param('id') id: string,
