@@ -956,11 +956,14 @@ export class OpportunityService {
     // 4. Stage === "Cierre Ganado": cerró el flujo anterior. Sin esto, cSeTrasfOtroServi="OI"
     //    es simplemente el valor por defecto de oportunidades OFM nativas → falso positivo.
     const isCierreGanado = opportunity.stage === Enum_Stage.CIERRE_GANADO;
+    // Transferencia válida: solo OI → OFM.
+    // APNEA y otros flujos son independientes; cSeTrasfOtroServi="OI" en ellos es solo el default.
+    const isOiToOfm =
+      originService?.toUpperCase() === 'OI' && currentCampaignName?.toUpperCase() === 'OFM';
     const transferredFromCampaign =
       originService === 'FORCE_INITIAL'
         ? null
-        : originService && currentCampaignName && hasClinicHistory && isCierreGanado &&
-          originService.toLowerCase() !== currentCampaignName.toLowerCase()
+        : isOiToOfm && hasClinicHistory && isCierreGanado
           ? originService
           : null;
 
