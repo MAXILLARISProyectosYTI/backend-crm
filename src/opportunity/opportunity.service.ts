@@ -1709,7 +1709,7 @@ export class OpportunityService {
   async clearForceInitialSentinel(opportunityId: string): Promise<void> {
     await this.opportunityRepository.update(
       { id: opportunityId, cSeTrasfOtroServi: 'FORCE_INITIAL' },
-      { cSeTrasfOtroServi: null, modifiedAt: new Date() } as Partial<Opportunity>,
+      { cSeTrasfOtroServi: null, modifiedAt: new Date() } as unknown as Partial<Opportunity>,
     );
   }
 
