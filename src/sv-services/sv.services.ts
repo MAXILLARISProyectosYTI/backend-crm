@@ -437,15 +437,26 @@ export class SvServices {
     }
   }
 
-  async getRedirectByOpportunityId(opportunityId: string, campaignName: string, phoneNumber: string, historyCLinic: string | undefined) {
+  async getRedirectByOpportunityId(
+    opportunityId: string,
+    campaignName: string,
+    phoneNumber: string,
+    historyCLinic: string | undefined,
+    forceInitialFlow?: boolean,
+  ) {
     try {
-      const responseRedirectByOpportunityId = await axios.get(`${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`, {
-        params: {
-          campaignName,
-          phoneNumber,
-          historyCLinic: historyCLinic || ''
-        }
-      });
+      const params: Record<string, string> = {
+        campaignName,
+        phoneNumber,
+        historyCLinic: historyCLinic || '',
+      };
+      if (forceInitialFlow === true) {
+        params.forceInitialFlow = 'true';
+      }
+      const responseRedirectByOpportunityId = await axios.get(
+        `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`,
+        { params },
+      );
       return responseRedirectByOpportunityId.data;
     } catch {
       throw new BadRequestException('Error al obtener el redirect por ID de oportunidad');

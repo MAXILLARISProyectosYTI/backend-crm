@@ -394,10 +394,17 @@ export class OpportunityController {
   @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean }
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, body.userSearch, body.stage, body.isPresaved);
+    const userSearch = (typeof body?.userSearch === 'string' && body.userSearch.trim()) ? body.userSearch.trim() : undefined;
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
   } 
+
+  /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
+  @Get(':id/sede-sv-match')
+  async getSedeSvMatch(@Param('id') id: string) {
+    return this.opportunityService.getSedeSvMatch(id);
+  }
 
   @Get(':id')
   async findOne(
@@ -414,7 +421,7 @@ export class OpportunityController {
     @Param('id') id: string,
     @Body() body: UpdateSedeAtencionDto,
   ): Promise<Opportunity> {
-    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null);
+    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null, body.campusName);
   }
 
   @Patch(':id')

@@ -196,7 +196,7 @@ export class Opportunity {
   @Column({ type: 'text', nullable: true, default: '["(SIN GESTIONAR)"]', name: 'c_estados_de_la_gestion_inicial' })
   cEstadosDeLaGestionInicial?: string;
 
-  @Column({ type: 'varchar', length: 100, nullable: true, default: 'OI', name: 'c_se_trasf_otro_servi' })
+  @Column({ type: 'varchar', length: 100, nullable: true, default: null, name: 'c_se_trasf_otro_servi' })
   cSeTrasfOtroServi?: string;
 
   @Column({ type: 'varchar', length: 100, nullable: true, default: 'NO DESEA', name: 'c_n_o_d_e_s_e_a_s_e_r_v_i_c_i_o' })

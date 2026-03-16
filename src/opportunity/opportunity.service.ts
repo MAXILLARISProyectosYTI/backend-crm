@@ -15,7 +15,7 @@ import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
-import { CAMPAIGNS_IDS, ROLES_IDS, TEAMS_IDS } from 'src/globals/ids';
+import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from 'src/globals/ids';
 import { CreateClinicHistoryCrmDto } from './dto/clinic-history';
 import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -870,15 +870,137 @@ export class OpportunityService {
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
   }
 
-  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad. */
-  async updateSedeAtencion(id: string, campusAtencionId: number | null): Promise<Opportunity> {
-    await this.getOneWithEntity(id);
+  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad.
+   *  Si se proporciona campusName, también actualiza cMetadata.campusName para
+   *  que la columna y los detalles reflejen inmediatamente la nueva sede. */
+  async updateSedeAtencion(
+    id: string,
+    campusAtencionId: number | null,
+    campusName?: string,
+  ): Promise<Opportunity> {
+    const existing = await this.getOneWithEntity(id);
     const value = campusAtencionId ?? null;
-    await this.opportunityRepository.update(
-      { id },
-      { cCampusAtencionId: value, modifiedAt: new Date() } as Partial<Opportunity>,
-    );
+
+    const updatePayload: Partial<Opportunity> = {
+      cCampusAtencionId: value,
+      modifiedAt: new Date(),
+    } as Partial<Opportunity>;
+
+    if (campusName) {
+      let meta: Record<string, unknown> = {};
+      if (existing.cMetadata) {
+        try {
+          meta = JSON.parse(existing.cMetadata) as Record<string, unknown>;
+        } catch {
+          // si no es JSON válido se reemplaza
+        }
+      }
+      meta.campusName = campusName;
+      (updatePayload as Record<string, unknown>).cMetadata = JSON.stringify(meta);
+    }
+
+    await this.opportunityRepository.update({ id }, updatePayload);
     return this.getOneWithEntity(id);
+  }
+
+  /**
+   * Compara solo sede CRM vs SV (por historia clínica). Devuelve si hay match y si la oportunidad
+   * provino de otra campaña (cSeTrasfOtroServi) para que el front muestre el botón flotante y el modal.
+   * No se compara campaña vs subcampaña.
+   */
+  async getSedeSvMatch(id: string): Promise<{
+    match: boolean;
+    crmSede: string;
+    crmCampusId: number | null;
+    svSede: string | null;
+    svCampusId: number | null;
+    transferredFromCampaign: string | null;
+    currentCampaignName: string | null;
+  }> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id },
+      select: [
+        'id',
+        'cClinicHistory',
+        'cCampusId',
+        'cCampusAtencionId',
+        'cMetadata',
+        'campaignId',
+        'cSeTrasfOtroServi',
+        'stage',
+      ],
+    });
+    if (!opportunity) {
+      throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
+    }
+
+    let crmSede = 'No especificada';
+    if (opportunity.cMetadata) {
+      try {
+        const meta = JSON.parse(opportunity.cMetadata) as { campusName?: string };
+        if (meta?.campusName) crmSede = meta.campusName;
+      } catch {
+        // ignorar
+      }
+    }
+    const crmCampusId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? null;
+
+    let svSede: string | null = null;
+    let svCampusId: number | null = null;
+    if (opportunity.cClinicHistory?.trim()) {
+      let svResult: { campusId?: number; campusName?: string } | null = null;
+      try {
+        const { tokenSv } = await this.svServices.getTokenSvAdmin();
+        svResult = await this.svServices.getSedeByClinicHistory(opportunity.cClinicHistory.trim(), tokenSv);
+      } catch {
+        // ignorar
+      }
+      if (svResult && (svResult.campusId != null || svResult.campusName)) {
+        svCampusId = svResult.campusId != null ? svResult.campusId : null;
+        svSede = svResult.campusName ?? null;
+      }
+    }
+
+    // Si el SV no devuelve sede (svCampusId null), no hay info suficiente para detectar discrepancia → match.
+    // Solo hay mismatch cuando SV sí devuelve una sede distinta a la del CRM.
+    const sedeMatch =
+      svCampusId == null ||
+      (crmCampusId != null && crmCampusId === svCampusId);
+
+    const currentCampaignName =
+      (opportunity.campaignId && SUB_CAMPAIGN_NAMES[opportunity.campaignId]) || null;
+    const originService = opportunity.cSeTrasfOtroServi?.trim() || null;
+    const hasClinicHistory = !!opportunity.cClinicHistory?.trim();
+    // Una transferencia real OI→OFM requiere:
+    // 1. Sentinel distinto de FORCE_INITIAL (ya regularizada).
+    // 2. cSeTrasfOtroServi difiere de la campaña actual.
+    // 3. Tiene historia clínica (pasó por el SV).
+    // 4. Stage === "Cierre Ganado": cerró el flujo anterior. Sin esto, cSeTrasfOtroServi="OI"
+    //    es simplemente el valor por defecto de oportunidades OFM nativas → falso positivo.
+    const isCierreGanado = opportunity.stage === Enum_Stage.CIERRE_GANADO;
+    // Solo se detecta transferencia genuina OI→OFM/APNEA cuando cSeTrasfOtroServi es el sentinel
+    // explícito 'OI_TRANSFER' (que el backend pone automáticamente en el update al cambiar campaña
+    // de OI a OFM/APNEA). El valor default 'OI' (heredado de BD antigua) NO activa el botón.
+    const isGenuineTransfer =
+      originService === 'OI_TRANSFER' &&
+      (currentCampaignName?.toUpperCase() === 'OFM' ||
+        currentCampaignName?.toUpperCase() === 'APNEA');
+    const transferredFromCampaign =
+      originService === 'FORCE_INITIAL'
+        ? null
+        : isGenuineTransfer && hasClinicHistory && isCierreGanado
+          ? 'OI'   // mostramos 'OI' al frontend para que el chip diga "OI → OFM"
+          : null;
+
+    return {
+      match: sedeMatch,
+      crmSede,
+      crmCampusId,
+      svSede,
+      svCampusId,
+      transferredFromCampaign,
+      currentCampaignName,
+    };
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
@@ -925,6 +1047,20 @@ export class OpportunityService {
              opportunity.stage === Enum_Stage.SEGUIMIENTO && 
              !updateOpportunityDto.stage) {
       updateData.stage = Enum_Stage.GESTION_INICIAL;
+    }
+
+    // Detectar cambio de campaña OI → OFM/APNEA: marcar con el sentinel explícito 'OI_TRANSFER'.
+    // Usar 'OI_TRANSFER' (no 'OI') para distinguir transferencias reales del valor default 'OI'
+    // que la BD antigua tenía para todas las oportunidades. Así no se necesita limpieza de BD.
+    if (
+      updateOpportunityDto.campaignId &&
+      updateOpportunityDto.campaignId !== opportunity.campaignId &&
+      opportunity.campaignId === CAMPAIGNS_IDS.OI &&
+      (updateOpportunityDto.campaignId === CAMPAIGNS_IDS.OFM ||
+        updateOpportunityDto.campaignId === CAMPAIGNS_IDS.APNEA) &&
+      opportunity.cSeTrasfOtroServi?.trim() !== 'FORCE_INITIAL'
+    ) {
+      (updateData as Record<string, unknown>).cSeTrasfOtroServi = 'OI_TRANSFER';
     }
     
     // Actualizar timestamp de modificación (siempre UTC)
@@ -1054,7 +1190,10 @@ export class OpportunityService {
     search?: string,
     userSearch?: string,
     stage?: Enum_Stage,
-    isPresaved?: boolean
+    isPresaved?: boolean,
+    dateFrom?: string,
+    dateTo?: string,
+    campaignFilter?: string
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
@@ -1145,6 +1284,24 @@ export class OpportunityService {
     // Filtro por oportunidades preguardadas
     if (isPresaved === true) {
       queryBuilder.andWhere('opportunity.isPresaved = :isPresaved', { isPresaved: true });
+    }
+
+    // Filtro por rango de fechas (close_date en formato YYYY-MM-DD): desde, hasta o ambos
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (dateFrom && dateRegex.test(dateFrom)) {
+      queryBuilder.andWhere('opportunity.close_date >= :dateFrom', { dateFrom });
+    }
+    if (dateTo && dateRegex.test(dateTo)) {
+      queryBuilder.andWhere('opportunity.close_date <= :dateTo', { dateTo });
+    }
+
+    // Filtro por campaña (subcampaña): OI, OFM, APNEA
+    const allowedCampaigns = ['OI', 'OFM', 'APNEA'];
+    if (campaignFilter && allowedCampaigns.includes(campaignFilter.toUpperCase())) {
+      const subCampaignId = CAMPAIGNS_IDS[campaignFilter.toUpperCase() as keyof typeof CAMPAIGNS_IDS];
+      if (subCampaignId) {
+        queryBuilder.andWhere('opportunity.c_sub_campaign_id = :campaignFilterId', { campaignFilterId: subCampaignId });
+      }
     }
 
     // Usar ordenamiento diferente según el tipo de usuario
@@ -2075,7 +2232,17 @@ export class OpportunityService {
     const digits = cleanedPhone.replace(/\D/g, '');
 
     const localNumber = digits.slice(-9);
-    const redirectResponse = await this.svServices.getRedirectByOpportunityId(opportunityId, campaign.name!, localNumber, historyCLinic);
+    // forceInitialFlow SOLO cuando el usuario presionó "Aplicar" en el helper de discrepancias.
+    // El frontend guarda el sentinel "FORCE_INITIAL" en cSeTrasfOtroServi.
+    // Así no afecta flujos nativos de ninguna campaña.
+    const forceInitialFlow = opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL';
+    const redirectResponse = await this.svServices.getRedirectByOpportunityId(
+      opportunityId,
+      campaign.name!,
+      localNumber,
+      historyCLinic,
+      forceInitialFlow,
+    );
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
