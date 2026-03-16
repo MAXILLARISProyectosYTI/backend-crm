@@ -978,15 +978,18 @@ export class OpportunityService {
     // 4. Stage === "Cierre Ganado": cerró el flujo anterior. Sin esto, cSeTrasfOtroServi="OI"
     //    es simplemente el valor por defecto de oportunidades OFM nativas → falso positivo.
     const isCierreGanado = opportunity.stage === Enum_Stage.CIERRE_GANADO;
-    // Transferencia válida: solo OI → OFM.
-    // APNEA y otros flujos son independientes; cSeTrasfOtroServi="OI" en ellos es solo el default.
-    const isOiToOfm =
-      originService?.toUpperCase() === 'OI' && currentCampaignName?.toUpperCase() === 'OFM';
+    // Solo se detecta transferencia genuina OI→OFM/APNEA cuando cSeTrasfOtroServi es el sentinel
+    // explícito 'OI_TRANSFER' (que el backend pone automáticamente en el update al cambiar campaña
+    // de OI a OFM/APNEA). El valor default 'OI' (heredado de BD antigua) NO activa el botón.
+    const isGenuineTransfer =
+      originService === 'OI_TRANSFER' &&
+      (currentCampaignName?.toUpperCase() === 'OFM' ||
+        currentCampaignName?.toUpperCase() === 'APNEA');
     const transferredFromCampaign =
       originService === 'FORCE_INITIAL'
         ? null
-        : isOiToOfm && hasClinicHistory && isCierreGanado
-          ? originService
+        : isGenuineTransfer && hasClinicHistory && isCierreGanado
+          ? 'OI'   // mostramos 'OI' al frontend para que el chip diga "OI → OFM"
           : null;
 
     return {
@@ -1044,6 +1047,20 @@ export class OpportunityService {
              opportunity.stage === Enum_Stage.SEGUIMIENTO && 
              !updateOpportunityDto.stage) {
       updateData.stage = Enum_Stage.GESTION_INICIAL;
+    }
+
+    // Detectar cambio de campaña OI → OFM/APNEA: marcar con el sentinel explícito 'OI_TRANSFER'.
+    // Usar 'OI_TRANSFER' (no 'OI') para distinguir transferencias reales del valor default 'OI'
+    // que la BD antigua tenía para todas las oportunidades. Así no se necesita limpieza de BD.
+    if (
+      updateOpportunityDto.campaignId &&
+      updateOpportunityDto.campaignId !== opportunity.campaignId &&
+      opportunity.campaignId === CAMPAIGNS_IDS.OI &&
+      (updateOpportunityDto.campaignId === CAMPAIGNS_IDS.OFM ||
+        updateOpportunityDto.campaignId === CAMPAIGNS_IDS.APNEA) &&
+      opportunity.cSeTrasfOtroServi?.trim() !== 'FORCE_INITIAL'
+    ) {
+      (updateData as Record<string, unknown>).cSeTrasfOtroServi = 'OI_TRANSFER';
     }
     
     // Actualizar timestamp de modificación (siempre UTC)
