@@ -961,11 +961,14 @@ export class OpportunityService {
       }
     }
 
-    // Si el SV no devuelve sede (svCampusId null), no hay info suficiente para detectar discrepancia → match.
-    // Solo hay mismatch cuando SV sí devuelve una sede distinta a la del CRM.
+    // Si el SV no devuelve sede, no hay info suficiente para detectar discrepancia → match.
+    // Match cuando: no hay sede SV, o los IDs coinciden, o los nombres coinciden (ej. Lima = Lima con distinto ID).
+    const namesMatch =
+      (svSede ?? '').trim().toLowerCase() === (crmSede ?? '').trim().toLowerCase();
     const sedeMatch =
       svCampusId == null ||
-      (crmCampusId != null && crmCampusId === svCampusId);
+      (crmCampusId != null && crmCampusId === svCampusId) ||
+      (svSede != null && namesMatch);
 
     const currentCampaignName =
       (opportunity.campaignId && SUB_CAMPAIGN_NAMES[opportunity.campaignId]) || null;
@@ -1697,6 +1700,17 @@ export class OpportunityService {
       select: ['cSeTrasfOtroServi'],
     });
     return row?.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL';
+  }
+
+  /**
+   * Limpia el sentinel FORCE_INITIAL cuando el flujo se completó de nuevo (reserva + facturación).
+   * Así la siguiente vez que abran "Gestionar cliente" se mostrará "Proceso completado".
+   */
+  async clearForceInitialSentinel(opportunityId: string): Promise<void> {
+    await this.opportunityRepository.update(
+      { id: opportunityId, cSeTrasfOtroServi: 'FORCE_INITIAL' },
+      { cSeTrasfOtroServi: null, modifiedAt: new Date() } as Partial<Opportunity>,
+    );
   }
 
   /**
