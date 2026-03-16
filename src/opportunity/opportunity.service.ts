@@ -1687,6 +1687,19 @@ export class OpportunityService {
   }
 
   /**
+   * Devuelve true si la oportunidad tiene el sentinel FORCE_INITIAL en cSeTrasfOtroServi,
+   * lo que indica que el ejecutivo pidió explícitamente tratar la oportunidad como Gestión Inicial.
+   * Cuando esto es true, el controller de redirect NO debe sobreescribir code a FLUJO_REALIZADO.
+   */
+  async isForceInitialFlow(opportunityId: string): Promise<boolean> {
+    const row = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+      select: ['cSeTrasfOtroServi'],
+    });
+    return row?.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL';
+  }
+
+  /**
    * Órdenes de servicio (O.S) asociadas a la oportunidad para incluir en la respuesta del redirect.
    */
   async getOrdenesServicioForRedirect(opportunityId: string): Promise<{ serviceOrderId: number; facturado: boolean }[]> {
