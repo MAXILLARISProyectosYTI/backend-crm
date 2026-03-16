@@ -870,14 +870,36 @@ export class OpportunityService {
     return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
   }
 
-  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad. */
-  async updateSedeAtencion(id: string, campusAtencionId: number | null): Promise<Opportunity> {
-    await this.getOneWithEntity(id);
+  /** Actualiza solo la sede de atención (campus de atención) de la oportunidad.
+   *  Si se proporciona campusName, también actualiza cMetadata.campusName para
+   *  que la columna y los detalles reflejen inmediatamente la nueva sede. */
+  async updateSedeAtencion(
+    id: string,
+    campusAtencionId: number | null,
+    campusName?: string,
+  ): Promise<Opportunity> {
+    const existing = await this.getOneWithEntity(id);
     const value = campusAtencionId ?? null;
-    await this.opportunityRepository.update(
-      { id },
-      { cCampusAtencionId: value, modifiedAt: new Date() } as Partial<Opportunity>,
-    );
+
+    const updatePayload: Partial<Opportunity> = {
+      cCampusAtencionId: value,
+      modifiedAt: new Date(),
+    } as Partial<Opportunity>;
+
+    if (campusName) {
+      let meta: Record<string, unknown> = {};
+      if (existing.cMetadata) {
+        try {
+          meta = JSON.parse(existing.cMetadata) as Record<string, unknown>;
+        } catch {
+          // si no es JSON válido se reemplaza
+        }
+      }
+      meta.campusName = campusName;
+      (updatePayload as Record<string, unknown>).cMetadata = JSON.stringify(meta);
+    }
+
+    await this.opportunityRepository.update({ id }, updatePayload);
     return this.getOneWithEntity(id);
   }
 

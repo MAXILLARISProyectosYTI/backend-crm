@@ -421,7 +421,7 @@ export class OpportunityController {
     @Param('id') id: string,
     @Body() body: UpdateSedeAtencionDto,
   ): Promise<Opportunity> {
-    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null);
+    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null, body.campusName);
   }
 
   @Patch(':id')

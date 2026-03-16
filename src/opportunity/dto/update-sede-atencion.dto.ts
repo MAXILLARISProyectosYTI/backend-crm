@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /** DTO para actualizar solo la sede de atención (campus de atención) de una oportunidad. */
@@ -10,4 +10,9 @@ export class UpdateSedeAtencionDto {
   @IsInt()
   @Min(1)
   campusAtencionId?: number | null;
+
+  /** Nombre del campus. Si se proporciona, se actualiza cMetadata.campusName. */
+  @IsOptional()
+  @IsString()
+  campusName?: string;
 }
