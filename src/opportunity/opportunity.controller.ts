@@ -140,12 +140,15 @@ export class OpportunityController {
       }
     }
 
-    // Si el ejecutivo pidió restablecer como Gestión Inicial (sentinel FORCE_INITIAL), NO sobreescribir
-    // el code a FLUJO_REALIZADO aunque el flujo técnicamente esté completo. El SV ya devolvió HACER_ALPHA.
+    // Si el ejecutivo pidió restablecer (FORCE_INITIAL), no mostrar "Proceso completado" hasta que
+    // vuelvan a completar el flujo. Cuando el flujo esté completo de nuevo, limpiamos FORCE_INITIAL
+    // y mostramos "Proceso completado".
     const forceInitial = await this.opportunityService.isForceInitialFlow(uuidOpportunity);
-
-    // Flujo completado = datos paciente + datos reserva + (facturación O O.S). Entonces code 0 y traer reserva/pago.
-    const flowComplete = !forceInitial && await this.opportunityService.isFlowCompleteForRedirect(uuidOpportunity);
+    const flowIsComplete = await this.opportunityService.isFlowCompleteForRedirect(uuidOpportunity);
+    if (forceInitial && flowIsComplete) {
+      await this.opportunityService.clearForceInitialSentinel(uuidOpportunity);
+    }
+    const flowComplete = flowIsComplete;
     if (flowComplete && response?.code !== 0) {
       response = {
         ...response,
