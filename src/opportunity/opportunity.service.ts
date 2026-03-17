@@ -2027,6 +2027,21 @@ export class OpportunityService {
       }
     }
 
+    // Si la oportunidad estaba forzada a Gestión Inicial (FORCE_INITIAL) y en esta actualización
+    // ya quedó con flujo completo (reserva + facturación u O.S), limpiar el sentinel para que
+    // el redirect vuelva a mostrar "Proceso completado" en adelante.
+    try {
+      const isForceInitial = await this.isForceInitialFlow(opportunityId);
+      if (isForceInitial) {
+        const isCompleteNow = await this.isFlowCompleteForRedirect(opportunityId);
+        if (isCompleteNow) {
+          await this.clearForceInitialSentinel(opportunityId);
+        }
+      }
+    } catch {
+      // no bloquear el flujo principal
+    }
+
     console.log('[updateOpportunityWithFacturas] Fin exitoso', { opportunityId });
     return {
       success: true,
