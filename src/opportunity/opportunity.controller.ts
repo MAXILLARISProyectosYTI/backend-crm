@@ -406,6 +406,11 @@ export class OpportunityController {
   } 
 
   /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
+  @Get('sv-admin-token')
+  async getSvAdminToken() {
+    return this.opportunityService.getSvAdminToken();
+  }
+
   @Get(':id/sede-sv-match')
   async getSedeSvMatch(@Param('id') id: string) {
     return this.opportunityService.getSedeSvMatch(id);
