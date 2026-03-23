@@ -1460,6 +1460,17 @@ export class OpportunityService {
     return opportunity;
   }
 
+  async getSvAdminToken(): Promise<Record<string, unknown>> {
+    const { tokenSv, data: adminData } = await this.svServices.getTokenSvAdmin();
+    return {
+      type: 'init_data',
+      token: tokenSv,
+      id_user: adminData?.id ?? 0,
+      username: adminData?.username ?? '',
+      doctorID: null,
+    };
+  }
+
   async getPatientSV(opportunityId: string) {
     const opportunity = await this.getOneWithEntity(opportunityId);
 
