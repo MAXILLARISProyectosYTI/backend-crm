@@ -21,6 +21,9 @@ import { KpiModule } from './kpi/kpi.module';
 import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
 import { CampusTeamModule } from './campus-team/campus-team.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
+import { CrmControlesModule } from './crm-controles/crm-controles.module';
+import { IncidenciasModule } from './incidencias/incidencias.module';
+import { NotificacionesModule } from './notificaciones/notificaciones.module';
 
 @Module({
   imports: [
@@ -56,6 +59,9 @@ import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-
     ContractPricingModule,
     CampusTeamModule,
     AssignmentQueueStateModule,
+    CrmControlesModule,
+    IncidenciasModule,
+    NotificacionesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
