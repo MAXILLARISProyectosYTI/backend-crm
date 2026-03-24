@@ -247,6 +247,7 @@ export class SvServices {
       const response = await axios.post<{ token?: string; access_token?: string }>(loginUrl, {
         username: this.invoiceMifactUsername,
         password: this.invoiceMifactPassword,
+        origin: this.svSignInOrigin,
       }, { timeout: 10000 });
       const token = response.data?.token ?? response.data?.access_token;
       return token ?? null;
