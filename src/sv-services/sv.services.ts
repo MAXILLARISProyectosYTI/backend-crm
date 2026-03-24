@@ -11,6 +11,8 @@ import { QuotationListResponse, QuotationListItem } from "./quotation-list.types
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  /** Identificador de origen enviado en POST /auth/signin hacia SV. */
+  private readonly svSignInOrigin = 'crm';
   /** Base URL del servicio invoice-mifact-v3 (ej. http://host/api). Usado para estado de facturación por O.S. */
   private readonly URL_INVOICE_MIFACT_V3 = process.env.URL_INVOICE_MIFACT_V3 || '';
   private readonly usernameSv = process.env.USERNAME_ADMIN;
@@ -98,7 +100,11 @@ export class SvServices {
 
   async getTokenSv(username: string, password: string) {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password })
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
+        username,
+        password,
+        origin: this.svSignInOrigin,
+      })
   
       return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};      
     } catch (error) {
@@ -109,7 +115,11 @@ export class SvServices {
 
   async getTokenSvAdmin() {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username: this.usernameSv, password: this.passwordSv })
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
+        username: this.usernameSv,
+        password: this.passwordSv,
+        origin: this.svSignInOrigin,
+      })
   
       return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
     } catch (error) {

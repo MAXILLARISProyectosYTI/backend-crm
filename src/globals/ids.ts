@@ -2,8 +2,19 @@ export const ROLES_IDS = {
   TEAM_LEADER_COMERCIAL: '6894f4685ace0a117',
   CERRADORA: '689f8b18e1b644be3',
   EJ_COMERCIAL: '6894f49a7f3295edf',
-  ASISTENTE_COMERCIAL: '6894f4c0f2dbb0f89'
-}
+  ASISTENTE_COMERCIAL: '6894f4c0f2dbb0f89',
+  /** Rol permitido para coincidencia SV en filtered-users (match-sv-username). */
+  MATCH_SV_EXTRA_1: '68a8ebd07c6f944dd',
+  MATCH_SV_EXTRA_2: '68a602e03226cbba1',
+} as const;
+
+/** Solo con uno de estos roles (y resto de filtros), match-sv-username responde true. */
+export const MATCH_SV_USERNAME_ALLOWED_ROLE_IDS = [
+  ROLES_IDS.TEAM_LEADER_COMERCIAL,
+  ROLES_IDS.MATCH_SV_EXTRA_1,
+  ROLES_IDS.MATCH_SV_EXTRA_2,
+  ROLES_IDS.EJ_COMERCIAL,
+] as const;
 
 export const TEAMS_IDS = {
   EJ_COMERCIAL: '68a60f243afa8a87f',
@@ -19,6 +30,15 @@ export const TEAMS_IDS = {
   TEAM_MICHELL: '68b7559436bfde575',
   TEAM_AREQUIPA: '68b755a5ae3790654',
 }
+
+/**
+ * IDs de equipo admitidos en `filtered-users`: todos los de `TEAMS_IDS`
+ * excepto cerradoras y asistentes comerciales.
+ */
+export const FILTERED_USERS_TEAM_IDS = (Object.values(TEAMS_IDS) as string[]).filter(
+  (teamId) =>
+    teamId !== TEAMS_IDS.CERRADORAS && teamId !== TEAMS_IDS.ASISTENTES_COMERCIALES,
+);
 
 export const CAMPAIGNS_IDS = {
   OI: '6894ef3da2a2c238f',

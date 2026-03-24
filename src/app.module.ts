@@ -21,6 +21,7 @@ import { KpiModule } from './kpi/kpi.module';
 import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
 import { CampusTeamModule } from './campus-team/campus-team.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
+import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-
     ContractPricingModule,
     CampusTeamModule,
     AssignmentQueueStateModule,
+    FilteredUsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
