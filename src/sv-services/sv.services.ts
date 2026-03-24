@@ -731,5 +731,143 @@ export class SvServices {
       throw new BadRequestException('Error al obtener tipos de estructura de contratos desde SV');
     }
   }
+
+  /**
+   * Cohorte para CRM Controles: pacientes con ejecutivo de controles asignado.
+   * Usa el endpoint existente en SV: GET /union_doctor_patient_attention/search_patient_with_users_controlls
+   * Sobreescribible con la variable de entorno SV_CRM_CONTROLES_PATH.
+   *
+   * Campos que devuelve SV:
+   *   id_registro, id_historia_clinica, nombre_paciente, ap_paterno, ap_materno,
+   *   numero_documento, fecha_nacimiento, historia_clinica, sexo, email, phone,
+   *   cellphone, nombre_distrito, id_doctor, nombre_docto, ejecutivo_cobranzas,
+   *   ejecutivo_controles, ejecutivo_ventas, created_at, id_status_borrado
+   */
+  async getCrmControlesPatientsFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const path =
+      process.env.SV_CRM_CONTROLES_PATH?.trim() ||
+      '/union_doctor_patient_attention/search_patient_with_users_controlls';
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    const url = `${base}${suffix}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) {
+        return raw as Record<string, unknown>[];
+      }
+      if (raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data)) {
+        return (raw as { data: Record<string, unknown>[] }).data;
+      }
+      if (raw && typeof raw === 'object' && 'items' in raw && Array.isArray((raw as { items: unknown }).items)) {
+        return (raw as { items: Record<string, unknown>[] }).items;
+      }
+      return [];
+    } catch (error) {
+      console.error('Error getCrmControlesPatientsFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener pacientes CRM Controles desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  /**
+   * Timeline completo de un paciente OFM: todas sus reservaciones (state=1)
+   * ordenadas cronológicamente desde la primera hasta la más reciente.
+   * GET /union_doctor_patient_attention/timeline/:patientId
+   */
+  async getCrmPatientTimelineFromSv(
+    patientId: number,
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/timeline/${patientId}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 30000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getCrmPatientTimelineFromSv', patientId, error);
+      throw new BadRequestException(
+        `Error al obtener timeline del paciente ${patientId} desde SV`,
+      );
+    }
+  }
+
+  /**
+   * Últimas notas médicas de un paciente desde SV.
+   * GET /clinic-history-notes/get-patient-notes/:clinicHistoryId
+   */
+  async getPatientMedicalNotesFromSv(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/clinic-history-notes/get-patient-notes/${clinicHistoryId}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 30000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getPatientMedicalNotesFromSv', clinicHistoryId, error);
+      throw new BadRequestException(
+        `Error al obtener notas médicas del paciente ${clinicHistoryId} desde SV`,
+      );
+    }
+  }
+
+  /**
+   * Obtiene sesiones de control OFM desde SV
+   * (tariff 192 = instalación primer dispositivo, 198 = control OFM).
+   */
+  async getCrmControlesSessionsFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getCrmControlesSessionsFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener controles OFM desde SV — url: ${url}`,
+      );
+    }
+  }
 }
   
