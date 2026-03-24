@@ -20,4 +20,13 @@ export class CrmControlesCronService {
       // error ya logueado en service
     }
   }
+
+  @Cron(process.env.CRM_CONTROLES_SESSIONS_CRON ?? '0 */10 * * * *')
+  async handlePollControlesSv(): Promise<void> {
+    try {
+      await this.crmControlesService.syncControlesFromSv();
+    } catch {
+      // error ya logueado en service
+    }
+  }
 }
