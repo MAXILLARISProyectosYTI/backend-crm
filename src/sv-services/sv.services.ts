@@ -969,49 +969,114 @@ export class SvServices {
 
   /**
    * Detecta OS de Control OFM facturadas pero SIN reservación agendada.
-   * Compara cantidad de OS de Control OFM vs reservaciones de Control OFM (no canceladas).
-   * Si hay más OS que reservaciones → hay al menos una OS sin agendar.
+   * Usa el endpoint payments que expone so.idreservation directamente.
+   * Devuelve la lista completa de OS sin agendar con datos para el selector UI.
    */
   async getPendingControlOS(clinicHistoryId: number, tokenSv: string): Promise<{
     hasUnscheduledOS: boolean;
     serviceOrderId: number | null;
-    serviceOrders: Record<string, unknown>[];
+    serviceOrders: {
+      id: number;
+      date: string | null;
+      amount: number;
+      currency: string;
+      serie: string | null;
+      correlative: string | null;
+      tariffName: string;
+      pdfUrl: string | null;
+    }[];
   }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
     const noResult = { hasUnscheduledOS: false, serviceOrderId: null, serviceOrders: [] };
     try {
-      const [osRes, timelineRes] = await Promise.all([
-        axios.get(`${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`, {
+      const [paymentsRes, osInvoiceRes] = await Promise.all([
+        axios.get(`${base}/service-order-api/payments`, {
+          params: { idClinicHistory: clinicHistoryId },
           headers: { Authorization: `Bearer ${tokenSv}` },
           timeout: 15000,
         }),
-        axios.get(`${base}/union_doctor_patient_attention/timeline/${clinicHistoryId}`, {
+        axios.get(`${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`, {
           headers: { Authorization: `Bearer ${tokenSv}` },
           timeout: 15000,
         }),
       ]);
 
-      const allOS: any[] = Array.isArray(osRes.data) ? osRes.data : [];
-      const controlOS = allOS.filter((os: any) =>
-        os.detail?.some((d: any) => d.tariff === 'Control OFM'),
-      );
-      if (controlOS.length === 0) return noResult;
+      const rows: any[] = Array.isArray(paymentsRes.data) ? paymentsRes.data : [];
+      const invoicedOS: any[] = Array.isArray(osInvoiceRes.data) ? osInvoiceRes.data : [];
 
-      const timeline: any[] = Array.isArray(timelineRes.data) ? timelineRes.data : [];
-      // Count all non-cancelled Control OFM reservations (state != 0)
-      const controlReservations = timeline.filter(
-        (r: any) => r.tariff_id === 58 && r.estado !== 0,
-      );
+      // Filtrar filas de Control OFM sin reservación
+      const unscheduled = rows.filter((r: any) => {
+        const osId = Number(r.id_service_order);
+        const reservation = r.reservation;
+        const tariffName = String(r.tariff_name || '').toLowerCase();
+        const hasNoReservation = reservation == null || reservation === 0 || reservation === '';
+        const isControlOFM = tariffName.includes('control ofm') || Number(r.tariff_id) === 58;
+        return osId > 0 && hasNoReservation && isControlOFM;
+      });
 
-      // If more OS than reservations, there's at least one unscheduled
-      if (controlOS.length <= controlReservations.length) return noResult;
+      // Indexar OS facturadas por serie-correlativo para buscar PDF
+      const invoiceBySerieMap = new Map<string, any>();
+      for (const inv of invoicedOS) {
+        const details: any[] = inv.detail || [];
+        for (const d of details) {
+          if (d.serie_invoice && d.number_invoice) {
+            invoiceBySerieMap.set(`${d.serie_invoice}-${d.number_invoice}`, inv);
+          }
+        }
+      }
 
-      const mostRecent = controlOS[controlOS.length - 1];
+      // Deduplicar y enriquecer con datos de factura + PDF
+      const seen = new Set<number>();
+      const enriched: {
+        id: number;
+        date: string | null;
+        amount: number;
+        currency: string;
+        serie: string | null;
+        correlative: string | null;
+        tariffName: string;
+        pdfUrl: string | null;
+      }[] = [];
+
+      for (const r of unscheduled) {
+        const osId = Number(r.id_service_order);
+        if (seen.has(osId)) continue;
+        seen.add(osId);
+
+        const amount = Number(r.amount) || 0;
+        const currencyId = Number(r.id_currency);
+        const serie = r.serie_invoice || null;
+        const correlative = r.correlative_invoice ? String(r.correlative_invoice) : null;
+
+        // Buscar PDF desde serviceOrderInvoiceNewVersion
+        let pdfUrl: string | null = null;
+        if (serie && correlative) {
+          const key = `${serie}-${correlative}`;
+          const match = invoiceBySerieMap.get(key);
+          if (match?.physical_receipt?.length > 0) {
+            pdfUrl = match.physical_receipt.find((pr: any) => pr.url)?.url || null;
+          }
+        }
+
+        enriched.push({
+          id: osId,
+          date: r.payment_date || null,
+          amount,
+          currency: currencyId === 1 ? 'PEN' : 'USD',
+          serie,
+          correlative,
+          tariffName: String(r.tariff_name || 'Control OFM'),
+          pdfUrl,
+        });
+      }
+
+      if (enriched.length === 0) return noResult;
+
       return {
         hasUnscheduledOS: true,
-        serviceOrderId: mostRecent.id,
-        serviceOrders: [mostRecent],
+        serviceOrderId: enriched[0].id,
+        serviceOrders: enriched,
       };
     } catch (error) {
       console.error('Error getPendingControlOS', clinicHistoryId, error);
