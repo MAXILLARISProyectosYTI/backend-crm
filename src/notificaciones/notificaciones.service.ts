@@ -88,9 +88,6 @@ export class NotificacionesService implements OnModuleInit {
       const ultimaCitaStr   = str(row.ultima_cita, str(row.ultima_atencion_fecha, ''));
       const citasPendientes = num(row.citas_pendientes);
       const totalReservas   = num(row.total_reservas);
-      const contratoTotal   = num(row.contrato_total);
-      const contratoPagado  = num(row.contrato_pagado);
-
       const proximaCita = proximaCitaStr ? new Date(proximaCitaStr) : null;
       const ultimaCita  = ultimaCitaStr  ? new Date(ultimaCitaStr)  : null;
       const now         = new Date();
@@ -111,17 +108,7 @@ export class NotificacionesService implements OnModuleInit {
         }
       }
 
-      // ── Regla 2: Pago pendiente/parcial ─────────────────────────────────────
-      if (contratoTotal > 0 && contratoPagado < contratoTotal) {
-        const pendiente = contratoTotal - contratoPagado;
-        await this.upsertNotif(pacienteIdRaw, nombre, 'pago',
-          `Pago pendiente — ${nombre.split(' ')[0]}`,
-          `Debe S/ ${pendiente.toLocaleString('es-PE')} de su contrato OFM (pagado: S/ ${contratoPagado.toLocaleString('es-PE')} de S/ ${contratoTotal.toLocaleString('es-PE')}).`,
-        );
-        created++;
-      }
-
-      // ── Regla 3: Sin contacto > 30 días (SLA crítico) ───────────────────────
+      // ── Regla 2: Sin contacto > 30 días (SLA crítico) ───────────────────────
       if (ultimaCita && !isNaN(ultimaCita.getTime())) {
         const diasSinContacto = Math.floor((now.getTime() - ultimaCita.getTime()) / MS_DAY);
         if (diasSinContacto > 30 && citasPendientes === 0) {

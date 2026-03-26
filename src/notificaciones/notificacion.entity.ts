@@ -7,7 +7,6 @@ import {
 
 export type TipoNotificacion =
   | 'cita'
-  | 'pago'
   | 'alerta'
   | 'sin_agendamiento';
 
