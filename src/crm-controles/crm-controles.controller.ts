@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Body,
   Param,
   ParseIntPipe,
   UseGuards,
@@ -76,6 +77,64 @@ export class CrmControlesController {
     @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
   ): Promise<Record<string, unknown>[]> {
     return this.crmControlesService.getPatientMedicalNotes(clinicHistoryId);
+  }
+
+  // ── Billing endpoints para CRM Controles ────────────────────────────────
+
+  /** Verifica si el paciente tiene derecho a primer control gratuito. */
+  @Get('is-first-free-control/:patientId')
+  async isFirstFreeControl(
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.checkIsFirstFreeControl(patientId);
+  }
+
+  /** Datos de facturación del paciente (cliente + comprobante). */
+  @Get('invoice-data/:clinicHistoryId')
+  async getInvoiceData(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.getInvoiceData(clinicHistoryId);
+  }
+
+  /** Crea OS + factura para control OFM. Proxy a SV invoice-mifact-v3. */
+  @Post('create-control-invoice')
+  async createControlInvoice(
+    @Body() payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.createControlInvoice(payload);
+  }
+
+  /** Estado de la cola de facturación. */
+  @Get('invoice-status/:queueId')
+  async getInvoiceQueueStatus(
+    @Param('queueId', ParseIntPipe) queueId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.getInvoiceQueueStatus(queueId);
+  }
+
+  /** Verifica si el paciente tiene una OS de Control OFM facturada sin agendar. */
+  @Get('pending-control-os/:clinicHistoryId')
+  async getPendingControlOS(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.getPendingControlOS(clinicHistoryId);
+  }
+
+  /** Cuotas del contrato OFM del paciente. */
+  @Get('contract-quotas/:clinicHistoryId')
+  async getContractQuotas(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<Record<string, unknown>[]> {
+    return this.crmControlesService.getContractQuotas(clinicHistoryId);
+  }
+
+  /** Detalle de facturación de una cuota específica (pagos, comprobantes). */
+  @Get('quota-invoice/:contractDetailId')
+  async getQuotaInvoiceDetails(
+    @Param('contractDetailId', ParseIntPipe) contractDetailId: number,
+  ): Promise<Record<string, unknown>[]> {
+    return this.crmControlesService.getQuotaInvoiceDetails(contractDetailId);
   }
 
 }
