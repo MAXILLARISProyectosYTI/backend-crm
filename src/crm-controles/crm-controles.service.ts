@@ -91,6 +91,42 @@ export class CrmControlesService implements OnModuleInit {
     return this.svServices.getPatientMedicalNotesFromSv(clinicHistoryId, tokenSv);
   }
 
+  // ── Billing proxy para CRM Controles ─────────────────────────────────────
+
+  async checkIsFirstFreeControl(patientId: number): Promise<Record<string, unknown>> {
+    return this.svServices.checkIsFirstFreeControl(patientId);
+  }
+
+  async getInvoiceData(clinicHistoryId: number): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getInvoiceData(clinicHistoryId, tokenSv);
+  }
+
+  async createControlInvoice(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.createControlInvoice(payload, tokenSv);
+  }
+
+  async getInvoiceQueueStatus(queueId: number): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getInvoiceQueueStatus(queueId, tokenSv);
+  }
+
+  async getPendingControlOS(clinicHistoryId: number): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getPendingControlOS(clinicHistoryId, tokenSv);
+  }
+
+  async getContractQuotas(clinicHistoryId: number): Promise<Record<string, unknown>[]> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getContractQuotas(clinicHistoryId, tokenSv);
+  }
+
+  async getQuotaInvoiceDetails(contractDetailId: number): Promise<Record<string, unknown>[]> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getQuotaInvoiceDetails(contractDetailId, tokenSv);
+  }
+
   /** Sincroniza sesiones de control OFM desde SV */
   async syncControlesFromSv(): Promise<void> {
     try {
