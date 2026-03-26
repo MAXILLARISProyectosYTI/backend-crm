@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   ParseIntPipe,
@@ -135,6 +136,64 @@ export class CrmControlesController {
     @Param('contractDetailId', ParseIntPipe) contractDetailId: number,
   ): Promise<Record<string, unknown>[]> {
     return this.crmControlesService.getQuotaInvoiceDetails(contractDetailId);
+  }
+
+  /** Precio de control OFM para el paciente (COALESCE contract.amount_controls, tariff.price_sol). */
+  @Get('control-price/:clinicHistoryId')
+  async getControlPrice(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<{ amount: number; currency: string }> {
+    return this.crmControlesService.getControlPrice(clinicHistoryId);
+  }
+
+  /** Todas las OS del paciente (serviceOrderInvoiceNewVersion). */
+  @Get('service-orders/:clinicHistoryId')
+  async getPatientServiceOrders(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<Record<string, unknown>[]> {
+    return this.crmControlesService.getPatientServiceOrders(clinicHistoryId);
+  }
+
+  /** Campus del paciente por clinicHistoryId. */
+  @Get('patient-campus/:clinicHistoryId')
+  async getPatientCampus(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ): Promise<{ campusId: number; campusName: string }> {
+    return this.crmControlesService.getPatientCampus(clinicHistoryId);
+  }
+
+  // ── Agenda endpoints ──────────────────────────────────────────────────────
+
+  /** Doctores disponibles para una fecha (con tarifas). */
+  @Get('doctors/:date')
+  async getDoctorsForDate(
+    @Param('date') date: string,
+  ): Promise<any[]> {
+    return this.crmControlesService.getDoctorsForDate(date, null);
+  }
+
+  @Get('doctors/:date/:campusId')
+  async getDoctorsForDateWithCampus(
+    @Param('date') date: string,
+    @Param('campusId', ParseIntPipe) campusId: number,
+  ): Promise<any[]> {
+    return this.crmControlesService.getDoctorsForDate(date, campusId);
+  }
+
+  /** Crear reserva (cita). */
+  @Post('create-reservation')
+  async createReservation(
+    @Body() payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.createReservation(payload);
+  }
+
+  /** Vincular OS con reserva (PATCH /service-order-api/update-reservation). */
+  @Patch('link-reservation-os')
+  async linkReservationToOS(
+    @Body() body: { osIds: number[]; reservationId: number },
+  ): Promise<{ message: string }> {
+    return this.crmControlesService.linkReservationToOS(body.osIds, body.reservationId);
   }
 
 }

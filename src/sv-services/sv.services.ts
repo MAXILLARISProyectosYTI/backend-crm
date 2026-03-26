@@ -837,6 +837,91 @@ export class SvServices {
     }
   }
 
+  async getPatientCampus(clinicHistoryId: number, tokenSv: string): Promise<{ campusId: number; campusName: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.get(`${base}/clinic-history/${clinicHistoryId}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      const data = res.data;
+      const campus = data?.campus;
+      return {
+        campusId: campus?.id ?? 1,
+        campusName: campus?.name ?? 'Lima',
+      };
+    } catch (error) {
+      console.error('Error getPatientCampus', clinicHistoryId, error);
+      return { campusId: 1, campusName: 'Lima' };
+    }
+  }
+
+  // ── Agenda Services ───────────────────────────────────────────────────────
+
+  async getDoctorsForDate(date: string, campusId: number | null, tokenSv: string): Promise<any[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const path = campusId != null
+      ? `/doctor/all/info-for-doctor/${date}/${campusId}`
+      : `/doctor/all/info-for-doctor/${date}`;
+    try {
+      const res = await axios.get(`${base}${path}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const raw = Array.isArray(res.data) ? res.data : [];
+      return raw.map((d: any) => ({
+        ...d,
+        id: d.id_doctor,
+        name: d.name_doctor,
+        enviroment: d.enviroment ?? '',
+        id_enviroment: d.id_enviroment ?? 0,
+        state: d.state ?? 1,
+      }));
+    } catch (error) {
+      console.error('Error getDoctorsForDate', date, error);
+      return [];
+    }
+  }
+
+  async createReservation(data: Record<string, unknown>, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    try {
+      const res = await axios.post(`${base}/reservation_http`, data, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenSv}`,
+        },
+        timeout: 20000,
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error createReservation', error);
+      throw new BadRequestException('Error al crear reserva');
+    }
+  }
+
+  async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.patch(
+        `${base}/service-order-api/update-reservation`,
+        { id: osIds, idreservation: reservationId },
+        {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenSv}` },
+          timeout: 10000,
+        },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error linkReservationToOS', osIds, reservationId, error);
+      throw new BadRequestException('Error al vincular OS con reserva');
+    }
+  }
+
   async getInvoiceQueueStatus(queueId: number, tokenSv: string): Promise<Record<string, unknown>> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
@@ -850,6 +935,35 @@ export class SvServices {
     } catch (error) {
       console.error('Error getInvoiceQueueStatus', queueId, error);
       throw new BadRequestException(`Error al obtener estado de cola ${queueId}`);
+    }
+  }
+
+  async getControlPrice(clinicHistoryId: number, tokenSv: string): Promise<{ amount: number; currency: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const res = await axios.get(`${base}/tariff/58`, {
+      headers: { Authorization: `Bearer ${tokenSv}` },
+      timeout: 10000,
+    });
+    const tariff = res.data;
+    if (!tariff || tariff.price_sol == null) {
+      throw new BadRequestException('No se pudo obtener el precio de la tarifa Control OFM');
+    }
+    return { amount: tariff.price_sol, currency: 'PEN' };
+  }
+
+  async getPatientServiceOrders(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.get(
+        `${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` }, timeout: 15000 },
+      );
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getPatientServiceOrders', clinicHistoryId, error);
+      return [];
     }
   }
 
