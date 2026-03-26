@@ -128,6 +128,16 @@ export class NotificacionesService implements OnModuleInit {
         );
         created++;
       }
+
+      // ── Regla 5: Controles de urgencia recurrentes (>= 2) ───────────────────
+      const totalUrgencias = num(row.total_urgencias ?? 0);
+      if (totalUrgencias >= 2) {
+        await this.upsertNotif(pacienteIdRaw, nombre, 'urgencia',
+          `Urgencias recurrentes — ${nombre.split(' ')[0]}`,
+          `${nombre.split(' ')[0]} tiene ${totalUrgencias} controles de urgencia OFM registrados. Requiere revisión prioritaria.`,
+        );
+        created++;
+      }
     }
 
     if (created > 0) {
