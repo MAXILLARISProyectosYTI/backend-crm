@@ -124,11 +124,27 @@ export class OpportunitiesClosersService {
         .createQueryBuilder('op')
         .leftJoin('user', 'u', 'u.id = op.assignedUserId')
         .addSelect('u.userName', 'assigned_user_name')
+        .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
+        .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
         .where('op.deleted = :deleted', { deleted: false });
       if (historiesFromClient.length > 0) {
         qb.andWhere('op.hCPatient IN (:...clientHistories)', { clientHistories: historiesFromClient });
       } else if (search?.trim()) {
-        qb.andWhere('(op.name ILIKE :search OR op.hCPatient ILIKE :search)', { search: `%${search.trim()}%` });
+        const words = search.trim().split(/\s+/).filter(Boolean);
+        words.forEach((word, idx) => {
+          const paramStart = `wordStart${idx}`;
+          const paramSpace = `wordSpace${idx}`;
+          // Quitar tildes del término buscado
+          const normalizedWord = word.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          // Coincidir solo si la palabra está al inicio del nombre o después de un espacio
+          qb.andWhere(
+            `(op.name ILIKE :${paramStart} OR op.name ILIKE :${paramSpace} OR op.hCPatient ILIKE :${paramStart} OR op.hCPatient ILIKE :${paramSpace})`,
+            {
+              [paramStart]: `${normalizedWord}%`,
+              [paramSpace]: `% ${normalizedWord}%`,
+            },
+          );
+        });
       }
       return qb;
     };
