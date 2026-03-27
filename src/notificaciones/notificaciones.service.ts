@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import { Notificacion, TipoNotificacion } from './notificacion.entity';
+import { NotificacionesGateway } from './notificaciones.gateway';
 import type { CrmControlesPatientRow } from 'src/crm-controles/crm-controles.types';
 
 const MS_DAY = 24 * 60 * 60 * 1000;
@@ -13,6 +14,7 @@ export class NotificacionesService implements OnModuleInit {
   constructor(
     @InjectRepository(Notificacion)
     private readonly repo: Repository<Notificacion>,
+    @Optional() private readonly gateway: NotificacionesGateway,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -142,6 +144,8 @@ export class NotificacionesService implements OnModuleInit {
 
     if (created > 0) {
       this.logger.log(`Notificaciones generadas/actualizadas: ${created}`);
+      // Notifica en tiempo real a todos los clientes WebSocket conectados
+      this.gateway?.broadcast(created);
     }
 
     // Limpia las leídas antiguas en cada ciclo
