@@ -127,6 +127,36 @@ export class CrmControlesService implements OnModuleInit {
     return this.svServices.getQuotaInvoiceDetails(contractDetailId, tokenSv);
   }
 
+  async getControlPrice(clinicHistoryId: number): Promise<{ amount: number; currency: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getControlPrice(clinicHistoryId, tokenSv);
+  }
+
+  async getPatientServiceOrders(clinicHistoryId: number): Promise<Record<string, unknown>[]> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getPatientServiceOrders(clinicHistoryId, tokenSv);
+  }
+
+  async getPatientCampus(clinicHistoryId: number): Promise<{ campusId: number; campusName: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getPatientCampus(clinicHistoryId, tokenSv);
+  }
+
+  async getDoctorsForDate(date: string, campusId: number | null): Promise<any[]> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getDoctorsForDate(date, campusId, tokenSv);
+  }
+
+  async createReservation(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.createReservation(data, tokenSv);
+  }
+
+  async linkReservationToOS(osIds: number[], reservationId: number): Promise<{ message: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.linkReservationToOS(osIds, reservationId, tokenSv);
+  }
+
   /** Sincroniza sesiones de control OFM desde SV */
   async syncControlesFromSv(): Promise<void> {
     try {
