@@ -97,6 +97,10 @@ export class CrmControlesService implements OnModuleInit {
     return this.svServices.checkIsFirstFreeControl(patientId);
   }
 
+  async checkUrgencyControl(patientId: number): Promise<Record<string, unknown>> {
+    return this.svServices.checkUrgencyControl(patientId);
+  }
+
   async getInvoiceData(clinicHistoryId: number): Promise<Record<string, unknown>> {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     return this.svServices.getInvoiceData(clinicHistoryId, tokenSv);

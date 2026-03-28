@@ -44,6 +44,13 @@ export class IncidenciasService implements OnModuleInit {
     return this.repo.find({ order: { fechaCreacion: 'DESC' } });
   }
 
+  findByPaciente(pacienteId: number): Promise<Incidencia[]> {
+    return this.repo.find({
+      where: { pacienteId },
+      order: { fechaCreacion: 'DESC' },
+    });
+  }
+
   async create(dto: CreateIncidenciaDto): Promise<Incidencia> {
     const inc = new Incidencia();
     inc.titulo         = dto.titulo;

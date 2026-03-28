@@ -90,6 +90,14 @@ export class CrmControlesController {
     return this.crmControlesService.checkIsFirstFreeControl(patientId);
   }
 
+  /** Verifica si el paciente puede acceder a un control de urgencia gratuito. */
+  @Get('urgency-control-check/:patientId')
+  async urgencyControlCheck(
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.checkUrgencyControl(patientId);
+  }
+
   /** Datos de facturación del paciente (cliente + comprobante). */
   @Get('invoice-data/:clinicHistoryId')
   async getInvoiceData(
