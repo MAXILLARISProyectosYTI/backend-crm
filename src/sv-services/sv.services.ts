@@ -934,9 +934,15 @@ export class SvServices {
           idState: 0,
           idUser: userId,
           motivoCancel: reason,
-          claster_cancel: 'urgencia_control_crm',
+          claster_cancel: true,
         },
-        { timeout: 15000 },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenSv}`,
+          },
+          timeout: 15000,
+        },
       );
       return res.data;
     } catch (error) {
