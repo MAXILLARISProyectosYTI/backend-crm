@@ -51,6 +51,23 @@ export class CrmControlesService implements OnModuleInit {
     return { data: this.controles, meta: { ...this.controlesMeta } };
   }
 
+  /** Sincroniza UN SOLO paciente desde SV y actualiza el cache */
+  async syncSinglePatient(clinicHistoryId: number): Promise<CrmControlesPatientRow | null> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    const row = await this.svServices.getCrmControlesSinglePatientFromSv(tokenSv, clinicHistoryId);
+    if (!row) return null;
+
+    const idx = this.patients.findIndex(
+      (p) => Number(p.id_historia_clinica) === clinicHistoryId,
+    );
+    if (idx >= 0) {
+      this.patients[idx] = row as unknown as CrmControlesPatientRow;
+    } else {
+      this.patients.push(row as unknown as CrmControlesPatientRow);
+    }
+    return row as unknown as CrmControlesPatientRow;
+  }
+
   /** Sincroniza pacientes desde SV */
   async syncFromSv(): Promise<void> {
     try {
@@ -154,6 +171,11 @@ export class CrmControlesService implements OnModuleInit {
   async createReservation(data: Record<string, unknown>): Promise<Record<string, unknown>> {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     return this.svServices.createReservation(data, tokenSv);
+  }
+
+  async cancelReservation(reservationId: number, userId: number, reason: string): Promise<{ code: number; message: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.cancelReservation(reservationId, userId, reason, tokenSv);
   }
 
   async linkReservationToOS(osIds: number[], reservationId: number): Promise<{ message: string }> {

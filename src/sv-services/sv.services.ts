@@ -918,6 +918,33 @@ export class SvServices {
     }
   }
 
+  async cancelReservation(
+    reservationId: number,
+    userId: number,
+    reason: string,
+    tokenSv: string,
+  ): Promise<{ code: number; message: string }> {
+    if (!this.URL_SCHEDULE_BACKEND) throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    try {
+      const res = await axios.post<{ code: number; message: string }>(
+        `${base}/reservation_http/reservation-cancel-for-client`,
+        {
+          idReservation: reservationId,
+          idState: 0,
+          idUser: userId,
+          motivoCancel: reason,
+          claster_cancel: 'urgencia_control_crm',
+        },
+        { timeout: 15000 },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error cancelReservation', reservationId, error);
+      throw new BadRequestException(`Error al cancelar reserva ${reservationId}`);
+    }
+  }
+
   async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
@@ -1144,6 +1171,37 @@ export class SvServices {
       throw new BadRequestException(
         `Error al obtener pacientes CRM Controles desde SV — url: ${url}`,
       );
+    }
+  }
+
+  async getCrmControlesSinglePatientFromSv(
+    tokenSv: string,
+    clinicHistoryId: number,
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const path =
+      process.env.SV_CRM_CONTROLES_PATH?.trim() ||
+      '/union_doctor_patient_attention/search_patient_with_users_controlls';
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    const url = `${base}${suffix}?clinicHistoryId=${clinicHistoryId}`;
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const raw = response.data;
+      const rows: Record<string, unknown>[] = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data)
+          ? (raw as { data: Record<string, unknown>[] }).data
+          : [];
+      return rows[0] ?? null;
+    } catch (error) {
+      console.error('Error getCrmControlesSinglePatientFromSv', url, error);
+      return null;
     }
   }
 
