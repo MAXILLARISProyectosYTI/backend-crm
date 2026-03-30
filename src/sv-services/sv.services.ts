@@ -756,6 +756,21 @@ export class SvServices {
     }
   }
 
+  async checkUrgencyControl(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/urgency-control-check/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkUrgencyControl', patientId, error);
+      throw new BadRequestException(`Error al verificar control de urgencia para paciente ${patientId}`);
+    }
+  }
+
   async getInvoiceData(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');
@@ -903,6 +918,40 @@ export class SvServices {
     }
   }
 
+  async cancelReservation(
+    reservationId: number,
+    userId: number,
+    reason: string,
+    tokenSv: string,
+  ): Promise<{ code: number; message: string }> {
+    if (!this.URL_SCHEDULE_BACKEND) throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    try {
+      const res = await axios.post<{ code: number; message: string }>(
+        `${base}/reservation_http/reservation-cancel-for-client`,
+        {
+          idReservation: reservationId,
+          idState: 0,
+          idUser: userId,
+          motivoCancel: reason,
+          claster_cancel: true,
+          flagNoConfirm: true,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenSv}`,
+          },
+          timeout: 15000,
+        },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error cancelReservation', reservationId, error);
+      throw new BadRequestException(`Error al cancelar reserva ${reservationId}`);
+    }
+  }
+
   async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
@@ -1005,14 +1054,15 @@ export class SvServices {
       const rows: any[] = Array.isArray(paymentsRes.data) ? paymentsRes.data : [];
       const invoicedOS: any[] = Array.isArray(osInvoiceRes.data) ? osInvoiceRes.data : [];
 
-      // Filtrar filas de Control OFM sin reservación
       const unscheduled = rows.filter((r: any) => {
         const osId = Number(r.id_service_order);
         const reservation = r.reservation;
+        const reservationState = Number(r.reservation_state);
         const tariffName = String(r.tariff_name || '').toLowerCase();
         const hasNoReservation = reservation == null || reservation === 0 || reservation === '';
+        const hasCancelledReservation = !hasNoReservation && reservationState === 0;
         const isControlOFM = tariffName.includes('control ofm') || Number(r.tariff_id) === 58;
-        return osId > 0 && hasNoReservation && isControlOFM;
+        return osId > 0 && (hasNoReservation || hasCancelledReservation) && isControlOFM;
       });
 
       // Indexar OS facturadas por serie-correlativo para buscar PDF
@@ -1049,19 +1099,19 @@ export class SvServices {
         const serie = r.serie_invoice || null;
         const correlative = r.correlative_invoice ? String(r.correlative_invoice) : null;
 
-        // Buscar PDF desde serviceOrderInvoiceNewVersion
         let pdfUrl: string | null = null;
+        let matchedInv: any = null;
         if (serie && correlative) {
           const key = `${serie}-${correlative}`;
-          const match = invoiceBySerieMap.get(key);
-          if (match?.physical_receipt?.length > 0) {
-            pdfUrl = match.physical_receipt.find((pr: any) => pr.url)?.url || null;
+          matchedInv = invoiceBySerieMap.get(key);
+          if (matchedInv?.physical_receipt?.length > 0) {
+            pdfUrl = matchedInv.physical_receipt.find((pr: any) => pr.url)?.url || null;
           }
         }
 
         enriched.push({
           id: osId,
-          date: r.payment_date || null,
+          date: r.date_service_order || r.payment_date || matchedInv?.date_service_order || null,
           amount,
           currency: currencyId === 1 ? 'PEN' : 'USD',
           serie,
@@ -1129,6 +1179,37 @@ export class SvServices {
       throw new BadRequestException(
         `Error al obtener pacientes CRM Controles desde SV — url: ${url}`,
       );
+    }
+  }
+
+  async getCrmControlesSinglePatientFromSv(
+    tokenSv: string,
+    clinicHistoryId: number,
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const path =
+      process.env.SV_CRM_CONTROLES_PATH?.trim() ||
+      '/union_doctor_patient_attention/search_patient_with_users_controlls';
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    const url = `${base}${suffix}?clinicHistoryId=${clinicHistoryId}`;
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const raw = response.data;
+      const rows: Record<string, unknown>[] = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data)
+          ? (raw as { data: Record<string, unknown>[] }).data
+          : [];
+      return rows[0] ?? null;
+    } catch (error) {
+      console.error('Error getCrmControlesSinglePatientFromSv', url, error);
+      return null;
     }
   }
 

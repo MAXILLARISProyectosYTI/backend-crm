@@ -44,6 +44,15 @@ export class CrmControlesController {
     return this.crmControlesService.getSnapshot();
   }
 
+  /** Sincroniza un solo paciente desde SV y actualiza el cache. */
+  @Post('sync/:clinicHistoryId')
+  async postSyncSingle(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+  ) {
+    const row = await this.crmControlesService.syncSinglePatient(clinicHistoryId);
+    return { updated: !!row, data: row };
+  }
+
   /** Sesiones de control OFM cacheadas (última sync desde SV). */
   @Get('controles')
   getControles(): CrmControlesPacientesResponse {
@@ -88,6 +97,14 @@ export class CrmControlesController {
     @Param('patientId', ParseIntPipe) patientId: number,
   ): Promise<Record<string, unknown>> {
     return this.crmControlesService.checkIsFirstFreeControl(patientId);
+  }
+
+  /** Verifica si el paciente puede acceder a un control de urgencia gratuito. */
+  @Get('urgency-control-check/:patientId')
+  async urgencyControlCheck(
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.checkUrgencyControl(patientId);
   }
 
   /** Datos de facturación del paciente (cliente + comprobante). */
@@ -186,6 +203,14 @@ export class CrmControlesController {
     @Body() payload: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     return this.crmControlesService.createReservation(payload);
+  }
+
+  /** Cancelar reserva (cita) — proxy a WSK reservation-cancel-for-client. */
+  @Post('cancel-reservation')
+  async cancelReservation(
+    @Body() body: { reservationId: number; userId: number; reason: string },
+  ): Promise<{ code: number; message: string }> {
+    return this.crmControlesService.cancelReservation(body.reservationId, body.userId, body.reason);
   }
 
   /** Vincular OS con reserva (PATCH /service-order-api/update-reservation). */

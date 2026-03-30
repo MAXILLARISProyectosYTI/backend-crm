@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   ParseIntPipe,
   UseGuards,
   UsePipes,
@@ -23,7 +24,11 @@ export class IncidenciasController {
   constructor(private readonly service: IncidenciasService) {}
 
   @Get()
-  findAll() {
+  findAll(@Query('pacienteId') pacienteId?: string) {
+    if (pacienteId) {
+      const id = parseInt(pacienteId, 10);
+      if (!isNaN(id)) return this.service.findByPaciente(id);
+    }
     return this.service.findAll();
   }
 
