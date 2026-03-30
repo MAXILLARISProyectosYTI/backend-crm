@@ -935,6 +935,7 @@ export class SvServices {
           idUser: userId,
           motivoCancel: reason,
           claster_cancel: true,
+          flagNoConfirm: true,
         },
         {
           headers: {
@@ -1053,14 +1054,15 @@ export class SvServices {
       const rows: any[] = Array.isArray(paymentsRes.data) ? paymentsRes.data : [];
       const invoicedOS: any[] = Array.isArray(osInvoiceRes.data) ? osInvoiceRes.data : [];
 
-      // Filtrar filas de Control OFM sin reservación
       const unscheduled = rows.filter((r: any) => {
         const osId = Number(r.id_service_order);
         const reservation = r.reservation;
+        const reservationState = Number(r.reservation_state);
         const tariffName = String(r.tariff_name || '').toLowerCase();
         const hasNoReservation = reservation == null || reservation === 0 || reservation === '';
+        const hasCancelledReservation = !hasNoReservation && reservationState === 0;
         const isControlOFM = tariffName.includes('control ofm') || Number(r.tariff_id) === 58;
-        return osId > 0 && hasNoReservation && isControlOFM;
+        return osId > 0 && (hasNoReservation || hasCancelledReservation) && isControlOFM;
       });
 
       // Indexar OS facturadas por serie-correlativo para buscar PDF
@@ -1097,19 +1099,19 @@ export class SvServices {
         const serie = r.serie_invoice || null;
         const correlative = r.correlative_invoice ? String(r.correlative_invoice) : null;
 
-        // Buscar PDF desde serviceOrderInvoiceNewVersion
         let pdfUrl: string | null = null;
+        let matchedInv: any = null;
         if (serie && correlative) {
           const key = `${serie}-${correlative}`;
-          const match = invoiceBySerieMap.get(key);
-          if (match?.physical_receipt?.length > 0) {
-            pdfUrl = match.physical_receipt.find((pr: any) => pr.url)?.url || null;
+          matchedInv = invoiceBySerieMap.get(key);
+          if (matchedInv?.physical_receipt?.length > 0) {
+            pdfUrl = matchedInv.physical_receipt.find((pr: any) => pr.url)?.url || null;
           }
         }
 
         enriched.push({
           id: osId,
-          date: r.payment_date || null,
+          date: r.date_service_order || r.payment_date || matchedInv?.date_service_order || null,
           amount,
           currency: currencyId === 1 ? 'PEN' : 'USD',
           serie,
