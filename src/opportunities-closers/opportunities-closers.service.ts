@@ -59,67 +59,7 @@ export class OpportunitiesClosersService {
     search?: string,
     assignedToUserId?: string,
   ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null })[], total: number, page: number, totalPages: number }> {
-    // Historias del cliente cuando hay search: vienen del endpoint externo; usamos para filtrar "todas las cotizaciones del cliente"
-    let clientHistories: string[] = [];
-
-    // 1) Si existe search: primero endpoint externo → traer cotizaciones del paciente → sincronizar con nuestra BD
-    if (search?.trim()) {
-      try {
-        this.logger.log(`[findAll] search presente: consultando SV search="${search.trim()}", assignedToUserId=${assignedToUserId}`);
-        const token = await this.svServices.getTokenSvAdmin();
-        const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search.trim());
-        this.logger.log(`[findAll] Respuesta SV: cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`);
-
-        const byQuotationId = new Map<string, typeof resultsFromSv[0]>();
-        for (const item of resultsFromSv) {
-          const key = String(item.id);
-          if (!byQuotationId.has(key)) byQuotationId.set(key, item);
-        }
-        this.logger.log(`[findAll] Después de dedup por cotizacion_id: cantidad=${byQuotationId.size}`);
-
-        let inserted = 0;
-        let skippedExists = 0;
-        let skippedBadQuotationId = 0;
-        for (const item of byQuotationId.values()) {
-          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
-          if (Number.isNaN(quotationId)) {
-            skippedBadQuotationId++;
-            this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
-            continue;
-          }
-          const cotizacionIdStr = String(item.id);
-          const exists = await this.existsOpportunityCloserByQuotationId(cotizacionIdStr);
-          if (exists) {
-            skippedExists++;
-            this.logger.log(`[findAll] Ya registrado (solo mostramos): cotizacionId=${item.id}, history=${item.history}`);
-            continue;
-          }
-          // No existe → insertar y asignar
-          const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(item.history);
-          const opportunityId = oportunidades?.length ? oportunidades[0].id : undefined;
-          this.logger.log(`[findAll] Insertando: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
-          const payload = {
-            assignedUserId: assignedToUserId,
-            name: item.name,
-            status: statesCRM.PENDIENTE,
-            hCPatient: item.history,
-            ...(opportunityId && { opportunityId }),
-            cotizacionId: cotizacionIdStr,
-          };
-          const create = await this.createOpportunityCloser(payload);
-          const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
-          await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
-          inserted++;
-        }
-        clientHistories = [...new Set(resultsFromSv.map((r) => r.history).filter((h): h is string => !!h?.trim()))];
-        this.logger.log(`[findAll] Sincronización: insertados=${inserted}, ya_existentes=${skippedExists}, omitidos_id_inválido=${skippedBadQuotationId}, historias_cliente=${clientHistories.length}`);
-      } catch (err) {
-        this.logger.warn(`[findAll] Error al consultar SV o insertar: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    // 2) Construir query: si tenemos historias del cliente (por search), listar todas las cotizaciones de ese cliente; si no, filtro opcional por texto
-    const buildQuery = (historiesFromClient: string[]) => {
+    const buildQuery = () => {
       const qb = this.opportunitiesClosersRepository
         .createQueryBuilder('op')
         .leftJoin('user', 'u', 'u.id = op.assignedUserId')
@@ -127,9 +67,7 @@ export class OpportunitiesClosersService {
         .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
         .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
         .where('op.deleted = :deleted', { deleted: false });
-      if (historiesFromClient.length > 0) {
-        qb.andWhere('op.hCPatient IN (:...clientHistories)', { clientHistories: historiesFromClient });
-      } else if (search?.trim()) {
+      if (search?.trim()) {
         const words = search.trim().split(/\s+/).filter(Boolean);
         words.forEach((word, idx) => {
           const paramStart = `wordStart${idx}`;
@@ -149,16 +87,69 @@ export class OpportunitiesClosersService {
       return qb;
     };
 
-    const queryForList = buildQuery(clientHistories);
-    let total = await queryForList.getCount();
+    let total = await buildQuery().getCount();
     let entities: OpportunitiesClosers[];
     let raw: any[];
 
+    if (search?.trim() && total === 0 && assignedToUserId) {
+      try {
+        this.logger.log(`[findAll] Info que llega: search="${search?.trim()}", page=${page}, limit=${limit}, assignedToUserId=${assignedToUserId}`);
+        const token = await this.svServices.getTokenSvAdmin();
+        const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search.trim());
+        this.logger.log(`[findAll] Respuesta SV (raw): cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`);
+        const byQuotationId = new Map<string, typeof resultsFromSv[0]>();
+        for (const item of resultsFromSv) {
+          const key = String(item.id);
+          if (!byQuotationId.has(key)) byQuotationId.set(key, item);
+        }
+        this.logger.log(`[findAll] Después de dedup por cotizacion_id: cantidad=${byQuotationId.size}`);
+        let inserted = 0;
+        let skippedExists = 0;
+        let skippedBadQuotationId = 0;
+        for (const item of byQuotationId.values()) {
+          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
+          if (Number.isNaN(quotationId)) {
+            skippedBadQuotationId++;
+            this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
+            continue;
+          }
+          const exists = await this.existsOpportunityCloserByQuotationId(String(item.id));
+          if (exists) {
+            skippedExists++;
+            this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
+            continue;
+          }
+          const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(item.history);
+          const opportunityId = oportunidades?.length ? oportunidades[0].id : undefined;
+          this.logger.log(`[findAll] Asignación: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
+          const payload = {
+            assignedUserId: assignedToUserId,
+            name: item.name,
+            status: statesCRM.PENDIENTE,
+            hCPatient: item.history,
+            ...(opportunityId && { opportunityId }),
+            cotizacionId: String(quotationId),
+          };
+          this.logger.log(`[findAll] Guardado (payload): ${JSON.stringify(payload)}`);
+          const create = await this.createOpportunityCloser(payload);
+          this.logger.log(`[findAll] Guardado (resultado create): id=${create.id}, cotizacionId=${create.cotizacionId}, assignedUserId=${create.assignedUserId}`);
+          const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
+          await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
+          inserted++;
+        }
+        total = await buildQuery().getCount();
+        this.logger.log(`[findAll] Resumen: insertados=${inserted}, omitidos_ya_en_cola=${skippedExists}, omitidos_cotizacion_id_inválido=${skippedBadQuotationId}, total después de insertar: ${total}`);
+      } catch (err) {
+        this.logger.warn(`[findAll] Error al obtener SV o insertar: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     const effectivePage = total > 0 && (page - 1) * limit >= total ? 1 : page;
     if (effectivePage !== page) {
-      this.logger.log(`[findAll] Página ${page} quedaría vacía (total=${total}); se devuelve página ${effectivePage}`);
+      this.logger.log(`[findAll] Página ${page} quedaría vacía (total=${total}); se devuelve página 1 para mostrar los registros insertados`);
     }
-    const result = await queryForList
+    const queryBuilder = buildQuery();
+    const result = await queryBuilder
       .orderBy('op.createdAt', 'DESC')
       .skip((effectivePage - 1) * limit)
       .take(limit)
@@ -337,15 +328,6 @@ export class OpportunitiesClosersService {
     const updatedOpportunity = await this.opportunitiesClosersRepository.save(opportunity);
 
     return updatedOpportunity;
-  }
-
-  /**
-   * Asigna la oportunidad cerradora al usuario indicado y actualiza la URL con el nuevo usuario asignado.
-   */
-  async assignToCurrentUser(opportunityCloserId: string, userId: string): Promise<OpportunitiesClosers> {
-    const opportunity = await this.getOneWithEntity(opportunityCloserId);
-    const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${opportunity.id}&cotizacion=${opportunity.cotizacionId}&usuario=${userId}`;
-    return this.update(opportunityCloserId, { assignedUserId: userId, url }, userId);
   }
 
   async lostOpportunity(opportunityCloserId: string, userId: string, reason: string, subReason: string) {
