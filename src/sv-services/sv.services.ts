@@ -771,6 +771,21 @@ export class SvServices {
     }
   }
 
+  async checkPostControlFree(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/post-control-free-check/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkPostControlFree', patientId, error);
+      throw new BadRequestException(`Error al verificar control gratuito post-atención para paciente ${patientId}`);
+    }
+  }
+
   async getInvoiceData(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');

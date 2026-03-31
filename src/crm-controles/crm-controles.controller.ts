@@ -107,6 +107,14 @@ export class CrmControlesController {
     return this.crmControlesService.checkUrgencyControl(patientId);
   }
 
+  /** Verifica si el paciente tiene un control gratuito por plazo de 15 días post-atención. */
+  @Get('post-control-free-check/:patientId')
+  async postControlFreeCheck(
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.checkPostControlFree(patientId);
+  }
+
   /** Datos de facturación del paciente (cliente + comprobante). */
   @Get('invoice-data/:clinicHistoryId')
   async getInvoiceData(
