@@ -66,6 +66,36 @@ export class CrmControlesController {
     return this.crmControlesService.getControlesSnapshot();
   }
 
+  // ── Facturación de controles (con fecha_abono, método de pago) ──────────
+
+  /** Datos de facturación cacheados — invoices de controles OFM. */
+  @Get('facturacion-kpi')
+  getFacturacion(): CrmControlesPacientesResponse {
+    return this.crmControlesService.getFacturacionSnapshot();
+  }
+
+  /** Fuerza sincronización de facturación con SV. */
+  @Post('facturacion-kpi/sync')
+  async postFacturacionSync(): Promise<CrmControlesPacientesResponse> {
+    await this.crmControlesService.syncFacturacionFromSv();
+    return this.crmControlesService.getFacturacionSnapshot();
+  }
+
+  // ── Reprogramaciones ────────────────────────────────────────────────────
+
+  /** Reprogramaciones cacheadas — conteo por día y campus. */
+  @Get('reprogramaciones')
+  getReprogramaciones(): CrmControlesPacientesResponse {
+    return this.crmControlesService.getReprogramacionesSnapshot();
+  }
+
+  /** Fuerza sincronización de reprogramaciones con SV. */
+  @Post('reprogramaciones/sync')
+  async postReprogramacionesSync(): Promise<CrmControlesPacientesResponse> {
+    await this.crmControlesService.syncReprogramacionesFromSv();
+    return this.crmControlesService.getReprogramacionesSnapshot();
+  }
+
   /**
    * Timeline completo de un paciente OFM (consulta directa a SV, sin cache).
    * Devuelve TODAS sus reservaciones (evaluaciones, moldes, instalaciones, controles...)

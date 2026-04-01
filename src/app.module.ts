@@ -22,6 +22,7 @@ import { ContractPricingModule } from './contract-pricing/contract-pricing.modul
 import { CampusTeamModule } from './campus-team/campus-team.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
 import { CrmControlesModule } from './crm-controles/crm-controles.module';
+import { KpiGerencialModule } from './kpi-gerencial/kpi-gerencial.module';
 import { IncidenciasModule } from './incidencias/incidencias.module';
 import { NotificacionesModule } from './notificaciones/notificaciones.module';
 
@@ -60,6 +61,7 @@ import { NotificacionesModule } from './notificaciones/notificaciones.module';
     CampusTeamModule,
     AssignmentQueueStateModule,
     CrmControlesModule,
+    KpiGerencialModule,
     IncidenciasModule,
     NotificacionesModule,
   ],

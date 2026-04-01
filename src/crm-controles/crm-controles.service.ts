@@ -26,6 +26,22 @@ export class CrmControlesService implements OnModuleInit {
     source: 'sv',
   };
 
+  // ── Cache facturación de controles ────────────────────────────────────────
+  private facturacion: CrmControlesPatientRow[] = [];
+  private facturacionMeta: CrmControlesCacheMeta = {
+    lastSyncAt: null,
+    lastError: null,
+    source: 'sv',
+  };
+
+  // ── Cache reprogramaciones ────────────────────────────────────────────────
+  private reprogramaciones: CrmControlesPatientRow[] = [];
+  private reprogramacionesMeta: CrmControlesCacheMeta = {
+    lastSyncAt: null,
+    lastError: null,
+    source: 'sv',
+  };
+
   constructor(
     private readonly svServices: SvServices,
     @Optional() private readonly notifService: NotificacionesService,
@@ -39,6 +55,12 @@ export class CrmControlesService implements OnModuleInit {
       );
       void this.syncControlesFromSv().catch((e) =>
         this.logger.warn(`Sync inicial Controles OFM: ${e instanceof Error ? e.message : e}`),
+      );
+      void this.syncFacturacionFromSv().catch((e) =>
+        this.logger.warn(`Sync inicial Facturación: ${e instanceof Error ? e.message : e}`),
+      );
+      void this.syncReprogramacionesFromSv().catch((e) =>
+        this.logger.warn(`Sync inicial Reprogramaciones: ${e instanceof Error ? e.message : e}`),
       );
     }, delay);
   }
@@ -199,6 +221,48 @@ export class CrmControlesService implements OnModuleInit {
       const msg = err instanceof Error ? err.message : String(err);
       this.controlesMeta = { ...this.controlesMeta, lastError: msg };
       this.logger.error(`CRM Controles: error sync sesiones — ${msg}`);
+      throw err;
+    }
+  }
+
+  // ── Facturación de controles ──────────────────────────────────────────────
+
+  getFacturacionSnapshot(): { data: CrmControlesPatientRow[]; meta: CrmControlesCacheMeta } {
+    return { data: this.facturacion, meta: { ...this.facturacionMeta } };
+  }
+
+  async syncFacturacionFromSv(): Promise<void> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getFacturacionControlesFromSv(tokenSv);
+      this.facturacion = Array.isArray(rows) ? rows : [];
+      this.facturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
+      this.logger.log(`CRM Controles facturación: ${this.facturacion.length} registros`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.facturacionMeta = { ...this.facturacionMeta, lastError: msg };
+      this.logger.error(`CRM Controles: error sync facturación — ${msg}`);
+      throw err;
+    }
+  }
+
+  // ── Reprogramaciones ──────────────────────────────────────────────────────
+
+  getReprogramacionesSnapshot(): { data: CrmControlesPatientRow[]; meta: CrmControlesCacheMeta } {
+    return { data: this.reprogramaciones, meta: { ...this.reprogramacionesMeta } };
+  }
+
+  async syncReprogramacionesFromSv(): Promise<void> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getReprogramacionesControlesFromSv(tokenSv);
+      this.reprogramaciones = Array.isArray(rows) ? rows : [];
+      this.reprogramacionesMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
+      this.logger.log(`CRM Controles reprogramaciones: ${this.reprogramaciones.length} registros`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.reprogramacionesMeta = { ...this.reprogramacionesMeta, lastError: msg };
+      this.logger.error(`CRM Controles: error sync reprogramaciones — ${msg}`);
       throw err;
     }
   }
