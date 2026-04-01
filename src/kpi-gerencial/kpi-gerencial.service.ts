@@ -69,7 +69,7 @@ export class KpiGerencialService {
     });
 
     if (existing) {
-      await this.snapshotRepo.update(existing.id, { datos, metaGerencialId: metaGerencialId ?? null });
+      await this.snapshotRepo.update(existing.id, { datos: datos as any, metaGerencialId: metaGerencialId ?? null });
       return this.snapshotRepo.findOneOrFail({ where: { id: existing.id } });
     }
 
