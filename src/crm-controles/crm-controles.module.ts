@@ -5,9 +5,10 @@ import { CrmControlesController } from './crm-controles.controller';
 import { CrmControlesService } from './crm-controles.service';
 import { CrmControlesCronService } from './crm-controles-cron.service';
 import { NotificacionesModule } from 'src/notificaciones/notificaciones.module';
+import { KpiGerencialModule } from 'src/kpi-gerencial/kpi-gerencial.module';
 
 @Module({
-  imports: [UserModule, forwardRef(() => NotificacionesModule)],
+  imports: [UserModule, forwardRef(() => NotificacionesModule), KpiGerencialModule],
   controllers: [CrmControlesController],
   providers: [CrmControlesService, CrmControlesCronService, SvServices],
   exports: [CrmControlesService],

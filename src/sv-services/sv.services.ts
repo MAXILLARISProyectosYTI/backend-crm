@@ -1276,7 +1276,7 @@ export class SvServices {
 
   /**
    * Obtiene sesiones de control OFM desde SV
-   * (tariff 192 = instalación primer dispositivo, 198 = control OFM).
+   * (tariff 58 = control, 192 = instalación primer dispositivo, 198 = control OFM).
    */
   async getCrmControlesSessionsFromSv(
     tokenSv: string,
@@ -1299,6 +1299,63 @@ export class SvServices {
       console.error('Error getCrmControlesSessionsFromSv', url, error);
       throw new BadRequestException(
         `Error al obtener controles OFM desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  /**
+   * Facturación de controles OFM desde SV — invoice_result_body con fecha_abono,
+   * método de pago, moneda, campus, ejecutivo.
+   */
+  async getFacturacionControlesFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/facturacion-controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getFacturacionControlesFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener facturación controles desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  /**
+   * Reprogramaciones de controles OFM — cantidad por día y campus.
+   */
+  async getReprogramacionesControlesFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/reprogramaciones-controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getReprogramacionesControlesFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener reprogramaciones desde SV — url: ${url}`,
       );
     }
   }

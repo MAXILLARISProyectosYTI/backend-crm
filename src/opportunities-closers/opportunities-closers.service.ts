@@ -569,4 +569,18 @@ export class OpportunitiesClosersService {
       },
     });
   }
+
+  async assignToCurrentUser(id: string, userId: string): Promise<OpportunitiesClosers> {
+    const opportunity = await this.getOneWithEntity(id);
+
+    opportunity.assignedUserId = userId;
+    opportunity.modifiedById = userId;
+    opportunity.modifiedAt = new Date();
+
+    if (opportunity.cotizacionId) {
+      opportunity.url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${opportunity.id}&cotizacion=${opportunity.cotizacionId}&usuario=${userId}`;
+    }
+
+    return await this.opportunitiesClosersRepository.save(opportunity);
+  }
 }
