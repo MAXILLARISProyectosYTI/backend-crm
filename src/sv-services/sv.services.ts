@@ -22,7 +22,7 @@ export class SvServices {
   private readonly invoiceMifactPassword = process.env.INVOICE_MIFACT_PASSWORD ?? process.env.PASSWORD_ADMIN ?? '';
 
   constructor(
-  ) {}
+  ) { }
 
   async getCampuses(tokenSv: string): Promise<CampusListResponse> {
     try {
@@ -83,14 +83,14 @@ export class SvServices {
     }
   }
 
-  async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto, tokenSv: string ){
+  async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto, tokenSv: string) {
     try {
       const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-patient-crm/`, payloadClinicHistory, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responseClinicHistory.data;
     } catch (error) {
       console.error('Error createClinicHistoryCrm', error);
@@ -100,13 +100,9 @@ export class SvServices {
 
   async getTokenSv(username: string, password: string) {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
-        username,
-        password,
-        origin: this.svSignInOrigin,
-      })
-  
-      return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};      
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password })
+
+      return { data: responseTokenSv.data, tokenSv: responseTokenSv.data.token };
     } catch (error) {
       console.log('error', error);
       throw new BadRequestException('Error al obtener el token de SV');
@@ -115,13 +111,9 @@ export class SvServices {
 
   async getTokenSvAdmin() {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
-        username: this.usernameSv,
-        password: this.passwordSv,
-        origin: this.svSignInOrigin,
-      })
-  
-      return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username: this.usernameSv, password: this.passwordSv })
+
+      return { data: responseTokenSv.data, tokenSv: responseTokenSv.data.token };
     } catch (error) {
       console.error('Error getTokenSvAdmin', error);
       throw new BadRequestException('Error al obtener el token administrativo de SV');
@@ -130,16 +122,19 @@ export class SvServices {
 
   async getStatusClient(opportunityId: string, tokenSv: string) {
     try {
-      const responseStatusClient: { data: { 
-        espoId: string;
-        id_payment?: number;
-        id_reservation?: number;
-        patientId?: number;}} = await axios.get(`${this.URL_BACK_SV}/opportunities/status-patient-crm/${opportunityId}`, {
+      const responseStatusClient: {
+        data: {
+          espoId: string;
+          id_payment?: number;
+          id_reservation?: number;
+          patientId?: number;
+        }
+      } = await axios.get(`${this.URL_BACK_SV}/opportunities/status-patient-crm/${opportunityId}`, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       const data = responseStatusClient.data;
       // Mostrar botón Historia Clínica cuando el paciente está vinculado (patientId + espoId).
       // Para pago con factura también hay id_payment/id_reservation; para efectivo solo patientId+espoId.
@@ -147,7 +142,7 @@ export class SvServices {
         return true;
       }
       return false;
-  
+
     } catch (error) {
       console.error('Error getStatusClient', error);
       throw new BadRequestException('Error al obtener el estado del cliente en SV');
@@ -161,7 +156,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientSV', error);
@@ -176,7 +171,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientSVByEspoId', error);
@@ -191,7 +186,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error updateClinicHistoryCrm', error);
@@ -206,7 +201,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientByClinicHistory', error);
@@ -221,7 +216,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getIRHByComprobante', error);
@@ -303,7 +298,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responseQueueAssignmentClosers.data;
     } catch (error) {
       console.error('Error updateQueueAssignmentClosers', error);
@@ -315,14 +310,14 @@ export class SvServices {
     url_invoice_dolares: string;
     url_invoice_soles: string;
     id: number;
-}[]> {
+  }[]> {
     try {
       const responseFacts = await axios.get(`${this.URL_BACK_SV}/contract/get-facts-contract/${contractId}`, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responseFacts.data;
     } catch (error) {
       console.error('Error getFactsByContractId', error);
@@ -440,7 +435,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-  
+
       return responseQueueAssignmentClosers.data;
     } catch (error) {
       console.error('Error addOpportunityToQueue', error);
@@ -709,7 +704,7 @@ export class SvServices {
   // ============================================================
   // Contract Pricing y Types - Métodos para contratos
   // ============================================================
-  
+
   async getContractPricingByTreatmentCode(treatmentCode: string, tokenSv: string) {
     try {
       const response = await axios.get(
@@ -728,7 +723,7 @@ export class SvServices {
       );
     }
   }
-  
+
   async getAllContractTypeStructure(tokenSv: string) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/contract-type-structure`, {
@@ -742,5 +737,644 @@ export class SvServices {
       throw new BadRequestException('Error al obtener tipos de estructura de contratos desde SV');
     }
   }
+
+  // ============================================================
+  // CRM Controles — Billing proxy (invoice + isFirstFreeControl)
+  // ============================================================
+
+  private readonly URL_SCHEDULE_BACKEND = process.env.URL_SCHEDULE_BACKEND || '';
+
+  async checkIsFirstFreeControl(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/is-first-control/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkIsFirstFreeControl', patientId, error);
+      throw new BadRequestException(`Error al verificar primer control gratuito para paciente ${patientId}`);
+    }
+  }
+
+  async checkUrgencyControl(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/urgency-control-check/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkUrgencyControl', patientId, error);
+      throw new BadRequestException(`Error al verificar control de urgencia para paciente ${patientId}`);
+    }
+  }
+
+  async checkPostControlFree(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/post-control-free-check/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkPostControlFree', patientId, error);
+      throw new BadRequestException(`Error al verificar control gratuito post-atención para paciente ${patientId}`);
+    }
+  }
+
+  async getInvoiceData(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/clinic-history/invoice-data/${clinicHistoryId}`;
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getInvoiceData', clinicHistoryId, error);
+      throw new BadRequestException(`Error al obtener datos de facturación para HC ${clinicHistoryId}`);
+    }
+  }
+
+  async createControlInvoice(payload: Record<string, unknown>, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/invoice-mifact-v3/create-service-order-and-invoice`;
+    try {
+      const response = await axios.post(url, payload, {
+        headers: {
+          Authorization: `Bearer ${tokenSv}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      });
+      return response.data;
+    } catch (error: any) {
+      const msg = error?.response?.data?.message || error?.message || 'Error desconocido';
+      console.error('Error createControlInvoice', msg);
+      throw new BadRequestException(`Error al crear OS e invoice: ${msg}`);
+    }
+  }
+
+  async getContractQuotas(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const contractUrl = `${base}/contract/patient-contracts/${clinicHistoryId}`;
+      const contractRes = await axios.get(contractUrl, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const contracts: any[] = Array.isArray(contractRes.data) ? contractRes.data : [];
+
+      const activeContracts = contracts
+        .filter((c: any) => c.state === 1)
+        .sort((a: any, b: any) => b.id - a.id);
+      if (activeContracts.length === 0) return [];
+
+      const contractId = activeContracts[0].id;
+      const detailUrl = `${base}/contract/detail-contract-full/${contractId}`;
+      const detailRes = await axios.get(detailUrl, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      return Array.isArray(detailRes.data) ? detailRes.data : [];
+    } catch (error) {
+      console.error('Error getContractQuotas', clinicHistoryId, error);
+      return [];
+    }
+  }
+
+  async getQuotaInvoiceDetails(contractDetailId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const url = `${base}/contract/detail-paiment-fixed-contract/${contractDetailId}`;
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getQuotaInvoiceDetails', contractDetailId, error);
+      return [];
+    }
+  }
+
+  async getPatientCampus(clinicHistoryId: number, tokenSv: string): Promise<{ campusId: number; campusName: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.get(`${base}/clinic-history/${clinicHistoryId}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      const data = res.data;
+      const campus = data?.campus;
+      return {
+        campusId: campus?.id ?? 1,
+        campusName: campus?.name ?? 'Lima',
+      };
+    } catch (error) {
+      console.error('Error getPatientCampus', clinicHistoryId, error);
+      return { campusId: 1, campusName: 'Lima' };
+    }
+  }
+
+  // ── Agenda Services ───────────────────────────────────────────────────────
+
+  async getDoctorsForDate(date: string, campusId: number | null, tokenSv: string): Promise<any[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const path = campusId != null
+      ? `/doctor/all/info-for-doctor/${date}/${campusId}`
+      : `/doctor/all/info-for-doctor/${date}`;
+    try {
+      const res = await axios.get(`${base}${path}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const raw = Array.isArray(res.data) ? res.data : [];
+      return raw.map((d: any) => ({
+        ...d,
+        id: d.id_doctor,
+        name: d.name_doctor,
+        enviroment: d.enviroment ?? '',
+        id_enviroment: d.id_enviroment ?? 0,
+        state: d.state ?? 1,
+      }));
+    } catch (error) {
+      console.error('Error getDoctorsForDate', date, error);
+      return [];
+    }
+  }
+
+  async createReservation(data: Record<string, unknown>, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    try {
+      const res = await axios.post(`${base}/reservation_http`, data, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenSv}`,
+        },
+        timeout: 20000,
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error createReservation', error);
+      throw new BadRequestException('Error al crear reserva');
+    }
+  }
+
+  async cancelReservation(
+    reservationId: number,
+    userId: number,
+    reason: string,
+    tokenSv: string,
+  ): Promise<{ code: number; message: string }> {
+    if (!this.URL_SCHEDULE_BACKEND) throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    try {
+      const res = await axios.post<{ code: number; message: string }>(
+        `${base}/reservation_http/reservation-cancel-for-client`,
+        {
+          idReservation: reservationId,
+          idState: 0,
+          idUser: userId,
+          motivoCancel: reason,
+          claster_cancel: true,
+          flagNoConfirm: true,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenSv}`,
+          },
+          timeout: 15000,
+        },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error cancelReservation', reservationId, error);
+      throw new BadRequestException(`Error al cancelar reserva ${reservationId}`);
+    }
+  }
+
+  async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.patch(
+        `${base}/service-order-api/update-reservation`,
+        { id: osIds, idreservation: reservationId },
+        {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenSv}` },
+          timeout: 10000,
+        },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error linkReservationToOS', osIds, reservationId, error);
+      throw new BadRequestException('Error al vincular OS con reserva');
+    }
+  }
+
+  async getInvoiceQueueStatus(queueId: number, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const url = `${base}/invoice-mifact-v3/status/${queueId}`;
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error getInvoiceQueueStatus', queueId, error);
+      throw new BadRequestException(`Error al obtener estado de cola ${queueId}`);
+    }
+  }
+
+  async getControlPrice(clinicHistoryId: number, tokenSv: string): Promise<{ amount: number; currency: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const res = await axios.get(`${base}/tariff/58`, {
+      headers: { Authorization: `Bearer ${tokenSv}` },
+      timeout: 10000,
+    });
+    const tariff = res.data;
+    if (!tariff || tariff.price_sol == null) {
+      throw new BadRequestException('No se pudo obtener el precio de la tarifa Control OFM');
+    }
+    return { amount: tariff.price_sol, currency: 'PEN' };
+  }
+
+  async getPatientServiceOrders(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    try {
+      const res = await axios.get(
+        `${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` }, timeout: 15000 },
+      );
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getPatientServiceOrders', clinicHistoryId, error);
+      return [];
+    }
+  }
+
+  /**
+   * Detecta OS de Control OFM facturadas pero SIN reservación agendada.
+   * Usa el endpoint payments que expone so.idreservation directamente.
+   * Devuelve la lista completa de OS sin agendar con datos para el selector UI.
+   */
+  async getPendingControlOS(clinicHistoryId: number, tokenSv: string): Promise<{
+    hasUnscheduledOS: boolean;
+    serviceOrderId: number | null;
+    serviceOrders: {
+      id: number;
+      date: string | null;
+      amount: number;
+      currency: string;
+      serie: string | null;
+      correlative: string | null;
+      tariffName: string;
+      pdfUrl: string | null;
+    }[];
+  }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const noResult = { hasUnscheduledOS: false, serviceOrderId: null, serviceOrders: [] };
+    try {
+      const [paymentsRes, osInvoiceRes] = await Promise.all([
+        axios.get(`${base}/service-order-api/payments`, {
+          params: { idClinicHistory: clinicHistoryId },
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          timeout: 15000,
+        }),
+        axios.get(`${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`, {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          timeout: 15000,
+        }),
+      ]);
+
+      const rows: any[] = Array.isArray(paymentsRes.data) ? paymentsRes.data : [];
+      const invoicedOS: any[] = Array.isArray(osInvoiceRes.data) ? osInvoiceRes.data : [];
+
+      const unscheduled = rows.filter((r: any) => {
+        const osId = Number(r.id_service_order);
+        const reservation = r.reservation;
+        const reservationState = Number(r.reservation_state);
+        const tariffName = String(r.tariff_name || '').toLowerCase();
+        const hasNoReservation = reservation == null || reservation === 0 || reservation === '';
+        const hasCancelledReservation = !hasNoReservation && reservationState === 0;
+        const isControlOFM = tariffName.includes('control ofm') || Number(r.tariff_id) === 58;
+        return osId > 0 && (hasNoReservation || hasCancelledReservation) && isControlOFM;
+      });
+
+      // Indexar OS facturadas por serie-correlativo para buscar PDF
+      const invoiceBySerieMap = new Map<string, any>();
+      for (const inv of invoicedOS) {
+        const details: any[] = inv.detail || [];
+        for (const d of details) {
+          if (d.serie_invoice && d.number_invoice) {
+            invoiceBySerieMap.set(`${d.serie_invoice}-${d.number_invoice}`, inv);
+          }
+        }
+      }
+
+      // Deduplicar y enriquecer con datos de factura + PDF
+      const seen = new Set<number>();
+      const enriched: {
+        id: number;
+        date: string | null;
+        amount: number;
+        currency: string;
+        serie: string | null;
+        correlative: string | null;
+        tariffName: string;
+        pdfUrl: string | null;
+      }[] = [];
+
+      for (const r of unscheduled) {
+        const osId = Number(r.id_service_order);
+        if (seen.has(osId)) continue;
+        seen.add(osId);
+
+        const amount = Number(r.amount) || 0;
+        const currencyId = Number(r.id_currency);
+        const serie = r.serie_invoice || null;
+        const correlative = r.correlative_invoice ? String(r.correlative_invoice) : null;
+
+        let pdfUrl: string | null = null;
+        let matchedInv: any = null;
+        if (serie && correlative) {
+          const key = `${serie}-${correlative}`;
+          matchedInv = invoiceBySerieMap.get(key);
+          if (matchedInv?.physical_receipt?.length > 0) {
+            pdfUrl = matchedInv.physical_receipt.find((pr: any) => pr.url)?.url || null;
+          }
+        }
+
+        enriched.push({
+          id: osId,
+          date: r.date_service_order || r.payment_date || matchedInv?.date_service_order || null,
+          amount,
+          currency: currencyId === 1 ? 'PEN' : 'USD',
+          serie,
+          correlative,
+          tariffName: String(r.tariff_name || 'Control OFM'),
+          pdfUrl,
+        });
+      }
+
+      if (enriched.length === 0) return noResult;
+
+      return {
+        hasUnscheduledOS: true,
+        serviceOrderId: enriched[0].id,
+        serviceOrders: enriched,
+      };
+    } catch (error) {
+      console.error('Error getPendingControlOS', clinicHistoryId, error);
+      return noResult;
+    }
+  }
+
+  /**
+   * Cohorte para CRM Controles: pacientes con ejecutivo de controles asignado.
+   * Usa el endpoint existente en SV: GET /union_doctor_patient_attention/search_patient_with_users_controlls
+   * Sobreescribible con la variable de entorno SV_CRM_CONTROLES_PATH.
+   *
+   * Campos que devuelve SV:
+   *   id_registro, id_historia_clinica, nombre_paciente, ap_paterno, ap_materno,
+   *   numero_documento, fecha_nacimiento, historia_clinica, sexo, email, phone,
+   *   cellphone, nombre_distrito, id_doctor, nombre_docto, ejecutivo_cobranzas,
+   *   ejecutivo_controles, ejecutivo_ventas, created_at, id_status_borrado
+   */
+  async getCrmControlesPatientsFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const path =
+      process.env.SV_CRM_CONTROLES_PATH?.trim() ||
+      '/union_doctor_patient_attention/search_patient_with_users_controlls';
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    const url = `${base}${suffix}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) {
+        return raw as Record<string, unknown>[];
+      }
+      if (raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data)) {
+        return (raw as { data: Record<string, unknown>[] }).data;
+      }
+      if (raw && typeof raw === 'object' && 'items' in raw && Array.isArray((raw as { items: unknown }).items)) {
+        return (raw as { items: Record<string, unknown>[] }).items;
+      }
+      return [];
+    } catch (error) {
+      console.error('Error getCrmControlesPatientsFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener pacientes CRM Controles desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  async getCrmControlesSinglePatientFromSv(
+    tokenSv: string,
+    clinicHistoryId: number,
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const path =
+      process.env.SV_CRM_CONTROLES_PATH?.trim() ||
+      '/union_doctor_patient_attention/search_patient_with_users_controlls';
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    const url = `${base}${suffix}?clinicHistoryId=${clinicHistoryId}`;
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 15000,
+      });
+      const raw = response.data;
+      const rows: Record<string, unknown>[] = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data)
+          ? (raw as { data: Record<string, unknown>[] }).data
+          : [];
+      return rows[0] ?? null;
+    } catch (error) {
+      console.error('Error getCrmControlesSinglePatientFromSv', url, error);
+      return null;
+    }
+  }
+
+  /**
+   * Timeline completo de un paciente OFM: todas sus reservaciones (state=1)
+   * ordenadas cronológicamente desde la primera hasta la más reciente.
+   * GET /union_doctor_patient_attention/timeline/:patientId
+   */
+  async getCrmPatientTimelineFromSv(
+    patientId: number,
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/timeline/${patientId}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 30000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getCrmPatientTimelineFromSv', patientId, error);
+      throw new BadRequestException(
+        `Error al obtener timeline del paciente ${patientId} desde SV`,
+      );
+    }
+  }
+
+  /**
+   * Últimas notas médicas de un paciente desde SV.
+   * GET /clinic-history-notes/get-patient-notes/:clinicHistoryId
+   */
+  async getPatientMedicalNotesFromSv(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/clinic-history-notes/get-patient-notes/${clinicHistoryId}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 30000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getPatientMedicalNotesFromSv', clinicHistoryId, error);
+      throw new BadRequestException(
+        `Error al obtener notas médicas del paciente ${clinicHistoryId} desde SV`,
+      );
+    }
+  }
+
+  /**
+   * Obtiene sesiones de control OFM desde SV
+   * (tariff 58 = control, 192 = instalación primer dispositivo, 198 = control OFM).
+   */
+  async getCrmControlesSessionsFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getCrmControlesSessionsFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener controles OFM desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  /**
+   * Facturación de controles OFM desde SV — invoice_result_body con fecha_abono,
+   * método de pago, moneda, campus, ejecutivo.
+   */
+  async getFacturacionControlesFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/facturacion-controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getFacturacionControlesFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener facturación controles desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  /**
+   * Reprogramaciones de controles OFM — cantidad por día y campus.
+   */
+  async getReprogramacionesControlesFromSv(
+    tokenSv: string,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const url = `${base}/union_doctor_patient_attention/reprogramaciones-controles-ofm`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getReprogramacionesControlesFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener reprogramaciones desde SV — url: ${url}`,
+      );
+    }
+  }
 }
-  
