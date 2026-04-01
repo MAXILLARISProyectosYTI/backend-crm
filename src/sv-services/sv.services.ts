@@ -11,6 +11,8 @@ import { QuotationListResponse, QuotationListItem } from "./quotation-list.types
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  /** Identificador de origen enviado en POST /auth/signin hacia SV. */
+  private readonly svSignInOrigin = 'crm';
   /** Base URL del servicio invoice-mifact-v3 (ej. http://host/api). Usado para estado de facturación por O.S. */
   private readonly URL_INVOICE_MIFACT_V3 = process.env.URL_INVOICE_MIFACT_V3 || '';
   private readonly usernameSv = process.env.USERNAME_ADMIN;
@@ -240,6 +242,7 @@ export class SvServices {
       const response = await axios.post<{ token?: string; access_token?: string }>(loginUrl, {
         username: this.invoiceMifactUsername,
         password: this.invoiceMifactPassword,
+        origin: this.svSignInOrigin,
       }, { timeout: 10000 });
       const token = response.data?.token ?? response.data?.access_token;
       return token ?? null;
@@ -768,6 +771,21 @@ export class SvServices {
     } catch (error) {
       console.error('Error checkUrgencyControl', patientId, error);
       throw new BadRequestException(`Error al verificar control de urgencia para paciente ${patientId}`);
+    }
+  }
+
+  async checkPostControlFree(patientId: number): Promise<Record<string, unknown>> {
+    if (!this.URL_SCHEDULE_BACKEND) {
+      throw new BadRequestException('URL_SCHEDULE_BACKEND no configurada');
+    }
+    const base = this.URL_SCHEDULE_BACKEND.replace(/\/$/, '');
+    const url = `${base}/reservation_http/post-control-free-check/${patientId}`;
+    try {
+      const response = await axios.get(url, { timeout: 15000 });
+      return response.data;
+    } catch (error) {
+      console.error('Error checkPostControlFree', patientId, error);
+      throw new BadRequestException(`Error al verificar control gratuito post-atención para paciente ${patientId}`);
     }
   }
 
