@@ -18,6 +18,9 @@ export class CrmControlesService implements OnModuleInit {
     source: 'sv',
   };
 
+  // ── Overrides de estado funnel (en memoria, sin tabla nueva) ────────────
+  private estadoFunnelOverrides = new Map<number, string>();
+
   // ── Cache sesiones de control ─────────────────────────────────────────────
   private controles: CrmControlesPatientRow[] = [];
   private controlesMeta: CrmControlesCacheMeta = {
@@ -66,7 +69,21 @@ export class CrmControlesService implements OnModuleInit {
   }
 
   getSnapshot(): { data: CrmControlesPatientRow[]; meta: CrmControlesCacheMeta } {
-    return { data: this.patients, meta: { ...this.meta } };
+    const data = this.patients.map((p) => {
+      const chId = Number(p.id_historia_clinica);
+      const override = this.estadoFunnelOverrides.get(chId);
+      return override ? { ...p, estado_funnel_override: override } : p;
+    });
+    return { data, meta: { ...this.meta } };
+  }
+
+  setEstadoFunnel(clinicHistoryId: number, estado: string): void {
+    this.estadoFunnelOverrides.set(clinicHistoryId, estado);
+    this.logger.log(`Estado funnel override: CH ${clinicHistoryId} → ${estado}`);
+  }
+
+  getEstadoFunnel(clinicHistoryId: number): string | null {
+    return this.estadoFunnelOverrides.get(clinicHistoryId) ?? null;
   }
 
   getControlesSnapshot(): { data: CrmControlesPatientRow[]; meta: CrmControlesCacheMeta } {
