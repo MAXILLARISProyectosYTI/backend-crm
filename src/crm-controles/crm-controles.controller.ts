@@ -53,6 +53,16 @@ export class CrmControlesController {
     return { updated: !!row, data: row };
   }
 
+  /** Actualiza el estado funnel de un paciente (override en memoria). */
+  @Patch('estado-funnel/:clinicHistoryId')
+  patchEstadoFunnel(
+    @Param('clinicHistoryId', ParseIntPipe) clinicHistoryId: number,
+    @Body() body: { estado: string },
+  ): { ok: boolean } {
+    this.crmControlesService.setEstadoFunnel(clinicHistoryId, body.estado);
+    return { ok: true };
+  }
+
   /** Sesiones de control OFM cacheadas (última sync desde SV). */
   @Get('controles')
   getControles(): CrmControlesPacientesResponse {
