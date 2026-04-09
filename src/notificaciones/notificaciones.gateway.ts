@@ -45,4 +45,16 @@ export class NotificacionesGateway
     });
     this.logger.log(`[notif-update] broadcast → ${newCount} nueva(s)`);
   }
+
+  /**
+   * Notifica a TODOS los clientes conectados que se asignaron pacientes de controles.
+   * El frontend escucha 'controles-updated' y re-fetcha el listado de pacientes.
+   */
+  broadcastControlesUpdated(assignedCount: number): void {
+    this.server.emit('controles-updated', {
+      assignedCount,
+      timestamp: new Date().toISOString(),
+    });
+    this.logger.log(`[controles-updated] broadcast → ${assignedCount} paciente(s) asignado(s)`);
+  }
 }

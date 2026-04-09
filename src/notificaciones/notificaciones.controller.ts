@@ -9,11 +9,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { AdminUserGuard } from 'src/auth/guards/admin-user.guard';
+import { CrmControlesGuard } from 'src/auth/guards/crm-controles.guard';
 import { NotificacionesService } from './notificaciones.service';
 import { NotificacionesGateway } from './notificaciones.gateway';
 
-@UseGuards(JwtAuthGuard, AdminUserGuard)
+@UseGuards(JwtAuthGuard, CrmControlesGuard)
 @Controller('notificaciones')
 export class NotificacionesController {
   constructor(

@@ -16,7 +16,7 @@ export class CrmControlesCronService {
     @Optional() private readonly kpiService: KpiGerencialService,
   ) {}
 
-  @Cron(process.env.CRM_CONTROLES_CRON ?? '0 */3 * * * *')
+  @Cron(process.env.CRM_CONTROLES_CRON ?? '0 */1 * * * *')
   async handlePollSv(): Promise<void> {
     try {
       await this.crmControlesService.syncFromSv();
