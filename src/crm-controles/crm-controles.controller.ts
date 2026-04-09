@@ -30,10 +30,12 @@ export class CrmControlesController {
     private readonly assignmentService: CrmControlesAssignmentService,
   ) {}
 
-  /** Listado cacheado (última sync desde SV). */
+  /** Listado cacheado filtrado por rol: admin ve todo, regular solo sus pacientes. */
   @Get('pacientes')
-  getPacientes(): CrmControlesPacientesResponse {
-    return this.crmControlesService.getSnapshot();
+  async getPacientes(
+    @Request() req: { user?: { userId?: string } },
+  ): Promise<CrmControlesPacientesResponse> {
+    return this.crmControlesService.getSnapshotForUser(req.user?.userId ?? null);
   }
 
   /** Estado de sync (sin lista completa; útil para monitoreo). */
@@ -43,11 +45,13 @@ export class CrmControlesController {
     return { meta, count: data.length };
   }
 
-  /** Fuerza una sincronización inmediata de pacientes con SV (solo admin). */
+  /** Fuerza una sincronización inmediata de pacientes con SV. Respeta filtro por rol. */
   @Post('sync')
-  async postSync(): Promise<CrmControlesPacientesResponse> {
+  async postSync(
+    @Request() req: { user?: { userId?: string } },
+  ): Promise<CrmControlesPacientesResponse> {
     await this.crmControlesService.syncFromSv();
-    return this.crmControlesService.getSnapshot();
+    return this.crmControlesService.getSnapshotForUser(req.user?.userId ?? null);
   }
 
   /** Sincroniza un solo paciente desde SV y actualiza el cache. */
