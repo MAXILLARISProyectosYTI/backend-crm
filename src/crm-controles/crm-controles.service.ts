@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { SvServices } from 'src/sv-services/sv.services';
 import { NotificacionesService } from 'src/notificaciones/notificaciones.service';
+import { CrmControlesAssignmentService } from './crm-controles-assignment.service';
 import type {
   CrmControlesCacheMeta,
   CrmControlesPatientRow,
@@ -48,6 +49,7 @@ export class CrmControlesService implements OnModuleInit {
   constructor(
     private readonly svServices: SvServices,
     @Optional() private readonly notifService: NotificacionesService,
+    @Optional() private readonly assignmentService: CrmControlesAssignmentService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -119,6 +121,12 @@ export class CrmControlesService implements OnModuleInit {
       if (this.notifService) {
         void this.notifService.generateFromPatients(this.patients).catch((e) =>
           this.logger.warn(`Error generando notificaciones: ${e instanceof Error ? e.message : e}`),
+        );
+      }
+      // Asignación automática de ejecutivos de controles para pacientes sin asignar
+      if (this.assignmentService && this.patients.length > 0) {
+        void this.assignmentService.autoAssignFromPatients(this.patients).catch((e) =>
+          this.logger.warn(`Error en asignación automática controles: ${e instanceof Error ? e.message : e}`),
         );
       }
     } catch (err) {

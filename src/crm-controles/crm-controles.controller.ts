@@ -7,10 +7,13 @@ import {
   Param,
   ParseIntPipe,
   UseGuards,
+  Request,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminUserGuard } from 'src/auth/guards/admin-user.guard';
+import { CrmControlesGuard } from 'src/auth/guards/crm-controles.guard';
 import { CrmControlesService } from './crm-controles.service';
+import { CrmControlesAssignmentService } from './crm-controles-assignment.service';
 import type { CrmControlesPacientesResponse } from './crm-controles.types';
 
 /**
@@ -19,10 +22,13 @@ import type { CrmControlesPacientesResponse } from './crm-controles.types';
  *
  * Base URL típica: {VITE_CRM_API_BASE_URL}/crm-controles/...
  */
-@UseGuards(JwtAuthGuard, AdminUserGuard)
+@UseGuards(JwtAuthGuard, CrmControlesGuard)
 @Controller('crm-controles')
 export class CrmControlesController {
-  constructor(private readonly crmControlesService: CrmControlesService) {}
+  constructor(
+    private readonly crmControlesService: CrmControlesService,
+    private readonly assignmentService: CrmControlesAssignmentService,
+  ) {}
 
   /** Listado cacheado (última sync desde SV). */
   @Get('pacientes')
@@ -267,6 +273,44 @@ export class CrmControlesController {
     @Body() body: { osIds: number[]; reservationId: number },
   ): Promise<{ message: string }> {
     return this.crmControlesService.linkReservationToOS(body.osIds, body.reservationId);
+  }
+
+  /**
+   * Lista los ejecutivos del equipo Controles disponibles para reasignar.
+   * Solo accesible por admins.
+   */
+  @UseGuards(AdminUserGuard)
+  @Get('controles-users')
+  async getControlesUsers(): Promise<
+    { id: string; userName: string; firstName: string; lastName: string }[]
+  > {
+    return this.assignmentService.getControlesExecutivosForApi();
+  }
+
+  /**
+   * Reasigna un paciente (por id_clinic_history) a un ejecutivo de controles (por id de CRM).
+   * Solo accesible por admins.
+   */
+  @UseGuards(AdminUserGuard)
+  @Patch('reassign-patient')
+  async reassignPatient(
+    @Body() body: { clinicHistoryId: number; targetUserId: string },
+    @Request() req: { user?: { userId?: string } },
+  ): Promise<{ ok: boolean; message?: string }> {
+    const result = await this.assignmentService.manualReassignPatient(
+      body.clinicHistoryId,
+      body.targetUserId,
+      req.user?.userId ?? null,
+    );
+
+    // Actualiza el cache primero y luego hace el broadcast WebSocket,
+    // garantizando que cuando el frontend re-fetche ya tenga datos frescos.
+    if (result.ok) {
+      await this.crmControlesService.syncSinglePatient(body.clinicHistoryId).catch(() => null);
+      this.assignmentService.broadcastControlesUpdated();
+    }
+
+    return result;
   }
 
 }

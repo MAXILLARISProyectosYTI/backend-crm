@@ -591,6 +591,11 @@ export class UserService {
     return user.type === 'admin';
   }
 
+  async hasRole(userId: string, roleId: string): Promise<boolean> {
+    const userRoles = await this.roleService.getRolesByUser(userId);
+    return userRoles.includes(roleId);
+  }
+
   async getUsersCommercials(): Promise<User[]> {
 
     const usersActives = await this.getUsersToAssign()

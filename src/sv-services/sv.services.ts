@@ -1377,4 +1377,45 @@ export class SvServices {
       );
     }
   }
+
+  /**
+   * Busca el ID numérico de un usuario de SV por su username.
+   * Usa el endpoint GET /union_doctor_patient_attention/sv-user-id-by-username/:username
+   */
+  async getSvUserIdByUsername(tokenSv: string, username: string): Promise<number | null> {
+    try {
+      const url = `${this.URL_BACK_SV}/union_doctor_patient_attention/sv-user-id-by-username/${encodeURIComponent(username)}`;
+      const response = await axios.get<{ id: number | null }>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 8000,
+      });
+      return response.data?.id ?? null;
+    } catch (error) {
+      console.error('Error getSvUserIdByUsername', username, error);
+      return null;
+    }
+  }
+
+  /**
+   * Asigna un ejecutivo de controles a un paciente en SV.
+   * Usa PATCH /union_doctor_patient_attention/assign-controller-executive
+   */
+  async assignControllerExecutiveInSv(
+    tokenSv: string,
+    id_clinic_history: number,
+    id_controller_executive: number,
+  ): Promise<boolean> {
+    try {
+      const url = `${this.URL_BACK_SV}/union_doctor_patient_attention/assign-controller-executive`;
+      const response = await axios.patch<{ updated: boolean }>(
+        url,
+        { id_clinic_history, id_controller_executive },
+        { headers: { Authorization: `Bearer ${tokenSv}` }, timeout: 8000 },
+      );
+      return response.data?.updated === true;
+    } catch (error) {
+      console.error('Error assignControllerExecutiveInSv', { id_clinic_history, id_controller_executive }, error);
+      return false;
+    }
+  }
 }
