@@ -20,6 +20,7 @@ import { TeamModule } from './team/team.module';
 import { KpiModule } from './kpi/kpi.module';
 import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
 import { CampusTeamModule } from './campus-team/campus-team.module';
+import { CampusCoordinatesModule } from './campus-coordinates/campus-coordinates.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
 import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 
@@ -56,6 +57,7 @@ import { FilteredUsersModule } from './filtered-users/filtered-users.module';
     KpiModule,
     ContractPricingModule,
     CampusTeamModule,
+    CampusCoordinatesModule,
     AssignmentQueueStateModule,
     FilteredUsersModule,
   ],
