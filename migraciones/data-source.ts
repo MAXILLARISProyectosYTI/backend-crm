@@ -30,6 +30,8 @@ export default new DataSource({
     join(migrationsDir, '1738684900000-OpportunityPresaveFilesContractPresave.ts'),
     join(migrationsDir, '1738685000000-OpportunityServiceOrderAndFacturacionSubEstado.ts'),
     join(migrationsDir, '1738685100000-CampusCoordinates.ts'),
+    join(migrationsDir, '1743500000000-CreateKpiGerencialTables.ts'),
+
   ],
   migrationsTableName: 'migrations',
 });
