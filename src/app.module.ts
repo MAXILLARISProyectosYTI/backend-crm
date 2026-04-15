@@ -20,6 +20,7 @@ import { TeamModule } from './team/team.module';
 import { KpiModule } from './kpi/kpi.module';
 import { ContractPricingModule } from './contract-pricing/contract-pricing.module';
 import { CampusTeamModule } from './campus-team/campus-team.module';
+import { CampusCoordinatesModule } from './campus-coordinates/campus-coordinates.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
 import { CrmControlesModule } from './crm-controles/crm-controles.module';
 import { KpiGerencialModule } from './kpi-gerencial/kpi-gerencial.module';
@@ -59,6 +60,7 @@ import { NotificacionesModule } from './notificaciones/notificaciones.module';
     KpiModule,
     ContractPricingModule,
     CampusTeamModule,
+    CampusCoordinatesModule,
     AssignmentQueueStateModule,
     CrmControlesModule,
     KpiGerencialModule,

@@ -1008,11 +1008,25 @@ export class SvServices {
   async getControlPrice(clinicHistoryId: number, tokenSv: string): Promise<{ amount: number; currency: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
-    const res = await axios.get(`${base}/tariff/58`, {
+
+    try {
+      const res = await axios.get(`${base}/gobernanza/precio-control/${clinicHistoryId}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      const data = res.data;
+      if (data && data.amount != null) {
+        return { amount: data.amount, currency: data.currency ?? 'PEN' };
+      }
+    } catch (err) {
+      console.warn(`[getControlPrice] Falló endpoint personalizado para HC ${clinicHistoryId}, usando tarifa genérica:`, err.message);
+    }
+
+    const fallback = await axios.get(`${base}/tariff/58`, {
       headers: { Authorization: `Bearer ${tokenSv}` },
       timeout: 10000,
     });
-    const tariff = res.data;
+    const tariff = fallback.data;
     if (!tariff || tariff.price_sol == null) {
       throw new BadRequestException('No se pudo obtener el precio de la tarifa Control OFM');
     }

@@ -14,4 +14,10 @@ export interface CampusItem {
   companies: CampusCompany[];
 }
 
+/** CampusItem enriquecido con coordenadas locales (para WhatsApp LOCATION header). */
+export interface CampusItemWithCoordinates extends CampusItem {
+  latitude: number | null;
+  longitude: number | null;
+}
+
 export type CampusListResponse = CampusItem[];

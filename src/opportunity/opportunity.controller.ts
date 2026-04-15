@@ -39,7 +39,9 @@ import { FileUploadService } from 'src/files/file-upload.service';
 import { FileType, DirectoryType } from 'src/files/dto/files.dto';
 import { OpportunityCronsService } from './opportunity-crons.service';
 import { SvServices } from 'src/sv-services/sv.services';
+import { CampusItemWithCoordinates } from 'src/sv-services/campus.types';
 import { UserService } from 'src/user/user.service';
+import { CampusCoordinatesService } from 'src/campus-coordinates/campus-coordinates.service';
 import { OpportunityPresaveService } from './opportunity-presave.service';
 import { CreateOpportunityPresaveDto } from './dto/opportunity-presave.dto';
 import { ContractPresaveService } from './contract-presave.service';
@@ -57,6 +59,7 @@ export class OpportunityController {
     private readonly opportunityCronsService: OpportunityCronsService,
     private readonly userService: UserService,
     private readonly svServices: SvServices,
+    private readonly campusCoordinatesService: CampusCoordinatesService,
     private readonly opportunityPresaveService: OpportunityPresaveService,
     private readonly contractPresaveService: ContractPresaveService,
   ) {}
@@ -385,15 +388,23 @@ export class OpportunityController {
     return await this.opportunityService.findByStage(stage);
   }
 
-  /** Lista de sedes (campus) desde SV para autoasignación por sede. Requiere token del usuario. */
+  /** Lista de sedes (campus) desde SV enriquecida con coordenadas locales. Requiere token del usuario. */
   @Get('campuses')
-  async getCampuses(@Req() req: Request & { user: { userId: string } }) {
+  async getCampuses(@Req() req: Request & { user: { userId: string } }): Promise<CampusItemWithCoordinates[]> {
     const user = await this.userService.findOne(req.user.userId);
     if (!user.cUsersv || !user.cContraseaSv) {
       throw new BadRequestException('Usuario no tiene credenciales de SV');
     }
     const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
-    return this.svServices.getCampuses(tokenSv);
+    const [campuses, coordMap] = await Promise.all([
+      this.svServices.getCampuses(tokenSv),
+      this.campusCoordinatesService.getCoordinatesMap(),
+    ]);
+    return campuses.map((c) => ({
+      ...c,
+      latitude: coordMap.get(c.id)?.latitude ?? null,
+      longitude: coordMap.get(c.id)?.longitude ?? null,
+    }));
   }
 
   @Post('assigned/:userRequest')
