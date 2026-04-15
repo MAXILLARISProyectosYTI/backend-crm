@@ -1,6 +1,6 @@
 import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
 import { Public } from 'src/auth/decorators/public.decorator';
-import { FilteredUsersService, UserPublic } from './filtered-users.service';
+import { FilteredUsersService, SvAccessResult, UserPublic } from './filtered-users.service';
 
 /**
  * Listados de usuarios con filtros de negocio (excluye roles / tipos restringidos).
@@ -23,5 +23,19 @@ export class FilteredUsersController {
       throw new BadRequestException('svUserName es obligatorio y no puede estar vacío');
     }
     return this.filteredUsersService.matchesSvUserName(trimmed);
+  }
+
+  /**
+   * Verifica si un usuario del SV tiene permiso para acceder al SV directamente.
+   * Lógica: si tiene cuenta CRM, debe tener rol CERRADORA o CONTROLES; si no tiene cuenta CRM, siempre se permite.
+   * @example GET /filtered-users/sv-access-check?svUserName=maria.lopez
+   */
+  @Get('sv-access-check')
+  async svAccessCheck(@Query('svUserName') svUserName: string): Promise<SvAccessResult> {
+    const trimmed = (svUserName ?? '').trim();
+    if (!trimmed) {
+      throw new BadRequestException('svUserName es obligatorio y no puede estar vacío');
+    }
+    return this.filteredUsersService.checkSvAccess(trimmed);
   }
 }

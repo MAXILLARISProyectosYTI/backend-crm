@@ -76,6 +76,7 @@ export class OpportunityService {
     'PACIENTE_EXISTE_MENOS_6_MESES',
   ];
 
+
   /**
    * Crea una nueva oportunidad (registro de lead).
    * Flujo: validar teléfono → consultar paciente en SV → validar sede/empresa → crear contacto → asignar por cola (por sede) → crear oportunidad → enlazar con SV si aplica.

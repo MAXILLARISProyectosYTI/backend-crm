@@ -7,6 +7,7 @@ import {
   Param,
   ParseIntPipe,
   UseGuards,
+  Request,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CrmControlesGuard } from 'src/auth/guards/crm-controles.guard';
@@ -21,31 +22,28 @@ export class NotificacionesController {
     private readonly gateway: NotificacionesGateway,
   ) {}
 
-  /** Todas las notificaciones ordenadas por fecha DESC */
+  /** Admin → todas; usuario regular → solo las de sus pacientes asignados */
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Request() req: { user?: { userId?: string } }) {
+    return this.service.findAllForUser(req.user?.userId ?? null);
   }
 
-  /** Marca una notificación específica como leída */
   @Patch(':id/leida')
   markAsRead(@Param('id', ParseIntPipe) id: number) {
     return this.service.markAsRead(id);
   }
 
-  /** Marca TODAS las notificaciones como leídas */
+  /** Marca como leídas las notificaciones visibles para el usuario */
   @Patch('mark-all-read')
-  markAllAsRead() {
-    return this.service.markAllAsRead();
+  markAllAsRead(@Request() req: { user?: { userId?: string } }) {
+    return this.service.markAllAsRead(req.user?.userId ?? null);
   }
 
-  /** Elimina una notificación */
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.service.remove(id);
   }
 
-  /** TEST: dispara un broadcast WebSocket manualmente para verificar que el socket funciona */
   @Post('test-ws')
   testWebSocket() {
     this.gateway.broadcast(1);

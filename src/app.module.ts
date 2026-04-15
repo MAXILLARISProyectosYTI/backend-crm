@@ -26,6 +26,7 @@ import { CrmControlesModule } from './crm-controles/crm-controles.module';
 import { KpiGerencialModule } from './kpi-gerencial/kpi-gerencial.module';
 import { IncidenciasModule } from './incidencias/incidencias.module';
 import { NotificacionesModule } from './notificaciones/notificaciones.module';
+import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 
 @Module({
   imports: [
@@ -66,6 +67,7 @@ import { NotificacionesModule } from './notificaciones/notificaciones.module';
     KpiGerencialModule,
     IncidenciasModule,
     NotificacionesModule,
+    FilteredUsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

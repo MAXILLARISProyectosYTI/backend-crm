@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import { Notificacion, TipoNotificacion } from './notificacion.entity';
 import { NotificacionesGateway } from './notificaciones.gateway';
+import { User } from 'src/user/user.entity';
 import type { CrmControlesPatientRow } from 'src/crm-controles/crm-controles.types';
 
 const MS_DAY = 24 * 60 * 60 * 1000;
@@ -14,6 +15,8 @@ export class NotificacionesService implements OnModuleInit {
   constructor(
     @InjectRepository(Notificacion)
     private readonly repo: Repository<Notificacion>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     @Optional() private readonly gateway: NotificacionesGateway,
   ) {}
 
@@ -21,15 +24,22 @@ export class NotificacionesService implements OnModuleInit {
     try {
       await this.repo.query(`
         CREATE TABLE IF NOT EXISTS crm_notificaciones (
-          id              SERIAL PRIMARY KEY,
-          tipo            VARCHAR(30)   NOT NULL,
-          titulo          VARCHAR(255)  NOT NULL,
-          descripcion     TEXT          NOT NULL,
-          paciente_id     INTEGER       NOT NULL,
-          paciente_nombre VARCHAR(255)  NOT NULL,
-          estado          VARCHAR(20)   NOT NULL DEFAULT 'nueva',
-          fecha_creacion  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+          id                  SERIAL PRIMARY KEY,
+          tipo                VARCHAR(30)   NOT NULL,
+          titulo              VARCHAR(255)  NOT NULL,
+          descripcion         TEXT          NOT NULL,
+          paciente_id         INTEGER       NOT NULL,
+          paciente_nombre     VARCHAR(255)  NOT NULL,
+          estado              VARCHAR(20)   NOT NULL DEFAULT 'nueva',
+          ejecutivo_username  VARCHAR(100),
+          fecha_creacion      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
         );
+      `);
+      await this.repo.query(`
+        DO $$ BEGIN
+          ALTER TABLE crm_notificaciones ADD COLUMN IF NOT EXISTS ejecutivo_username VARCHAR(100);
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$;
       `);
       this.logger.log('Tabla crm_notificaciones lista ✓');
     } catch (err) {
@@ -43,13 +53,49 @@ export class NotificacionesService implements OnModuleInit {
     return this.repo.find({ order: { fechaCreacion: 'DESC' } });
   }
 
+  /**
+   * Admin → todas; usuario regular → solo las de sus pacientes asignados.
+   */
+  async findAllForUser(userId: string | null): Promise<Notificacion[]> {
+    if (!userId) return this.findAll();
+
+    const user = await this.userRepo.findOne({ where: { id: userId, deleted: false } });
+    if (!user || user.type === 'admin') return this.findAll();
+
+    const svUsername = (user.cUsersv ?? '').trim().toLowerCase();
+    if (!svUsername) return [];
+
+    return this.repo
+      .createQueryBuilder('n')
+      .where('LOWER(TRIM(n.ejecutivoUsername)) = :svUsername', { svUsername })
+      .orderBy('n.fechaCreacion', 'DESC')
+      .getMany();
+  }
+
   async markAsRead(id: number): Promise<Notificacion | null> {
     await this.repo.update(id, { estado: 'leida' });
     return this.repo.findOne({ where: { id } });
   }
 
-  async markAllAsRead(): Promise<void> {
-    await this.repo.update({ estado: 'nueva' }, { estado: 'leida' });
+  async markAllAsRead(userId: string | null): Promise<void> {
+    if (!userId) {
+      await this.repo.update({ estado: 'nueva' }, { estado: 'leida' });
+      return;
+    }
+    const user = await this.userRepo.findOne({ where: { id: userId, deleted: false } });
+    if (!user || user.type === 'admin') {
+      await this.repo.update({ estado: 'nueva' }, { estado: 'leida' });
+      return;
+    }
+    const svUsername = (user.cUsersv ?? '').trim().toLowerCase();
+    if (!svUsername) return;
+    await this.repo
+      .createQueryBuilder()
+      .update(Notificacion)
+      .set({ estado: 'leida' })
+      .where('estado = :estado', { estado: 'nueva' })
+      .andWhere('LOWER(TRIM(ejecutivo_username)) = :svUsername', { svUsername })
+      .execute();
   }
 
   async remove(id: number): Promise<void> {
@@ -85,6 +131,7 @@ export class NotificacionesService implements OnModuleInit {
       const nombre = [str(row.nombre_paciente), str(row.ap_paterno), str(row.ap_materno)]
         .filter(Boolean)
         .join(' ') || 'Paciente desconocido';
+      const ejecutivo = str(row.ejecutivo_controles, '').trim().toLowerCase() || null;
 
       const proximaCitaStr  = str(row.proxima_cita, '');
       const ultimaCitaStr   = str(row.ultima_cita, str(row.ultima_atencion_fecha, ''));
@@ -105,6 +152,7 @@ export class NotificacionesService implements OnModuleInit {
           await this.upsertNotif(pacienteIdRaw, nombre, 'cita',
             `Cita próxima — ${nombre.split(' ')[0]}`,
             `Control OFM agendado para ${fechaStr}${horaStr ? ` a las ${horaStr}` : ''}.`,
+            ejecutivo,
           );
           created++;
         }
@@ -117,6 +165,7 @@ export class NotificacionesService implements OnModuleInit {
           await this.upsertNotif(pacienteIdRaw, nombre, 'alerta',
             `Sin contacto — ${nombre.split(' ')[0]}`,
             `Lleva ${diasSinContacto} días sin atención OFM registrada y no tiene próxima cita agendada.`,
+            ejecutivo,
           );
           created++;
         }
@@ -127,6 +176,7 @@ export class NotificacionesService implements OnModuleInit {
         await this.upsertNotif(pacienteIdRaw, nombre, 'sin_agendamiento',
           `Sin próxima cita — ${nombre.split(' ')[0]}`,
           `${nombre.split(' ')[0]} tiene historial OFM pero no tiene ninguna cita próxima agendada.`,
+          ejecutivo,
         );
         created++;
       }
@@ -137,6 +187,7 @@ export class NotificacionesService implements OnModuleInit {
         await this.upsertNotif(pacienteIdRaw, nombre, 'urgencia',
           `Urgencias recurrentes — ${nombre.split(' ')[0]}`,
           `${nombre.split(' ')[0]} tiene ${totalUrgencias} controles de urgencia OFM registrados. Requiere revisión prioritaria.`,
+          ejecutivo,
         );
         created++;
       }
@@ -152,6 +203,29 @@ export class NotificacionesService implements OnModuleInit {
     await this.cleanup().catch(() => null);
   }
 
+  // ── Notificación de asignación de paciente ──────────────────────────────
+
+  /**
+   * Genera una notificación de tipo 'asignacion' cuando un paciente nuevo
+   * se asigna (auto o manual) a un ejecutivo de controles.
+   */
+  async notifyPatientAssignment(
+    pacienteId: number,
+    pacienteNombre: string,
+    ejecutivoUsername: string,
+  ): Promise<void> {
+    await this.upsertNotif(
+      pacienteId,
+      pacienteNombre,
+      'asignacion',
+      `Nuevo paciente asignado — ${pacienteNombre.split(' ')[0]}`,
+      `Se te ha asignado el paciente ${pacienteNombre} (HC: ${pacienteId}) para seguimiento de controles OFM.`,
+      ejecutivoUsername.trim().toLowerCase() || null,
+    );
+
+    this.gateway?.broadcast(1);
+  }
+
   // ── Deduplicación ────────────────────────────────────────────────────────
   // Regla: si ya existe una notificación (nueva O leída) del mismo tipo para
   // este paciente en los últimos 7 días, no volvemos a crearla.
@@ -163,6 +237,7 @@ export class NotificacionesService implements OnModuleInit {
     tipo: TipoNotificacion,
     titulo: string,
     descripcion: string,
+    ejecutivoUsername: string | null,
   ): Promise<void> {
     const sevenDaysAgo = new Date(Date.now() - 7 * MS_DAY);
 
@@ -174,20 +249,18 @@ export class NotificacionesService implements OnModuleInit {
       .getOne();
 
     if (existing) {
-      // Solo actualiza el texto si aún está sin leer (datos pueden haber cambiado)
-      // Si ya fue leída → el usuario la descartó, NO la tocamos
       if (existing.estado === 'nueva') {
-        await this.repo.update(existing.id, { titulo, descripcion });
+        await this.repo.update(existing.id, { titulo, descripcion, ejecutivoUsername });
       }
     } else {
-      // No existe ninguna en los últimos 7 días → crear nueva
       const n = new Notificacion();
-      n.tipo           = tipo;
-      n.titulo         = titulo;
-      n.descripcion    = descripcion;
-      n.pacienteId     = pacienteId;
-      n.pacienteNombre = pacienteNombre;
-      n.estado         = 'nueva';
+      n.tipo               = tipo;
+      n.titulo             = titulo;
+      n.descripcion        = descripcion;
+      n.pacienteId         = pacienteId;
+      n.pacienteNombre     = pacienteNombre;
+      n.estado             = 'nueva';
+      n.ejecutivoUsername   = ejecutivoUsername;
       await this.repo.save(n);
     }
   }
