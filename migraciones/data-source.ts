@@ -31,7 +31,7 @@ export default new DataSource({
     join(migrationsDir, '1738685000000-OpportunityServiceOrderAndFacturacionSubEstado.ts'),
     join(migrationsDir, '1738685100000-CampusCoordinates.ts'),
     join(migrationsDir, '1743500000000-CreateKpiGerencialTables.ts'),
-
+    join(migrationsDir, '1744742400000-MigrateLeadsArequipa.ts'),
   ],
   migrationsTableName: 'migrations',
 });

@@ -18,6 +18,15 @@ export type PrioridadIncidencia = 'Alta' | 'Media' | 'Baja';
 
 export type EstadoIncidencia = 'Abierta' | 'En revisión' | 'Resuelta' | 'Cerrada';
 
+/** Misma convención que `issue_area` en SV (1–6). */
+export type AreaDestino =
+  | 'Cobranza'
+  | 'Clínica'
+  | 'Laboratorio'
+  | 'Ventas'
+  | 'Recepción'
+  | 'Facturación';
+
 @Entity('crm_incidencias')
 export class Incidencia {
   @PrimaryGeneratedColumn()
@@ -46,6 +55,12 @@ export class Incidencia {
 
   @Column({ type: 'varchar', length: 100, name: 'creada_por', default: 'Admin' })
   creadaPor: string;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, name: 'ejecutivo_username' })
+  ejecutivoUsername: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, default: 'Recepción', name: 'area_destino' })
+  areaDestino: string | null;
 
   @CreateDateColumn({ name: 'fecha_creacion' })
   fechaCreacion: Date;

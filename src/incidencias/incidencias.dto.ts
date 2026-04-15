@@ -29,6 +29,16 @@ export class CreateIncidenciaDto {
   @IsString()
   @MaxLength(100)
   creadaPor?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  ejecutivoUsername?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  areaDestino?: string;
 }
 
 export class UpdateEstadoDto {
