@@ -119,6 +119,10 @@ export class FilteredUsersService {
       return { hasCrmAccount: false, allowed: true };
     }
 
+    if (crmUser.type === 'admin') {
+      return { hasCrmAccount: true, allowed: true };
+    }
+
     const allowedCount = await this.userRepository
       .createQueryBuilder('u')
       .where('u.id = :userId', { userId: crmUser.id })
