@@ -11,7 +11,17 @@ const EXCLUDED_USER_TYPES = ['admin', 'system'] as const;
 /** Roles cuyos usuarios se excluyen (cerradoras, asistentes de ventas / comercial). */
 const EXCLUDED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.ASISTENTE_COMERCIAL] as const;
 
+/** Roles que tienen permiso para acceder al SV directamente. */
+const SV_ALLOWED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.CONTROLES] as const;
+
 export type UserPublic = Omit<User, 'password'>;
+
+export interface SvAccessResult {
+  /** true si el svUserName corresponde a algún usuario del CRM. */
+  hasCrmAccount: boolean;
+  /** true si ese usuario CRM tiene rol CERRADORA o CONTROLES (y por tanto puede acceder al SV). */
+  allowed: boolean;
+}
 
 @Injectable()
 export class FilteredUsersService {
@@ -86,6 +96,44 @@ export class FilteredUsersService {
       .getCount();
 
     return count > 0;
+  }
+
+  /**
+   * Comprueba si un usuario del SV tiene permitido acceder al SV directamente.
+   * Busca en el CRM por `c_usersv = svUserName`:
+   * - Si no existe cuenta CRM → { hasCrmAccount: false, allowed: true } (usuario puro SV).
+   * - Si existe → verifica si tiene rol CERRADORA o CONTROLES.
+   */
+  async checkSvAccess(svUserName: string): Promise<SvAccessResult> {
+    const normalized = svUserName.trim();
+
+    const crmUser = await this.userRepository
+      .createQueryBuilder('u')
+      .where('u.deleted = :deleted', { deleted: false })
+      .andWhere('u.cUsersv IS NOT NULL')
+      .andWhere("TRIM(u.cUsersv) <> ''")
+      .andWhere('LOWER(TRIM(u.cUsersv)) = LOWER(:sv)', { sv: normalized })
+      .getOne();
+
+    if (!crmUser) {
+      return { hasCrmAccount: false, allowed: true };
+    }
+
+    const allowedCount = await this.userRepository
+      .createQueryBuilder('u')
+      .where('u.id = :userId', { userId: crmUser.id })
+      .andWhere(
+        `EXISTS (
+          SELECT 1 FROM role_user ru
+          WHERE ru.user_id = u.id
+          AND (ru.deleted = false OR ru.deleted IS NULL)
+          AND ru.role_id IN (:...svAllowedRoleIds)
+        )`,
+        { svAllowedRoleIds: [...SV_ALLOWED_ROLE_IDS] },
+      )
+      .getCount();
+
+    return { hasCrmAccount: true, allowed: allowedCount > 0 };
   }
 
   private withoutPassword(user: User): UserPublic {
