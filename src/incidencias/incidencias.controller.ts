@@ -11,6 +11,7 @@ import {
   UseGuards,
   UsePipes,
   ValidationPipe,
+  Request,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CrmControlesGuard } from 'src/auth/guards/crm-controles.guard';
@@ -23,13 +24,19 @@ import { CreateIncidenciaDto, UpdateEstadoDto } from './incidencias.dto';
 export class IncidenciasController {
   constructor(private readonly service: IncidenciasService) {}
 
+  /** Admin → todas; usuario regular → solo las de sus pacientes asignados. Filtra por área si se pasa ?area= */
   @Get()
-  findAll(@Query('pacienteId') pacienteId?: string) {
-    if (pacienteId) {
-      const id = parseInt(pacienteId, 10);
-      if (!isNaN(id)) return this.service.findByPaciente(id);
-    }
-    return this.service.findAll();
+  findAll(
+    @Request() req: { user?: { userId?: string } },
+    @Query('pacienteId') pacienteId?: string,
+    @Query('area') area?: string,
+  ) {
+    const pid = pacienteId ? parseInt(pacienteId, 10) : NaN;
+    return this.service.findAllForUser(
+      req.user?.userId ?? null,
+      !isNaN(pid) ? pid : undefined,
+      area || undefined,
+    );
   }
 
   @Post()

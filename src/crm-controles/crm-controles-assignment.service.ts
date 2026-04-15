@@ -5,6 +5,7 @@ import { User } from 'src/user/user.entity';
 import { SvServices } from 'src/sv-services/sv.services';
 import { AssignmentQueueStateService } from 'src/assignment-queue-state/assignment-queue-state.service';
 import { NotificacionesGateway } from 'src/notificaciones/notificaciones.gateway';
+import { NotificacionesService } from 'src/notificaciones/notificaciones.service';
 import { TEAMS_IDS } from 'src/globals/ids';
 
 /**
@@ -33,6 +34,7 @@ export class CrmControlesAssignmentService {
     private readonly svServices: SvServices,
     private readonly assignmentQueueStateService: AssignmentQueueStateService,
     @Optional() private readonly notificacionesGateway: NotificacionesGateway,
+    @Optional() private readonly notificacionesService: NotificacionesService,
   ) {}
 
   /**
@@ -102,6 +104,18 @@ export class CrmControlesAssignmentService {
           );
           assignedCount++;
           this.logger.log(`CH ${clinicHistoryId} → ${nextExecutivo.userName} (sv_id=${svUserId})`);
+
+          const pacienteNombre = [
+            String(patient['nombre_paciente'] ?? ''),
+            String(patient['ap_paterno'] ?? ''),
+            String(patient['ap_materno'] ?? ''),
+          ].filter(Boolean).join(' ') || 'Paciente';
+          const svUsername = (nextExecutivo.cUsersv ?? '').trim();
+          if (svUsername && this.notificacionesService) {
+            this.notificacionesService
+              .notifyPatientAssignment(clinicHistoryId, pacienteNombre, svUsername)
+              .catch((err) => this.logger.warn(`Error creando notificación de asignación: ${err}`));
+          }
         } else {
           this.logger.warn(`SV no actualizó CH ${clinicHistoryId} (registro no encontrado o ya borrado)`);
         }
@@ -255,6 +269,16 @@ export class CrmControlesAssignmentService {
     this.logger.log(
       `Reasignación manual: CH ${clinicHistoryId} → ${executivo.userName} (sv_id=${svUserId})`,
     );
+
+    if (cUsersv && this.notificacionesService) {
+      this.notificacionesService
+        .notifyPatientAssignment(
+          clinicHistoryId,
+          `Paciente HC ${clinicHistoryId}`,
+          cUsersv,
+        )
+        .catch((err) => this.logger.warn(`Error notificación reasignación: ${err}`));
+    }
 
     return {
       ok: true,

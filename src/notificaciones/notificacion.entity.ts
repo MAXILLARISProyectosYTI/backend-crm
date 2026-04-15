@@ -9,7 +9,8 @@ export type TipoNotificacion =
   | 'cita'
   | 'alerta'
   | 'sin_agendamiento'
-  | 'urgencia';
+  | 'urgencia'
+  | 'asignacion';
 
 export type EstadoNotificacion = 'nueva' | 'leida';
 
@@ -35,6 +36,9 @@ export class Notificacion {
 
   @Column({ type: 'varchar', length: 20, default: 'nueva' })
   estado: EstadoNotificacion;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, name: 'ejecutivo_username' })
+  ejecutivoUsername: string | null;
 
   @CreateDateColumn({ name: 'fecha_creacion' })
   fechaCreacion: Date;
