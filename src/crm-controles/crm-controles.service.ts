@@ -1,9 +1,14 @@
 import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { SvServices } from 'src/sv-services/sv.services';
 import { NotificacionesService } from 'src/notificaciones/notificaciones.service';
+import { CrmControlesAssignmentService } from './crm-controles-assignment.service';
+import { User } from 'src/user/user.entity';
 import type {
   CrmControlesCacheMeta,
   CrmControlesPatientRow,
+  CrmControlesPacientesResponse,
 } from './crm-controles.types';
 
 @Injectable()
@@ -47,7 +52,9 @@ export class CrmControlesService implements OnModuleInit {
 
   constructor(
     private readonly svServices: SvServices,
+    @InjectRepository(User) private readonly userRepository: Repository<User>,
     @Optional() private readonly notifService: NotificacionesService,
+    @Optional() private readonly assignmentService: CrmControlesAssignmentService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -68,13 +75,43 @@ export class CrmControlesService implements OnModuleInit {
     }, delay);
   }
 
-  getSnapshot(): { data: CrmControlesPatientRow[]; meta: CrmControlesCacheMeta } {
+  getSnapshot(): CrmControlesPacientesResponse {
     const data = this.patients.map((p) => {
       const chId = Number(p.id_historia_clinica);
       const override = this.estadoFunnelOverrides.get(chId);
       return override ? { ...p, estado_funnel_override: override } : p;
     });
     return { data, meta: { ...this.meta } };
+  }
+
+  /**
+   * Devuelve el snapshot filtrado según el rol del usuario:
+   *  - admin → todos los pacientes
+   *  - regular → solo los asignados a su cUsersv (ejecutivo_controles en SV)
+   */
+  async getSnapshotForUser(userId: string | null): Promise<CrmControlesPacientesResponse> {
+    const snapshot = this.getSnapshot();
+    if (!userId) return snapshot;
+
+    const user = await this.userRepository.findOne({
+      where: { id: userId, deleted: false },
+    });
+    if (!user || user.type === 'admin') return snapshot;
+
+    const svUsername = (user.cUsersv ?? '').trim().toLowerCase();
+    if (!svUsername) {
+      this.logger.warn(
+        `Usuario regular "${user.userName}" sin cUsersv configurado — no verá pacientes`,
+      );
+      return { data: [], meta: snapshot.meta };
+    }
+
+    const filtered = snapshot.data.filter((p) => {
+      const exec = String(p['ejecutivo_controles'] ?? '').trim().toLowerCase();
+      return exec === svUsername;
+    });
+
+    return { data: filtered, meta: snapshot.meta };
   }
 
   setEstadoFunnel(clinicHistoryId: number, estado: string): void {
@@ -119,6 +156,12 @@ export class CrmControlesService implements OnModuleInit {
       if (this.notifService) {
         void this.notifService.generateFromPatients(this.patients).catch((e) =>
           this.logger.warn(`Error generando notificaciones: ${e instanceof Error ? e.message : e}`),
+        );
+      }
+      // Asignación automática de ejecutivos de controles para pacientes sin asignar
+      if (this.assignmentService && this.patients.length > 0) {
+        void this.assignmentService.autoAssignFromPatients(this.patients).catch((e) =>
+          this.logger.warn(`Error en asignación automática controles: ${e instanceof Error ? e.message : e}`),
         );
       }
     } catch (err) {

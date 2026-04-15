@@ -463,8 +463,8 @@ export class UserService {
 
   /**
    * IDs de equipos permitidos para una sede y subcampaña.
-   * Si la sede tiene equipos en campus_team: usa la intersección con la subcampaña;
-   * si la intersección es vacía, usa los equipos de la sede para que la sede muestre solo sus usuarios (ej. campus 15 = Equipo Arequipa).
+   * Intersección de equipos de la subcampaña con los de la sede.
+   * Fallback: equipos genéricos de la sede (no mapeados a ninguna subcampaña específica).
    */
   private async getAllowedTeamIdsForCampusAndSubcampaign(
     campusId: number,
@@ -475,15 +475,25 @@ export class UserService {
     const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
     if (campusTeamIds.length > 0) {
       const allowed = teams.filter((t) => campusTeamIds.includes(t));
-      teams = allowed.length > 0 ? allowed : campusTeamIds;
+      if (allowed.length > 0) {
+        teams = allowed;
+      } else {
+        const allMappedTeams = [
+          ...getTeamsBySubCampaing(CAMPAIGNS_IDS.OI),
+          ...getTeamsBySubCampaing(CAMPAIGNS_IDS.OFM),
+          ...getTeamsBySubCampaing(CAMPAIGNS_IDS.APNEA),
+        ];
+        const genericCampusTeams = campusTeamIds.filter((t) => !allMappedTeams.includes(t));
+        teams = genericCampusTeams.length > 0 ? genericCampusTeams : [];
+      }
     }
     return teams;
   }
 
   /**
    * Usuarios asignables para una subcampaña y opcionalmente una sede.
-   * Si campusId viene y la sede tiene equipos en campus_team: usa intersección con la subcampaña;
-   * si la intersección es vacía, usa solo los equipos de la sede (ej. campus 15 solo muestra su equipo).
+   * Intersección de equipos de la subcampaña con los de la sede.
+   * Fallback: equipos genéricos de la sede (no mapeados a ninguna subcampaña específica).
    */
   async getUsersBySubCampaignIdAndCampusId(subCampaignId: string, campusId?: number): Promise<User[]> {
     const usersActives = await this.getUsersToAssign();
@@ -498,9 +508,21 @@ export class UserService {
       const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
       if (campusTeamIds.length > 0) {
         const allowedTeams = teams.filter((t) => campusTeamIds.includes(t));
-        teams = allowedTeams.length > 0 ? allowedTeams : campusTeamIds;
+        if (allowedTeams.length > 0) {
+          teams = allowedTeams;
+        } else {
+          const allMappedTeams = [
+            ...getTeamsBySubCampaing(CAMPAIGNS_IDS.OI),
+            ...getTeamsBySubCampaing(CAMPAIGNS_IDS.OFM),
+            ...getTeamsBySubCampaing(CAMPAIGNS_IDS.APNEA),
+          ];
+          const genericCampusTeams = campusTeamIds.filter((t) => !allMappedTeams.includes(t));
+          teams = genericCampusTeams.length > 0 ? genericCampusTeams : [];
+        }
       }
     }
+
+    if (teams.length === 0) return [];
 
     const usersByAllTeams = await this.getUserByAllTeams(teams);
     const teamUserIds = usersByAllTeams.map((teamUser) => teamUser.user_id);
@@ -589,6 +611,11 @@ export class UserService {
   async isAdmin(userId: string): Promise<boolean> {
     const user = await this.findOne(userId);
     return user.type === 'admin';
+  }
+
+  async hasRole(userId: string, roleId: string): Promise<boolean> {
+    const userRoles = await this.roleService.getRolesByUser(userId);
+    return userRoles.includes(roleId);
   }
 
   async getUsersCommercials(): Promise<User[]> {

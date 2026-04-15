@@ -13,11 +13,11 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { AdminUserGuard } from 'src/auth/guards/admin-user.guard';
+import { CrmControlesGuard } from 'src/auth/guards/crm-controles.guard';
 import { IncidenciasService } from './incidencias.service';
 import { CreateIncidenciaDto, UpdateEstadoDto } from './incidencias.dto';
 
-@UseGuards(JwtAuthGuard, AdminUserGuard)
+@UseGuards(JwtAuthGuard, CrmControlesGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false, transform: true }))
 @Controller('incidencias')
 export class IncidenciasController {
