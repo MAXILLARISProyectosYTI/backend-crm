@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from 'src/user/user.entity';
-import { FILTERED_USERS_TEAM_IDS, MATCH_SV_USERNAME_ALLOWED_ROLE_IDS, ROLES_IDS } from 'src/globals/ids';
+import { FILTERED_USERS_TEAM_IDS, MATCH_SV_USERNAME_ALLOWED_ROLE_IDS, ROLES_IDS, TEAMS_IDS } from 'src/globals/ids';
 import { orderListAlphabetic } from 'src/user/utils/orderListAlphabetic';
 
 /** Tipos de usuario que no deben aparecer en el listado (p. ej. EspoCRM). */
@@ -13,6 +13,9 @@ const EXCLUDED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.ASISTENTE_COMERCIAL] a
 
 /** Roles que tienen permiso para acceder al SV directamente. */
 const SV_ALLOWED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.CONTROLES] as const;
+
+/** Equipos que tienen permiso para acceder al SV directamente (ejecutivos OI). */
+const SV_ALLOWED_TEAM_IDS = [TEAMS_IDS.EJ_COMERCIAL_OI] as const;
 
 export type UserPublic = Omit<User, 'password'>;
 
@@ -123,7 +126,7 @@ export class FilteredUsersService {
       return { hasCrmAccount: true, allowed: true };
     }
 
-    const allowedCount = await this.userRepository
+    const allowedByRole = await this.userRepository
       .createQueryBuilder('u')
       .where('u.id = :userId', { userId: crmUser.id })
       .andWhere(
@@ -137,7 +140,25 @@ export class FilteredUsersService {
       )
       .getCount();
 
-    return { hasCrmAccount: true, allowed: allowedCount > 0 };
+    if (allowedByRole > 0) {
+      return { hasCrmAccount: true, allowed: true };
+    }
+
+    const allowedByTeam = await this.userRepository
+      .createQueryBuilder('u')
+      .where('u.id = :userId', { userId: crmUser.id })
+      .andWhere(
+        `EXISTS (
+          SELECT 1 FROM team_user tu
+          WHERE tu.user_id = u.id
+          AND (tu.deleted = false OR tu.deleted IS NULL)
+          AND tu.team_id IN (:...svAllowedTeamIds)
+        )`,
+        { svAllowedTeamIds: [...SV_ALLOWED_TEAM_IDS] },
+      )
+      .getCount();
+
+    return { hasCrmAccount: true, allowed: allowedByTeam > 0 };
   }
 
   private withoutPassword(user: User): UserPublic {
