@@ -4,51 +4,36 @@ import { Repository } from 'typeorm';
 import { User } from 'src/user/user.entity';
 import { SvServices } from 'src/sv-services/sv.services';
 import { AssignmentQueueStateService } from 'src/assignment-queue-state/assignment-queue-state.service';
+import { RoleService } from 'src/role/role.service';
 import { NotificacionesGateway } from 'src/notificaciones/notificaciones.gateway';
 import { NotificacionesService } from 'src/notificaciones/notificaciones.service';
-import { TEAMS_IDS } from 'src/globals/ids';
+import { TEAMS_IDS, ROLES_IDS } from 'src/globals/ids';
 
-/**
- * Clave de subcampaña usada para la cola de asignación de controles
- * en la tabla assignment_queue_state.
- * Se usa un ID fijo (no conflicta con campañas de ventas).
- */
 const CONTROLES_QUEUE_KEY = 'CONTROLES';
 
-/**
- * Campus genérico para la cola de controles.
- * Se usa 0 porque los controles no están segmentados por sede todavía.
- */
-const CONTROLES_CAMPUS_ID = 0;
+/** Mapeo roleId → campusId para segmentación por sede. */
+const ROLE_TO_CAMPUS: Record<string, number> = {
+  [ROLES_IDS.CONTROLES_LIMA]: 1,
+  [ROLES_IDS.CONTROLES_AREQUIPA]: 2,
+};
 
 @Injectable()
 export class CrmControlesAssignmentService {
   private readonly logger = new Logger(CrmControlesAssignmentService.name);
 
-  /** Cache local: username_sv → id_sv, para no consultar SV en cada asignación. */
   private svUserIdCache = new Map<string, number | null>();
+  private campusCache = new Map<number, number>();
 
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly svServices: SvServices,
     private readonly assignmentQueueStateService: AssignmentQueueStateService,
+    @Optional() private readonly roleService: RoleService,
     @Optional() private readonly notificacionesGateway: NotificacionesGateway,
     @Optional() private readonly notificacionesService: NotificacionesService,
   ) {}
 
-  /**
-   * Recibe la lista de pacientes recién sincronizados desde SV y asigna
-   * un ejecutivo de controles a los que no tengan uno válido y cumplan criterios.
-   *
-   * Criterios para asignar:
-   *   - ejecutivo_controles es null/vacío (LEFT JOIN no encontró usuario)
-   *   - Tiene evaluación atendida (campo is_first_free_control presente, o instalación completada detectada en SV)
-   *
-   * El sistema ya filtra en SV que el paciente tenga evaluación + instalación atendidas
-   * para aparecer en el listado. Por lo tanto, cualquier paciente del listado sin
-   * ejecutivo_controles es candidato para asignación.
-   */
   async autoAssignFromPatients(patients: Record<string, unknown>[]): Promise<void> {
     const unassigned = patients.filter(
       (p) => !p['ejecutivo_controles'] || String(p['ejecutivo_controles']).trim() === '',
@@ -58,8 +43,8 @@ export class CrmControlesAssignmentService {
 
     this.logger.log(`Pacientes sin ejecutivo de controles detectados: ${unassigned.length}`);
 
-    const executivos = await this.getControlesExecutivos();
-    if (executivos.length === 0) {
+    const allExecutivos = await this.getControlesExecutivos();
+    if (allExecutivos.length === 0) {
       this.logger.warn('No hay ejecutivos de controles activos en el equipo. Asignación omitida.');
       return;
     }
@@ -73,6 +58,11 @@ export class CrmControlesAssignmentService {
       return;
     }
 
+    const campusSegmentation = await this.buildCampusSegmentation(allExecutivos);
+    const hasCampusConfig = campusSegmentation.size > 0;
+
+    this.campusCache.clear();
+
     let assignedCount = 0;
     let errorCount = 0;
 
@@ -81,10 +71,23 @@ export class CrmControlesAssignmentService {
         const clinicHistoryId = Number(patient['id_historia_clinica']);
         if (!clinicHistoryId || isNaN(clinicHistoryId)) continue;
 
-        const nextExecutivo = await this.getNextExecutivo(executivos);
+        let campusId = 0;
+        let executivosForPatient = allExecutivos;
+
+        if (hasCampusConfig) {
+          campusId = await this.resolvePatientCampus(tokenSv, clinicHistoryId);
+          const campusExecs = campusId > 0 ? campusSegmentation.get(campusId) : undefined;
+          if (campusExecs && campusExecs.length > 0) {
+            executivosForPatient = campusExecs;
+          } else {
+            campusId = 0;
+          }
+        }
+
+        const nextExecutivo = await this.getNextExecutivo(executivosForPatient, campusId);
         if (!nextExecutivo) {
-          this.logger.warn('No se pudo determinar el siguiente ejecutivo. Deteniendo asignación.');
-          break;
+          this.logger.warn(`No se pudo determinar el siguiente ejecutivo (campus=${campusId}). Saltando paciente CH ${clinicHistoryId}.`);
+          continue;
         }
 
         const svUserId = await this.resolveSvUserId(tokenSv, nextExecutivo.cUsersv ?? '');
@@ -97,13 +100,13 @@ export class CrmControlesAssignmentService {
 
         if (updated) {
           await this.assignmentQueueStateService.recordAssignment(
-            CONTROLES_CAMPUS_ID,
+            campusId,
             CONTROLES_QUEUE_KEY,
             nextExecutivo.id,
             null,
           );
           assignedCount++;
-          this.logger.log(`CH ${clinicHistoryId} → ${nextExecutivo.userName} (sv_id=${svUserId})`);
+          this.logger.log(`CH ${clinicHistoryId} → ${nextExecutivo.userName} (sv_id=${svUserId}, campus=${campusId})`);
 
           const pacienteNombre = [
             String(patient['nombre_paciente'] ?? ''),
@@ -125,16 +128,93 @@ export class CrmControlesAssignmentService {
       }
     }
 
+    this.campusCache.clear();
+
     if (assignedCount > 0 || errorCount > 0) {
       this.logger.log(`Asignación automática controles: ${assignedCount} asignados, ${errorCount} errores`);
     }
-    // Notificar en tiempo real a todos los clientes conectados para que re-fetchen
     if (assignedCount > 0 && this.notificacionesGateway) {
       this.notificacionesGateway.broadcastControlesUpdated(assignedCount);
     }
   }
 
-  /** Obtiene los usuarios activos del equipo Equipo ejecutivos controles. */
+  /**
+   * Construye Map<campusId, User[]> usando roles de sede.
+   * - Usuario con rol CONTROLES_LIMA → bucket campus 1
+   * - Usuario con rol CONTROLES_AREQUIPA → bucket campus 2
+   * - Usuario con ambos → en ambos buckets
+   * - Usuario sin rol de sede → NO recibe pacientes segmentados (debe tener rol asignado)
+   * Si ningún usuario tiene rol de sede, retorna Map vacío (sin segmentación).
+   */
+  private async buildCampusSegmentation(allExecutivos: User[]): Promise<Map<number, User[]>> {
+    const result = new Map<number, User[]>();
+    if (!this.roleService || allExecutivos.length === 0) return result;
+
+    const userCampusMap = new Map<string, Set<number>>();
+    const allCampusIds = new Set<number>();
+    let anyUserHasCampusRole = false;
+
+    for (const user of allExecutivos) {
+      const roles = await this.roleService.getRolesByUser(user.id);
+      const campuses = new Set<number>();
+
+      for (const roleId of roles) {
+        const campusId = ROLE_TO_CAMPUS[roleId];
+        if (campusId != null) {
+          campuses.add(campusId);
+          allCampusIds.add(campusId);
+          anyUserHasCampusRole = true;
+        }
+      }
+
+      userCampusMap.set(user.id, campuses);
+    }
+
+    if (!anyUserHasCampusRole) return result;
+
+    for (const campusId of allCampusIds) {
+      const usersForCampus = allExecutivos.filter((u) => {
+        const campuses = userCampusMap.get(u.id)!;
+        return campuses.has(campusId);
+      });
+      if (usersForCampus.length > 0) {
+        result.set(campusId, usersForCampus);
+      }
+    }
+
+    for (const [cid, users] of result) {
+      this.logger.debug(
+        `Segmentación campus ${cid}: ${users.map((u) => u.userName).join(', ')}`,
+      );
+    }
+
+    for (const user of allExecutivos) {
+      const campuses = userCampusMap.get(user.id)!;
+      if (campuses.size === 0) {
+        this.logger.warn(
+          `Ejecutivo "${user.userName}" no tiene rol de sede asignado (CONTROLES_LIMA / CONTROLES_AREQUIPA). No recibirá pacientes segmentados.`,
+        );
+      }
+    }
+
+    return result;
+  }
+
+  private async resolvePatientCampus(tokenSv: string, clinicHistoryId: number): Promise<number> {
+    if (this.campusCache.has(clinicHistoryId)) {
+      return this.campusCache.get(clinicHistoryId)!;
+    }
+    try {
+      const { campusId } = await this.svServices.getPatientCampus(clinicHistoryId, tokenSv);
+      this.campusCache.set(clinicHistoryId, campusId);
+      return campusId;
+    } catch (err) {
+      this.logger.warn(`No se pudo obtener campus de CH ${clinicHistoryId}: ${err instanceof Error ? err.message : err}`);
+      this.campusCache.set(clinicHistoryId, 0);
+      return 0;
+    }
+  }
+
   private async getControlesExecutivos(): Promise<User[]> {
     const rows = await this.userRepository
       .createQueryBuilder('u')
@@ -150,15 +230,11 @@ export class CrmControlesAssignmentService {
     return rows;
   }
 
-  /**
-   * Determina el siguiente ejecutivo usando round-robin basado en
-   * el estado guardado en assignment_queue_state.
-   */
-  private async getNextExecutivo(executivos: User[]): Promise<User | null> {
+  private async getNextExecutivo(executivos: User[], campusId: number): Promise<User | null> {
     if (executivos.length === 0) return null;
     if (executivos.length === 1) return executivos[0];
 
-    const state = await this.assignmentQueueStateService.getState(CONTROLES_CAMPUS_ID, CONTROLES_QUEUE_KEY);
+    const state = await this.assignmentQueueStateService.getState(campusId, CONTROLES_QUEUE_KEY);
     if (!state) return executivos[0];
 
     const lastIndex = executivos.findIndex((u) => u.id === state.lastAssignedUserId);
@@ -166,10 +242,6 @@ export class CrmControlesAssignmentService {
     return executivos[nextIndex];
   }
 
-  /**
-   * Resuelve el ID numérico de un usuario en SV a partir de su username.
-   * Usa cache en memoria para evitar llamadas repetidas.
-   */
   private async resolveSvUserId(tokenSv: string, cUsersv: string): Promise<number | null> {
     if (!cUsersv || cUsersv.trim() === '') return null;
 
@@ -181,15 +253,10 @@ export class CrmControlesAssignmentService {
     return id;
   }
 
-  /** Limpia el cache de IDs de SV (útil si se recrean usuarios). */
   clearSvUserIdCache(): void {
     this.svUserIdCache.clear();
   }
 
-  /**
-   * Devuelve la lista de ejecutivos de controles activos para la API del frontend
-   * (solo usuarios regular del equipo controles con credenciales SV).
-   */
   async getControlesExecutivosForApi(): Promise<
     { id: string; userName: string; firstName: string; lastName: string }[]
   > {
@@ -202,10 +269,6 @@ export class CrmControlesAssignmentService {
     }));
   }
 
-  /**
-   * Reasignación manual de un paciente a un ejecutivo de controles específico.
-   * Llama a SV para actualizar id_controller_executive y registra el evento en la cola.
-   */
   async manualReassignPatient(
     clinicHistoryId: number,
     targetUserId: string,
@@ -234,7 +297,7 @@ export class CrmControlesAssignmentService {
     if (!cUsersv) {
       return {
         ok: false,
-        message: `El ejecutivo "${executivo.userName}" no tiene el campo Usuario SV configurado. Edítalo en AdminCore y asegúrate de que el campo "Usuario SV" esté completo.`,
+        message: `El ejecutivo "${executivo.userName}" no tiene el campo Usuario SV configurado. Edítalo en UserManagement y asegúrate de que el campo "Usuario SV" esté completo.`,
       };
     }
 
@@ -259,15 +322,17 @@ export class CrmControlesAssignmentService {
       };
     }
 
+    const campusId = await this.resolvePatientCampus(tokenSv, clinicHistoryId);
+
     await this.assignmentQueueStateService.recordAssignment(
-      CONTROLES_CAMPUS_ID,
+      campusId,
       CONTROLES_QUEUE_KEY,
       executivo.id,
       null,
     );
 
     this.logger.log(
-      `Reasignación manual: CH ${clinicHistoryId} → ${executivo.userName} (sv_id=${svUserId})`,
+      `Reasignación manual: CH ${clinicHistoryId} → ${executivo.userName} (sv_id=${svUserId}, campus=${campusId})`,
     );
 
     if (cUsersv && this.notificacionesService) {
@@ -286,7 +351,6 @@ export class CrmControlesAssignmentService {
     };
   }
 
-  /** Emite el broadcast WebSocket de controles-updated (llamado desde el controller tras actualizar el cache). */
   broadcastControlesUpdated(): void {
     if (this.notificacionesGateway) {
       this.notificacionesGateway.broadcastControlesUpdated(1);

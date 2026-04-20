@@ -7,6 +7,8 @@ export const ROLES_IDS = {
   MATCH_SV_EXTRA_1: '68a8ebd07c6f944dd',
   MATCH_SV_EXTRA_2: '68a602e03226cbba1',
   CONTROLES: '19d6e050866ecbd5a',
+  CONTROLES_LIMA: '19d6e050866ecbd5b',
+  CONTROLES_AREQUIPA: '19d6e050866ecbd5c',
 } as const;
 
 /** Solo con uno de estos roles (y resto de filtros), match-sv-username responde true. */
