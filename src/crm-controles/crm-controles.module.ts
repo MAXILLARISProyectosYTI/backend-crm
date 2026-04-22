@@ -10,6 +10,7 @@ import { CrmControlesAssignmentService } from './crm-controles-assignment.servic
 import { NotificacionesModule } from 'src/notificaciones/notificaciones.module';
 import { KpiGerencialModule } from 'src/kpi-gerencial/kpi-gerencial.module';
 import { AssignmentQueueStateModule } from 'src/assignment-queue-state/assignment-queue-state.module';
+import { RoleModule } from 'src/role/role.module';
 import { User } from 'src/user/user.entity';
 
 @Module({
@@ -19,6 +20,7 @@ import { User } from 'src/user/user.entity';
     forwardRef(() => NotificacionesModule),
     forwardRef(() => KpiGerencialModule),
     AssignmentQueueStateModule,
+    RoleModule,
   ],
   controllers: [CrmControlesController],
   providers: [
