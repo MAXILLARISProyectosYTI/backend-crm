@@ -760,6 +760,87 @@ export class OpportunityService {
     });
   }
 
+  /**
+   * Construye la URL del iframe (manager_leads) con `acting_user` del operador real.
+   *
+   * - `usuario=<assignedUserId>` se conserva (define las credenciales SV con las que
+   *   el iframe se autentica contra SV, eso no cambia).
+   * - Se añade `acting_user=<svIdDelOperador>`, derivado del JWT CRM del que llama
+   *   a este endpoint, para que las OS/boletas/facturas queden registradas con el
+   *   usuario que realmente ejecutó la acción, no con el asignado.
+   *
+   * Si el operador no tiene credenciales SV configuradas, devolvemos la URL sin
+   * `acting_user` (fallback al comportamiento heredado).
+   */
+  async buildIframeUrlForOperator(
+    opportunityId: string,
+    operatorCrmUserId: string,
+  ): Promise<{ url: string; actingUserId: number | null }> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId },
+    });
+
+    if (!opportunity) {
+      throw new NotFoundException(
+        `Oportunidad con ID ${opportunityId} no encontrada`,
+      );
+    }
+
+    const baseUrl = opportunity.cConctionSv;
+    if (!baseUrl) {
+      throw new BadRequestException(
+        `La oportunidad ${opportunityId} no tiene cConctionSv configurado`,
+      );
+    }
+
+    const actingUserId = await this.resolveSvActingUserId(operatorCrmUserId);
+
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const url =
+      actingUserId != null
+        ? `${baseUrl}${separator}acting_user=${actingUserId}`
+        : baseUrl;
+
+    return { url, actingUserId };
+  }
+
+  /**
+   * Dado un `crmUserId` (UUID del usuario en backend-crm / Espo), devuelve su
+   * id numérico en SV haciendo signin con sus credenciales `cUsersv` /
+   * `cContraseaSv`. Retorna `null` si el usuario no tiene credenciales SV
+   * configuradas o el signin falla.
+   *
+   * Este helper se usa desde:
+   *   - `buildIframeUrlForOperator` (flujo en el que Espo arma la URL del iframe).
+   *   - El endpoint `GET /opportunity/acting-user/:crmUserId/sv-id`, que usa el
+   *     iframe (corriendo same-origin con Espo) para resolver el operador real
+   *     sin necesidad de modificar Espo.
+   */
+  async resolveSvActingUserId(crmUserId: string): Promise<number | null> {
+    if (!crmUserId) return null;
+    let operator: any = null;
+    try {
+      operator = await this.userService.findOne(crmUserId);
+    } catch {
+      return null;
+    }
+    if (!operator?.cUsersv || !operator?.cContraseaSv) return null;
+    try {
+      const { data } = await this.svServices.getTokenSv(
+        operator.cUsersv,
+        operator.cContraseaSv,
+      );
+      const svId = Number((data as any)?.id);
+      if (Number.isFinite(svId) && svId > 0) return svId;
+    } catch (error) {
+      console.warn(
+        '[resolveSvActingUserId] signin SV del operador falló:',
+        (error as Error)?.message,
+      );
+    }
+    return null;
+  }
+
   async findOneWithDetails(id: string, userId: string) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
@@ -1895,7 +1976,22 @@ export class OpportunityService {
 
     console.log('[updateOpportunityWithFacturas] Obteniendo usuario y token SV...');
     const user = await this.userService.findOne(userId);
-    const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+    let tokenSv: string;
+    if (user.cUsersv && user.cContraseaSv) {
+      try {
+        const result = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
+        tokenSv = result.tokenSv;
+        console.log('[updateOpportunityWithFacturas] Token SV obtenido con credenciales del usuario');
+      } catch (err) {
+        console.warn('[updateOpportunityWithFacturas] Falló token SV del usuario, usando token admin:', err);
+        const result = await this.svServices.getTokenSvAdmin();
+        tokenSv = result.tokenSv;
+      }
+    } else {
+      console.warn('[updateOpportunityWithFacturas] Usuario sin credenciales SV, usando token admin');
+      const result = await this.svServices.getTokenSvAdmin();
+      tokenSv = result.tokenSv;
+    }
     console.log('[updateOpportunityWithFacturas] Token SV obtenido');
 
     if (body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
