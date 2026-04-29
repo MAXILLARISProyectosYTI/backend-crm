@@ -37,6 +37,44 @@ export class SvServices {
   }
 
   /**
+   * Sedes del usuario autenticado en SV (a partir del JWT del SV).
+   * Proxy hacia GET /users/me/campus-companies del SV. El token debe pertenecer
+   * al usuario destino (no al admin), porque el endpoint del SV deriva el id
+   * desde req.user.id.
+   */
+  async getMeCampusWithCompanies(
+    tokenSv: string,
+  ): Promise<{
+    userId: number;
+    campusIds: number[];
+    companyIds: number[];
+    userCompanyIds: number[];
+    campuses: Array<{
+      id: number;
+      name: string;
+      description: string | null;
+      inicial_clinic_history: string | null;
+      companies: Array<{ id: number; code: string; name: string }>;
+    }>;
+  }> {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/users/me/campus-companies`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error(
+        'Error getMeCampusWithCompanies',
+        error instanceof Error ? error.message : error,
+      );
+      throw new BadRequestException(
+        'Error al obtener las sedes del usuario autenticado en SV',
+      );
+    }
+  }
+
+  /**
    * Sede (campus) asociada a una historia clínica; según contrato debe venir de facturación.
    * GET /clinic-history/sede-by-clinic-history/:clinicHistory — ver docs/sv-api-requirements.md
    * Acepta respuesta con campusName/campus_name y campusId/campus_id.
@@ -498,15 +536,42 @@ export class SvServices {
     }
   }
 
-  async getResumenEvolutivoUnidades(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+  /**
+   * Construye los params HTTP para los endpoints KPI de SV.
+   * Si `campusIds` viene con elementos, se serializa como CSV (`campus_ids=1,2`),
+   * formato que el `Transform` del DTO de sv-backend acepta tal cual.
+   * Si viene vacío o `undefined`, se omite (consolidado).
+   */
+  private buildKpiParams(
+    base: Record<string, string | number>,
+    campusIds?: number[],
+  ): Record<string, string | number> {
+    const params = { ...base };
+    if (campusIds && campusIds.length) {
+      params.campus_ids = campusIds.join(',');
+    }
+    return params;
+  }
+
+  async getResumenEvolutivoUnidades(
+    fechaInicio: string,
+    fechaFin: string,
+    page: number = 1,
+    limit: number = 12,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/unidades`, {
-        params: {
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin,
-          page,
-          limit
-        },
+        params: this.buildKpiParams(
+          {
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+            page,
+            limit,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -518,15 +583,25 @@ export class SvServices {
     }
   }
 
-  async getResumenEvolutivoPorcentajes(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+  async getResumenEvolutivoPorcentajes(
+    fechaInicio: string,
+    fechaFin: string,
+    page: number = 1,
+    limit: number = 12,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/porcentajes`, {
-        params: {
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin,
-          page,
-          limit
-        },
+        params: this.buildKpiParams(
+          {
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+            page,
+            limit,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -538,13 +613,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoMensual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoMensual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-mensual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -557,13 +640,21 @@ export class SvServices {
   }
 
   // Endpoints específicos para gráficos anuales
-  async getComparativoVendidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoVendidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -575,13 +666,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoAsistidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoAsistidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -593,13 +692,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoMoldesAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoMoldesAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -611,13 +718,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoTratamientosAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoTratamientosAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -630,14 +745,23 @@ export class SvServices {
   }
 
   // Endpoints específicos para gráficos mensuales
-  async getComparativoVendidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoVendidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -649,14 +773,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoAsistidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoAsistidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -668,14 +801,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoMoldesMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoMoldesMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -687,14 +829,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoTratamientosMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoTratamientosMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
