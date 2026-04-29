@@ -7,9 +7,16 @@ import {
 import { UserService } from 'src/user/user.service';
 import { ROLES_IDS } from 'src/globals/ids';
 
+const CONTROLES_ROLE_IDS = [
+  ROLES_IDS.CONTROLES,
+  ROLES_IDS.CONTROLES_LIMA,
+  ROLES_IDS.CONTROLES_AREQUIPA,
+];
+
 /**
  * Permite acceso a usuarios CRM con type === 'admin'
- * O usuarios regulares que tengan el rol "Controles".
+ * O usuarios regulares que tengan cualquier rol de controles
+ * (genérico, Lima o Arequipa).
  * Requiere JwtAuthGuard previo (req.user.userId).
  */
 @Injectable()
@@ -27,11 +34,8 @@ export class CrmControlesGuard implements CanActivate {
       const isAdmin = await this.userService.isAdmin(userId);
       if (isAdmin) return true;
 
-      const hasControlesRole = await this.userService.hasRole(
-        userId,
-        ROLES_IDS.CONTROLES,
-      );
-      return hasControlesRole;
+      const userRoles = await this.userService.getRoleIds(userId);
+      return CONTROLES_ROLE_IDS.some((rid) => userRoles.includes(rid));
     } catch {
       return false;
     }

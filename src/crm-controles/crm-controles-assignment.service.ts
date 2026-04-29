@@ -140,42 +140,54 @@ export class CrmControlesAssignmentService {
 
   /**
    * Construye Map<campusId, User[]> usando roles de sede.
-   * - Usuario con rol CONTROLES_LIMA → bucket campus 1
-   * - Usuario con rol CONTROLES_AREQUIPA → bucket campus 2
-   * - Usuario con ambos → en ambos buckets
-   * - Usuario sin rol de sede → NO recibe pacientes segmentados (debe tener rol asignado)
-   * Si ningún usuario tiene rol de sede, retorna Map vacío (sin segmentación).
+   * - CONTROLES (genérico)   → en TODOS los buckets de campus (todas las sedes)
+   * - CONTROLES_LIMA         → solo bucket campus 1
+   * - CONTROLES_AREQUIPA     → solo bucket campus 2
+   * - Ambos roles de campus  → en ambos buckets
+   * - Sin ningún rol de controles → no recibe pacientes segmentados
    */
   private async buildCampusSegmentation(allExecutivos: User[]): Promise<Map<number, User[]>> {
     const result = new Map<number, User[]>();
     if (!this.roleService || allExecutivos.length === 0) return result;
 
     const userCampusMap = new Map<string, Set<number>>();
+    const usersWithGenericRole = new Set<string>();
     const allCampusIds = new Set<number>();
-    let anyUserHasCampusRole = false;
+    let anyUserHasRelevantRole = false;
 
     for (const user of allExecutivos) {
       const roles = await this.roleService.getRolesByUser(user.id);
       const campuses = new Set<number>();
+      let hasGeneric = false;
 
       for (const roleId of roles) {
+        if (roleId === ROLES_IDS.CONTROLES) {
+          hasGeneric = true;
+          anyUserHasRelevantRole = true;
+        }
         const campusId = ROLE_TO_CAMPUS[roleId];
         if (campusId != null) {
           campuses.add(campusId);
           allCampusIds.add(campusId);
-          anyUserHasCampusRole = true;
+          anyUserHasRelevantRole = true;
         }
       }
 
+      if (hasGeneric) usersWithGenericRole.add(user.id);
       userCampusMap.set(user.id, campuses);
     }
 
-    if (!anyUserHasCampusRole) return result;
+    if (!anyUserHasRelevantRole) return result;
+
+    if (allCampusIds.size === 0) {
+      allCampusIds.add(1);
+      allCampusIds.add(2);
+    }
 
     for (const campusId of allCampusIds) {
       const usersForCampus = allExecutivos.filter((u) => {
         const campuses = userCampusMap.get(u.id)!;
-        return campuses.has(campusId);
+        return campuses.has(campusId) || usersWithGenericRole.has(u.id);
       });
       if (usersForCampus.length > 0) {
         result.set(campusId, usersForCampus);
@@ -186,15 +198,6 @@ export class CrmControlesAssignmentService {
       this.logger.debug(
         `Segmentación campus ${cid}: ${users.map((u) => u.userName).join(', ')}`,
       );
-    }
-
-    for (const user of allExecutivos) {
-      const campuses = userCampusMap.get(user.id)!;
-      if (campuses.size === 0) {
-        this.logger.warn(
-          `Ejecutivo "${user.userName}" no tiene rol de sede asignado (CONTROLES_LIMA / CONTROLES_AREQUIPA). No recibirá pacientes segmentados.`,
-        );
-      }
     }
 
     return result;
