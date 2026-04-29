@@ -618,6 +618,10 @@ export class UserService {
     return userRoles.includes(roleId);
   }
 
+  async getRoleIds(userId: string): Promise<string[]> {
+    return this.roleService.getRolesByUser(userId);
+  }
+
   async getUsersCommercials(): Promise<User[]> {
 
     const usersActives = await this.getUsersToAssign()

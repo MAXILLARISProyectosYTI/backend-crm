@@ -1895,7 +1895,22 @@ export class OpportunityService {
 
     console.log('[updateOpportunityWithFacturas] Obteniendo usuario y token SV...');
     const user = await this.userService.findOne(userId);
-    const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
+    let tokenSv: string;
+    if (user.cUsersv && user.cContraseaSv) {
+      try {
+        const result = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
+        tokenSv = result.tokenSv;
+        console.log('[updateOpportunityWithFacturas] Token SV obtenido con credenciales del usuario');
+      } catch (err) {
+        console.warn('[updateOpportunityWithFacturas] Falló token SV del usuario, usando token admin:', err);
+        const result = await this.svServices.getTokenSvAdmin();
+        tokenSv = result.tokenSv;
+      }
+    } else {
+      console.warn('[updateOpportunityWithFacturas] Usuario sin credenciales SV, usando token admin');
+      const result = await this.svServices.getTokenSvAdmin();
+      tokenSv = result.tokenSv;
+    }
     console.log('[updateOpportunityWithFacturas] Token SV obtenido');
 
     if (body.cFacturas && (body.cFacturas.comprobante_dolares || body.cFacturas.comprobante_soles)) {
