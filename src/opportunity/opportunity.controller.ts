@@ -570,4 +570,5 @@ export class OpportunityController {
     const {data} = await this.svServices.getTokenSv(user.cUsersv, user.cContraseaSv);
     return data;
   }
+
 }

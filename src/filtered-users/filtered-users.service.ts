@@ -12,7 +12,12 @@ const EXCLUDED_USER_TYPES = ['admin', 'system'] as const;
 const EXCLUDED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.ASISTENTE_COMERCIAL] as const;
 
 /** Roles que tienen permiso para acceder al SV directamente. */
-const SV_ALLOWED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.CONTROLES] as const;
+const SV_ALLOWED_ROLE_IDS = [
+  ROLES_IDS.CERRADORA,
+  ROLES_IDS.CONTROLES,
+  ROLES_IDS.CONTROLES_LIMA,
+  ROLES_IDS.CONTROLES_AREQUIPA,
+] as const;
 
 /** Equipos que tienen permiso para acceder al SV directamente (ejecutivos OI). */
 const SV_ALLOWED_TEAM_IDS = [TEAMS_IDS.EJ_COMERCIAL_OI] as const;
