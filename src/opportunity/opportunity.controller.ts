@@ -571,45 +571,4 @@ export class OpportunityController {
     return data;
   }
 
-  /**
-   * Devuelve la URL del iframe (manager_leads) ya construida con `acting_user`
-   * correspondiente al usuario CRM que está autenticado en este request.
-   *
-   * Flujo esperado: el CRM Espo llama a este endpoint usando el JWT del usuario
-   * logueado (el operador real) y usa la URL devuelta para abrir el iframe.
-   * Así las OS/boletas/facturas quedan registradas a nombre del operador, no
-   * del asignado a la oportunidad.
-   */
-  @Get(':opportunityId/iframe-url')
-  async getIframeUrl(
-    @Param('opportunityId') opportunityId: string,
-    @Req() req: Request & { user: { userId: string } },
-  ): Promise<{ url: string; actingUserId: number | null }> {
-    return this.opportunityService.buildIframeUrlForOperator(
-      opportunityId,
-      req.user.userId,
-    );
-  }
-
-  /**
-   * Resuelve el id SV (numérico) a partir del id CRM/Espo del operador real.
-   *
-   * Usado por el iframe (que corre same-origin con Espo): al montar, el
-   * frontend pregunta a Espo `/api/v1/App/user` quién está logueado y con
-   * ese id CRM pide acá su svUserId para enviarlo como `actingUserId` al
-   * crear OS/factura/boleta. Así la trazabilidad queda con el operador
-   * real sin tener que modificar Espo.
-   *
-   * Retorna `{ svUserId: null }` si el usuario no tiene credenciales SV
-   * configuradas o el signin SV falla (el flujo cae al comportamiento
-   * heredado: usar el asignado del JWT).
-   */
-  @Get('acting-user/:crmUserId/sv-id')
-  async getActingUserSvId(
-    @Param('crmUserId') crmUserId: string,
-  ): Promise<{ svUserId: number | null }> {
-    const svUserId =
-      await this.opportunityService.resolveSvActingUserId(crmUserId);
-    return { svUserId };
-  }
 }
