@@ -11,10 +11,11 @@ export const getTeamsBySubCampaing = (subCampaignId: string): string[] => {
       TEAMS_IDS.TEAM_FIORELLA,
       TEAMS_IDS.TEAM_VERONICA,
       TEAMS_IDS.TEAM_MICHELL,
+      TEAMS_IDS.TEAM_AREQUIPA,
     ];
   }
   if(subCampaignId === CAMPAIGNS_IDS.APNEA){
-    return [TEAMS_IDS.EJ_COMERCIAL_APNEA];
+    return [TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_AREQUIPA];
   }
   
   return [];
