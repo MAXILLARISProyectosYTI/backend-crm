@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { UserService, UserWithRoles } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -109,7 +110,43 @@ export class UserController {
   async findByUserName(@Param('userName') userName: string): Promise<UserWithRoles> {
     return await this.userService.findByUserName(userName);
   }
-  
+
+  /**
+   * Sedes a las que tiene acceso el usuario autenticado (a partir del JWT).
+   *
+   * Útil para pre-selección de sedes en filtros (ej. KPIs).
+   *
+   * Reglas de pre-selección sugeridas para el frontend:
+   *   - unrestricted: true                          → mostrar todas las sedes.
+   *   - unrestricted: false && campusIds.length=0   → bloquear: usuario SV
+   *                                                    sin sedes asignadas.
+   *   - unrestricted: false && campusIds.length=1   → preseleccionar y
+   *                                                    deshabilitar.
+   *   - unrestricted: false && campusIds.length>1   → multi-select
+   *                                                    restringido a esas N.
+   *
+   * El endpoint nunca devuelve 5xx por fallas del SV: si no se puede
+   * verificar permisos (sin credenciales SV, login caído, /users/me/
+   * campus-companies caído) retorna `unrestricted: true` para que el
+   * frontend degrade a "todas las sedes" sin bloquear la pantalla.
+   */
+  @Get('me/campuses')
+  async getMyCampuses(
+    @Req() req: { user: { userId: string; userName?: string } },
+  ): Promise<{
+    userId: string;
+    svUserId: number | null;
+    unrestricted: boolean;
+    campusIds: number[];
+    campuses: Array<{
+      id: number;
+      name: string;
+      inicial_clinic_history: string | null;
+    }>;
+  }> {
+    return await this.userService.getMyCampuses(req.user.userId);
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string): Promise<User> {
     return await this.userService.findOne(id);

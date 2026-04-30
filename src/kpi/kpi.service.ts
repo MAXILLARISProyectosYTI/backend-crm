@@ -10,14 +10,16 @@ export class KpiService {
     fechaFin: string,
     page: number = 1,
     limit: number = 12,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getResumenEvolutivoUnidades(
       fechaInicio,
       fechaFin,
       page,
       limit,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -26,26 +28,30 @@ export class KpiService {
     fechaFin: string,
     page: number = 1,
     limit: number = 12,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getResumenEvolutivoPorcentajes(
       fechaInicio,
       fechaFin,
       page,
       limit,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
   async getComparativoMensual(
     añoInicio: number,
     añoFin: number,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoMensual(
       añoInicio,
       añoFin,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -53,48 +59,56 @@ export class KpiService {
   async getComparativoVendidasAnual(
     añoInicio: number,
     añoFin: number,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoVendidasAnual(
       añoInicio,
       añoFin,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
   async getComparativoAsistidasAnual(
     añoInicio: number,
     añoFin: number,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoAsistidasAnual(
       añoInicio,
       añoFin,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
   async getComparativoMoldesAnual(
     añoInicio: number,
     añoFin: number,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoMoldesAnual(
       añoInicio,
       añoFin,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
   async getComparativoTratamientosAnual(
     añoInicio: number,
     añoFin: number,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoTratamientosAnual(
       añoInicio,
       añoFin,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -103,13 +117,15 @@ export class KpiService {
     añoInicio: number,
     añoFin: number,
     mes: string,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoVendidasMes(
       añoInicio,
       añoFin,
       mes,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -117,13 +133,15 @@ export class KpiService {
     añoInicio: number,
     añoFin: number,
     mes: string,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoAsistidasMes(
       añoInicio,
       añoFin,
       mes,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -131,13 +149,15 @@ export class KpiService {
     añoInicio: number,
     añoFin: number,
     mes: string,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoMoldesMes(
       añoInicio,
       añoFin,
       mes,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 
@@ -145,14 +165,15 @@ export class KpiService {
     añoInicio: number,
     añoFin: number,
     mes: string,
-    tokenSv: string
+    tokenSv: string,
+    campusIds?: number[],
   ) {
     return await this.svServices.getComparativoTratamientosMes(
       añoInicio,
       añoFin,
       mes,
-      tokenSv
+      tokenSv,
+      campusIds,
     );
   }
 }
-

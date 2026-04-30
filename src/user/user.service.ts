@@ -33,6 +33,7 @@ import { RoleService } from 'src/role/role.service';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { CampusTeamService } from 'src/campus-team/campus-team.service';
 import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
+import { SvServices } from 'src/sv-services/sv.services';
 import * as bcrypt from 'bcryptjs';
 
 export interface RoleSummary {
@@ -56,6 +57,7 @@ export class UserService {
     private readonly idGeneratorService: IdGeneratorService,
     private readonly campusTeamService: CampusTeamService,
     private readonly assignmentQueueStateService: AssignmentQueueStateService,
+    private readonly svServices: SvServices,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -175,6 +177,99 @@ export class UserService {
     const teamUsers = await this.teamUserService.getCurrentTeamUsers(id);
     const roleUsers = await this.roleService.getCurrentRoleUsers(id);
     return {...user, teams: teamUsers, roles: roleUsers};
+  }
+
+  /**
+   * Sedes a las que tiene acceso el usuario autenticado.
+   *
+   * Resuelve el "puente" entre el usuario CRM (Espocrm) y el usuario SV:
+   *  1. Lee credenciales SV del usuario (cUsersv, cContraseaSv).
+   *  2. Hace login al SV para obtener un token válido para ese usuario.
+   *  3. Consulta GET /users/me/campus-companies del SV con ese token.
+   *
+   * Semántica del flag `unrestricted`:
+   *  - `true`  → no pudimos verificar permisos (sin credenciales SV o el SV
+   *               está caído). El frontend debe degradar a "todas las sedes".
+   *  - `false` → sí pudimos verificar. Si `campusIds` está vacío, significa
+   *               que el usuario SV existe pero no tiene sedes asignadas
+   *               (configuración rota): el frontend debe bloquear, no
+   *               mostrar todas.
+   *
+   * No revienta la pantalla por una caída temporal del SV: ante cualquier
+   * error externo retorna `unrestricted: true` con listas vacías.
+   */
+  async getMyCampuses(userId: string): Promise<{
+    userId: string;
+    svUserId: number | null;
+    unrestricted: boolean;
+    campusIds: number[];
+    campuses: Array<{
+      id: number;
+      name: string;
+      inicial_clinic_history: string | null;
+    }>;
+  }> {
+    const user = await this.findOne(userId);
+
+    if (!user.cUsersv || !user.cContraseaSv) {
+      return {
+        userId,
+        svUserId: null,
+        unrestricted: true,
+        campusIds: [],
+        campuses: [],
+      };
+    }
+
+    let tokenSv: string;
+    try {
+      const tokenResp = await this.svServices.getTokenSv(
+        user.cUsersv,
+        user.cContraseaSv,
+      );
+      tokenSv = tokenResp.tokenSv;
+    } catch (err) {
+      console.error(
+        'getMyCampuses: fallo al obtener token SV',
+        err instanceof Error ? err.message : err,
+      );
+      return {
+        userId,
+        svUserId: null,
+        unrestricted: true,
+        campusIds: [],
+        campuses: [],
+      };
+    }
+
+    try {
+      const me = await this.svServices.getMeCampusWithCompanies(tokenSv);
+      return {
+        userId,
+        svUserId: typeof me.userId === 'number' ? me.userId : null,
+        unrestricted: false,
+        campusIds: Array.isArray(me.campusIds) ? me.campusIds : [],
+        campuses: Array.isArray(me.campuses)
+          ? me.campuses.map((c) => ({
+              id: c.id,
+              name: c.name,
+              inicial_clinic_history: c.inicial_clinic_history ?? null,
+            }))
+          : [],
+      };
+    } catch (err) {
+      console.error(
+        'getMyCampuses: fallo al consultar /users/me/campus-companies',
+        err instanceof Error ? err.message : err,
+      );
+      return {
+        userId,
+        svUserId: null,
+        unrestricted: true,
+        campusIds: [],
+        campuses: [],
+      };
+    }
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
