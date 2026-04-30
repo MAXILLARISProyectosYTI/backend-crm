@@ -23,6 +23,7 @@ import { CampusTeamModule } from './campus-team/campus-team.module';
 import { CampusCoordinatesModule } from './campus-coordinates/campus-coordinates.module';
 import { AssignmentQueueStateModule } from './assignment-queue-state/assignment-queue-state.module';
 import { FilteredUsersModule } from './filtered-users/filtered-users.module';
+import { PatientSegmentationModule } from './patient-segmentation/patient-segmentation.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { FilteredUsersModule } from './filtered-users/filtered-users.module';
     CampusCoordinatesModule,
     AssignmentQueueStateModule,
     FilteredUsersModule,
+    PatientSegmentationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

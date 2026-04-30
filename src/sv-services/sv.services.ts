@@ -893,5 +893,162 @@ export class SvServices {
       throw new BadRequestException('Error al obtener tipos de estructura de contratos desde SV');
     }
   }
+
+  // ============================================================
+  // Patient Segmentation – CRM Controles
+  // ============================================================
+
+  async getSegmentationList(
+    tokenSv: string,
+    filters: Record<string, any> = {},
+  ) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation`,
+        { headers: { Authorization: `Bearer ${tokenSv}` }, params: filters },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationList', error);
+      throw new BadRequestException('Error al obtener lista de segmentos desde SV');
+    }
+  }
+
+  async getSegmentationStats(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/stats`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationStats', error);
+      throw new BadRequestException('Error al obtener estadísticas de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationEvolution(tokenSv: string, days?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/evolution`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: days ? { days } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationEvolution', error);
+      throw new BadRequestException('Error al obtener evolución de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationAlertsCritical(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/alerts/critical`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationAlertsCritical', error);
+      throw new BadRequestException('Error al obtener alertas críticas de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationAlertsAtRisk(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/alerts/at-risk`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationAlertsAtRisk', error);
+      throw new BadRequestException('Error al obtener alertas en riesgo de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationRules(tokenSv: string) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/rules`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationRules', error);
+      throw new BadRequestException('Error al obtener reglas de segmentación desde SV');
+    }
+  }
+
+  async updateSegmentationRule(
+    tokenSv: string,
+    payload: { segment: string; ruleKey: string; ruleValue: string; active?: boolean; description?: string },
+  ) {
+    try {
+      const response = await axios.patch(
+        `${this.URL_BACK_SV}/patient-segmentation/rules`,
+        payload,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error updateSegmentationRule', error);
+      throw new BadRequestException('Error al actualizar regla de segmentación en SV');
+    }
+  }
+
+  async recalculateSegmentation(
+    tokenSv: string,
+    patientIds?: number[],
+  ) {
+    try {
+      const response = await axios.post(
+        `${this.URL_BACK_SV}/patient-segmentation/recalculate`,
+        patientIds ? { patientIds } : {},
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error recalculateSegmentation', error);
+      throw new BadRequestException('Error al recalcular segmentación en SV');
+    }
+  }
+
+  async getSegmentationPatientDetail(tokenSv: string, patientId: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/${patientId}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationPatientDetail', error);
+      throw new BadRequestException('Error al obtener detalle de segmento del paciente desde SV');
+    }
+  }
+
+  async getSegmentationPatientHistory(tokenSv: string, patientId: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/${patientId}/history`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationPatientHistory', error);
+      throw new BadRequestException('Error al obtener historial de segmento del paciente desde SV');
+    }
+  }
 }
   
