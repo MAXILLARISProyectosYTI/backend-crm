@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { KpiService } from './kpi.service';
 import { ResumenEvolutivoQueryDto } from './dto/resumen-evolutivo-query.dto';
 import { ComparativoQueryDto } from './dto/comparativo-query.dto';
+import { ComparativoMesQueryDto } from './dto/comparativo-mes-query.dto';
 import { SvServices } from '../sv-services/sv.services';
 
 @UseGuards(JwtAuthGuard)
@@ -17,13 +18,14 @@ export class KpiController {
   async getUnidades(@Query() query: ResumenEvolutivoQueryDto, @Req() req: any) {
     // Obtener token de SV usando credenciales de admin
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getResumenEvolutivoUnidades(
       query.fecha_inicio,
       query.fecha_fin,
       query.page || 1,
       query.limit || 12,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
@@ -31,24 +33,26 @@ export class KpiController {
   async getPorcentajes(@Query() query: ResumenEvolutivoQueryDto, @Req() req: any) {
     // Obtener token de SV usando credenciales de admin
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getResumenEvolutivoPorcentajes(
       query.fecha_inicio,
       query.fecha_fin,
       query.page || 1,
       query.limit || 12,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-mensual')
   async getComparativoMensual(@Query() query: ComparativoQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoMensual(
       query.año_inicio || 0,
       query.año_fin || 0,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
@@ -56,94 +60,101 @@ export class KpiController {
   @Get('comparativo-vendidas-anual')
   async getComparativoVendidasAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoVendidasAnual(
       query.año_inicio || 0,
       query.año_fin || 0,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-asistidas-anual')
   async getComparativoAsistidasAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoAsistidasAnual(
       query.año_inicio || 0,
       query.año_fin || 0,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-moldes-anual')
   async getComparativoMoldesAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoMoldesAnual(
       query.año_inicio || 0,
       query.año_fin || 0,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-tratamientos-anual')
   async getComparativoTratamientosAnual(@Query() query: ComparativoQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoTratamientosAnual(
       query.año_inicio || 0,
       query.año_fin || 0,
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   // Endpoints específicos para gráficos mensuales
   @Get('comparativo-vendidas-mes')
-  async getComparativoVendidasMes(@Query() query: any, @Req() req: any) {
+  async getComparativoVendidasMes(@Query() query: ComparativoMesQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoVendidasMes(
       query.año_inicio || 0,
       query.año_fin || 0,
       query.mes || 'Dic',
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-asistidas-mes')
-  async getComparativoAsistidasMes(@Query() query: any, @Req() req: any) {
+  async getComparativoAsistidasMes(@Query() query: ComparativoMesQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoAsistidasMes(
       query.año_inicio || 0,
       query.año_fin || 0,
       query.mes || 'Dic',
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-moldes-mes')
-  async getComparativoMoldesMes(@Query() query: any, @Req() req: any) {
+  async getComparativoMoldesMes(@Query() query: ComparativoMesQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoMoldesMes(
       query.año_inicio || 0,
       query.año_fin || 0,
       query.mes || 'Dic',
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 
   @Get('comparativo-tratamientos-mes')
-  async getComparativoTratamientosMes(@Query() query: any, @Req() req: any) {
+  async getComparativoTratamientosMes(@Query() query: ComparativoMesQueryDto, @Req() req: any) {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    
+
     return await this.kpiService.getComparativoTratamientosMes(
       query.año_inicio || 0,
       query.año_fin || 0,
       query.mes || 'Dic',
-      tokenSv
+      tokenSv,
+      query.campus_ids,
     );
   }
 }
-

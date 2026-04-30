@@ -11,6 +11,7 @@ import { QuotationListResponse, QuotationListItem } from "./quotation-list.types
 export class SvServices {
 
   private readonly URL_BACK_SV = process.env.URL_BACK_SV;
+  private readonly URL_SCHEDULE_BACKEND = process.env.URL_SCHEDULE_BACKEND || '';
   /** Identificador de origen enviado en POST /auth/signin hacia SV. */
   private readonly svSignInOrigin = 'crm';
   /** Base URL del servicio invoice-mifact-v3 (ej. http://host/api). Usado para estado de facturación por O.S. */
@@ -22,7 +23,7 @@ export class SvServices {
   private readonly invoiceMifactPassword = process.env.INVOICE_MIFACT_PASSWORD ?? process.env.PASSWORD_ADMIN ?? '';
 
   constructor(
-  ) { }
+  ) {}
 
   async getCampuses(tokenSv: string): Promise<CampusListResponse> {
     try {
@@ -33,6 +34,44 @@ export class SvServices {
     } catch (error) {
       console.error('Error getCampuses', error);
       throw new BadRequestException('Error al obtener sedes (campus) desde SV');
+    }
+  }
+
+  /**
+   * Sedes del usuario autenticado en SV (a partir del JWT del SV).
+   * Proxy hacia GET /users/me/campus-companies del SV. El token debe pertenecer
+   * al usuario destino (no al admin), porque el endpoint del SV deriva el id
+   * desde req.user.id.
+   */
+  async getMeCampusWithCompanies(
+    tokenSv: string,
+  ): Promise<{
+    userId: number;
+    campusIds: number[];
+    companyIds: number[];
+    userCompanyIds: number[];
+    campuses: Array<{
+      id: number;
+      name: string;
+      description: string | null;
+      inicial_clinic_history: string | null;
+      companies: Array<{ id: number; code: string; name: string }>;
+    }>;
+  }> {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/users/me/campus-companies`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error(
+        'Error getMeCampusWithCompanies',
+        error instanceof Error ? error.message : error,
+      );
+      throw new BadRequestException(
+        'Error al obtener las sedes del usuario autenticado en SV',
+      );
     }
   }
 
@@ -83,14 +122,14 @@ export class SvServices {
     }
   }
 
-  async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto, tokenSv: string) {
+  async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto, tokenSv: string ){
     try {
       const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-patient-crm/`, payloadClinicHistory, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responseClinicHistory.data;
     } catch (error) {
       console.error('Error createClinicHistoryCrm', error);
@@ -100,9 +139,13 @@ export class SvServices {
 
   async getTokenSv(username: string, password: string) {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username, password, origin: this.svSignInOrigin })
-
-      return { data: responseTokenSv.data, tokenSv: responseTokenSv.data.token };
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
+        username,
+        password,
+        origin: this.svSignInOrigin,
+      })
+  
+      return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};      
     } catch (error) {
       console.log('error', error);
       throw new BadRequestException('Error al obtener el token de SV');
@@ -111,9 +154,13 @@ export class SvServices {
 
   async getTokenSvAdmin() {
     try {
-      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, { username: this.usernameSv, password: this.passwordSv, origin: this.svSignInOrigin })
-
-      return { data: responseTokenSv.data, tokenSv: responseTokenSv.data.token };
+      const responseTokenSv = await axios.post(`${this.URL_BACK_SV}/auth/signin`, {
+        username: this.usernameSv,
+        password: this.passwordSv,
+        origin: this.svSignInOrigin,
+      })
+  
+      return {data:responseTokenSv.data, tokenSv: responseTokenSv.data.token};
     } catch (error) {
       console.error('Error getTokenSvAdmin', error);
       throw new BadRequestException('Error al obtener el token administrativo de SV');
@@ -122,19 +169,16 @@ export class SvServices {
 
   async getStatusClient(opportunityId: string, tokenSv: string) {
     try {
-      const responseStatusClient: {
-        data: {
-          espoId: string;
-          id_payment?: number;
-          id_reservation?: number;
-          patientId?: number;
-        }
-      } = await axios.get(`${this.URL_BACK_SV}/opportunities/status-patient-crm/${opportunityId}`, {
+      const responseStatusClient: { data: { 
+        espoId: string;
+        id_payment?: number;
+        id_reservation?: number;
+        patientId?: number;}} = await axios.get(`${this.URL_BACK_SV}/opportunities/status-patient-crm/${opportunityId}`, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       const data = responseStatusClient.data;
       // Mostrar botón Historia Clínica cuando el paciente está vinculado (patientId + espoId).
       // Para pago con factura también hay id_payment/id_reservation; para efectivo solo patientId+espoId.
@@ -142,7 +186,7 @@ export class SvServices {
         return true;
       }
       return false;
-
+  
     } catch (error) {
       console.error('Error getStatusClient', error);
       throw new BadRequestException('Error al obtener el estado del cliente en SV');
@@ -156,7 +200,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientSV', error);
@@ -171,7 +215,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientSVByEspoId', error);
@@ -186,7 +230,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error updateClinicHistoryCrm', error);
@@ -201,7 +245,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getPatientByClinicHistory', error);
@@ -216,7 +260,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error getIRHByComprobante', error);
@@ -298,7 +342,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responseQueueAssignmentClosers.data;
     } catch (error) {
       console.error('Error updateQueueAssignmentClosers', error);
@@ -310,14 +354,14 @@ export class SvServices {
     url_invoice_dolares: string;
     url_invoice_soles: string;
     id: number;
-  }[]> {
+}[]> {
     try {
       const responseFacts = await axios.get(`${this.URL_BACK_SV}/contract/get-facts-contract/${contractId}`, {
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responseFacts.data;
     } catch (error) {
       console.error('Error getFactsByContractId', error);
@@ -435,7 +479,7 @@ export class SvServices {
           Authorization: `Bearer ${tokenSv}`
         }
       })
-
+  
       return responseQueueAssignmentClosers.data;
     } catch (error) {
       console.error('Error addOpportunityToQueue', error);
@@ -493,15 +537,42 @@ export class SvServices {
     }
   }
 
-  async getResumenEvolutivoUnidades(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+  /**
+   * Construye los params HTTP para los endpoints KPI de SV.
+   * Si `campusIds` viene con elementos, se serializa como CSV (`campus_ids=1,2`),
+   * formato que el `Transform` del DTO de sv-backend acepta tal cual.
+   * Si viene vacío o `undefined`, se omite (consolidado).
+   */
+  private buildKpiParams(
+    base: Record<string, string | number>,
+    campusIds?: number[],
+  ): Record<string, string | number> {
+    const params = { ...base };
+    if (campusIds && campusIds.length) {
+      params.campus_ids = campusIds.join(',');
+    }
+    return params;
+  }
+
+  async getResumenEvolutivoUnidades(
+    fechaInicio: string,
+    fechaFin: string,
+    page: number = 1,
+    limit: number = 12,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/unidades`, {
-        params: {
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin,
-          page,
-          limit
-        },
+        params: this.buildKpiParams(
+          {
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+            page,
+            limit,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -513,15 +584,25 @@ export class SvServices {
     }
   }
 
-  async getResumenEvolutivoPorcentajes(fechaInicio: string, fechaFin: string, page: number = 1, limit: number = 12, tokenSv: string) {
+  async getResumenEvolutivoPorcentajes(
+    fechaInicio: string,
+    fechaFin: string,
+    page: number = 1,
+    limit: number = 12,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/porcentajes`, {
-        params: {
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin,
-          page,
-          limit
-        },
+        params: this.buildKpiParams(
+          {
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+            page,
+            limit,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -533,13 +614,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoMensual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoMensual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-mensual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -552,13 +641,21 @@ export class SvServices {
   }
 
   // Endpoints específicos para gráficos anuales
-  async getComparativoVendidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoVendidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -570,13 +667,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoAsistidasAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoAsistidasAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -588,13 +693,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoMoldesAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoMoldesAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -606,13 +719,21 @@ export class SvServices {
     }
   }
 
-  async getComparativoTratamientosAnual(añoInicio: number, añoFin: number, tokenSv: string) {
+  async getComparativoTratamientosAnual(
+    añoInicio: number,
+    añoFin: number,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-anual`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -625,14 +746,23 @@ export class SvServices {
   }
 
   // Endpoints específicos para gráficos mensuales
-  async getComparativoVendidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoVendidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-vendidas-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -644,14 +774,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoAsistidasMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoAsistidasMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-asistidas-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -663,14 +802,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoMoldesMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoMoldesMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-moldes-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -682,14 +830,23 @@ export class SvServices {
     }
   }
 
-  async getComparativoTratamientosMes(añoInicio: number, añoFin: number, mes: string, tokenSv: string) {
+  async getComparativoTratamientosMes(
+    añoInicio: number,
+    añoFin: number,
+    mes: string,
+    tokenSv: string,
+    campusIds?: number[],
+  ) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/kpi/comparativo-tratamientos-mes`, {
-        params: {
-          año_inicio: añoInicio.toString(),
-          año_fin: añoFin.toString(),
-          mes: mes,
-        },
+        params: this.buildKpiParams(
+          {
+            año_inicio: añoInicio.toString(),
+            año_fin: añoFin.toString(),
+            mes: mes,
+          },
+          campusIds,
+        ),
         headers: {
           Authorization: `Bearer ${tokenSv}`
         }
@@ -704,7 +861,7 @@ export class SvServices {
   // ============================================================
   // Contract Pricing y Types - Métodos para contratos
   // ============================================================
-
+  
   async getContractPricingByTreatmentCode(treatmentCode: string, tokenSv: string) {
     try {
       const response = await axios.get(
@@ -723,7 +880,7 @@ export class SvServices {
       );
     }
   }
-
+  
   async getAllContractTypeStructure(tokenSv: string) {
     try {
       const response = await axios.get(`${this.URL_BACK_SV}/contract-type-structure`, {
@@ -739,10 +896,165 @@ export class SvServices {
   }
 
   // ============================================================
-  // CRM Controles — Billing proxy (invoice + isFirstFreeControl)
+  // Patient Segmentation – CRM Controles
   // ============================================================
 
-  private readonly URL_SCHEDULE_BACKEND = process.env.URL_SCHEDULE_BACKEND || '';
+  async getSegmentationList(
+    tokenSv: string,
+    filters: Record<string, any> = {},
+  ) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation`,
+        { headers: { Authorization: `Bearer ${tokenSv}` }, params: filters },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationList', error);
+      throw new BadRequestException('Error al obtener lista de segmentos desde SV');
+    }
+  }
+
+  async getSegmentationStats(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/stats`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationStats', error);
+      throw new BadRequestException('Error al obtener estadísticas de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationEvolution(tokenSv: string, days?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/evolution`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: days ? { days } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationEvolution', error);
+      throw new BadRequestException('Error al obtener evolución de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationAlertsCritical(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/alerts/critical`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationAlertsCritical', error);
+      throw new BadRequestException('Error al obtener alertas críticas de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationAlertsAtRisk(tokenSv: string, companyId?: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/alerts/at-risk`,
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          params: companyId ? { companyId } : {},
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationAlertsAtRisk', error);
+      throw new BadRequestException('Error al obtener alertas en riesgo de segmentación desde SV');
+    }
+  }
+
+  async getSegmentationRules(tokenSv: string) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/rules`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationRules', error);
+      throw new BadRequestException('Error al obtener reglas de segmentación desde SV');
+    }
+  }
+
+  async updateSegmentationRule(
+    tokenSv: string,
+    payload: { segment: string; ruleKey: string; ruleValue: string; active?: boolean; description?: string },
+  ) {
+    try {
+      const response = await axios.patch(
+        `${this.URL_BACK_SV}/patient-segmentation/rules`,
+        payload,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error updateSegmentationRule', error);
+      throw new BadRequestException('Error al actualizar regla de segmentación en SV');
+    }
+  }
+
+  async recalculateSegmentation(
+    tokenSv: string,
+    patientIds?: number[],
+  ) {
+    try {
+      const response = await axios.post(
+        `${this.URL_BACK_SV}/patient-segmentation/recalculate`,
+        patientIds ? { patientIds } : {},
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error recalculateSegmentation', error);
+      throw new BadRequestException('Error al recalcular segmentación en SV');
+    }
+  }
+
+  async getSegmentationPatientDetail(tokenSv: string, patientId: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/${patientId}`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationPatientDetail', error);
+      throw new BadRequestException('Error al obtener detalle de segmento del paciente desde SV');
+    }
+  }
+
+  async getSegmentationPatientHistory(tokenSv: string, patientId: number) {
+    try {
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/patient-segmentation/${patientId}/history`,
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error getSegmentationPatientHistory', error);
+      throw new BadRequestException('Error al obtener historial de segmento del paciente desde SV');
+    }
+  }
+
+  // ============================================================
+  // CRM Controles — Billing proxy (invoice + isFirstFreeControl)
+  // ============================================================
 
   async checkIsFirstFreeControl(patientId: number): Promise<Record<string, unknown>> {
     if (!this.URL_SCHEDULE_BACKEND) {
@@ -827,7 +1139,7 @@ export class SvServices {
 
   async getContractQuotas(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
       const contractUrl = `${base}/contract/patient-contracts/${clinicHistoryId}`;
       const contractRes = await axios.get(contractUrl, {
@@ -856,7 +1168,7 @@ export class SvServices {
 
   async getQuotaInvoiceDetails(contractDetailId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
       const url = `${base}/contract/detail-paiment-fixed-contract/${contractDetailId}`;
       const res = await axios.get(url, {
@@ -872,7 +1184,7 @@ export class SvServices {
 
   async getPatientCampus(clinicHistoryId: number, tokenSv: string): Promise<{ campusId: number; campusName: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
       const res = await axios.get(`${base}/clinic-history/${clinicHistoryId}`, {
         headers: { Authorization: `Bearer ${tokenSv}` },
@@ -890,11 +1202,11 @@ export class SvServices {
     }
   }
 
-  // ── Agenda Services ───────────────────────────────────────────────────────
+  // Agenda Services
 
   async getDoctorsForDate(date: string, campusId: number | null, tokenSv: string): Promise<any[]> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     const path = campusId != null
       ? `/doctor/all/info-for-doctor/${date}/${campusId}`
       : `/doctor/all/info-for-doctor/${date}`;
@@ -972,7 +1284,7 @@ export class SvServices {
 
   async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
       const res = await axios.patch(
         `${base}/service-order-api/update-reservation`,
@@ -991,7 +1303,7 @@ export class SvServices {
 
   async getInvoiceQueueStatus(queueId: number, tokenSv: string): Promise<Record<string, unknown>> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     const url = `${base}/invoice-mifact-v3/status/${queueId}`;
     try {
       const response = await axios.get(url, {
@@ -1007,7 +1319,7 @@ export class SvServices {
 
   async getControlPrice(clinicHistoryId: number, tokenSv: string): Promise<{ amount: number; currency: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
 
     try {
       const res = await axios.get(`${base}/gobernanza/precio-control/${clinicHistoryId}`, {
@@ -1018,8 +1330,8 @@ export class SvServices {
       if (data && data.amount != null) {
         return { amount: data.amount, currency: data.currency ?? 'PEN' };
       }
-    } catch (err) {
-      console.warn(`[getControlPrice] Falló endpoint personalizado para HC ${clinicHistoryId}, usando tarifa genérica:`, err.message);
+    } catch (err: any) {
+      console.warn(`[getControlPrice] Falló endpoint personalizado para HC ${clinicHistoryId}, usando tarifa genérica:`, err?.message ?? err);
     }
 
     const fallback = await axios.get(`${base}/tariff/58`, {
@@ -1035,7 +1347,7 @@ export class SvServices {
 
   async getPatientServiceOrders(clinicHistoryId: number, tokenSv: string): Promise<Record<string, unknown>[]> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
       const res = await axios.get(
         `${base}/service-order-v2/serviceOrderInvoiceNewVersion/${clinicHistoryId}`,
@@ -1048,11 +1360,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Detecta OS de Control OFM facturadas pero SIN reservación agendada.
-   * Usa el endpoint payments que expone so.idreservation directamente.
-   * Devuelve la lista completa de OS sin agendar con datos para el selector UI.
-   */
   async getPendingControlOS(clinicHistoryId: number, tokenSv: string): Promise<{
     hasUnscheduledOS: boolean;
     serviceOrderId: number | null;
@@ -1068,7 +1375,7 @@ export class SvServices {
     }[];
   }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
-    const base = (this.URL_BACK_SV as string).replace(/\/$/, '');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
     const noResult = { hasUnscheduledOS: false, serviceOrderId: null, serviceOrders: [] };
     try {
       const [paymentsRes, osInvoiceRes] = await Promise.all([
@@ -1097,7 +1404,6 @@ export class SvServices {
         return osId > 0 && (hasNoReservation || hasCancelledReservation) && isControlOFM;
       });
 
-      // Indexar OS facturadas por serie-correlativo para buscar PDF
       const invoiceBySerieMap = new Map<string, any>();
       for (const inv of invoicedOS) {
         const details: any[] = inv.detail || [];
@@ -1108,7 +1414,6 @@ export class SvServices {
         }
       }
 
-      // Deduplicar y enriquecer con datos de factura + PDF
       const seen = new Set<number>();
       const enriched: {
         id: number;
@@ -1166,17 +1471,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Cohorte para CRM Controles: pacientes con ejecutivo de controles asignado.
-   * Usa el endpoint existente en SV: GET /union_doctor_patient_attention/search_patient_with_users_controlls
-   * Sobreescribible con la variable de entorno SV_CRM_CONTROLES_PATH.
-   *
-   * Campos que devuelve SV:
-   *   id_registro, id_historia_clinica, nombre_paciente, ap_paterno, ap_materno,
-   *   numero_documento, fecha_nacimiento, historia_clinica, sexo, email, phone,
-   *   cellphone, nombre_distrito, id_doctor, nombre_docto, ejecutivo_cobranzas,
-   *   ejecutivo_controles, ejecutivo_ventas, created_at, id_status_borrado
-   */
   async getCrmControlesPatientsFromSv(
     tokenSv: string,
   ): Promise<Record<string, unknown>[]> {
@@ -1245,11 +1539,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Timeline completo de un paciente OFM: todas sus reservaciones (state=1)
-   * ordenadas cronológicamente desde la primera hasta la más reciente.
-   * GET /union_doctor_patient_attention/timeline/:patientId
-   */
   async getCrmPatientTimelineFromSv(
     patientId: number,
     tokenSv: string,
@@ -1276,10 +1565,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Últimas notas médicas de un paciente desde SV.
-   * GET /clinic-history-notes/get-patient-notes/:clinicHistoryId
-   */
   async getPatientMedicalNotesFromSv(
     clinicHistoryId: number,
     tokenSv: string,
@@ -1306,10 +1591,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Obtiene sesiones de control OFM desde SV
-   * (tariff 58 = control, 192 = instalación primer dispositivo, 198 = control OFM).
-   */
   async getCrmControlesSessionsFromSv(
     tokenSv: string,
   ): Promise<Record<string, unknown>[]> {
@@ -1335,10 +1616,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Facturación de controles OFM desde SV — invoice_result_body con fecha_abono,
-   * método de pago, moneda, campus, ejecutivo.
-   */
   async getFacturacionControlesFromSv(
     tokenSv: string,
   ): Promise<Record<string, unknown>[]> {
@@ -1364,9 +1641,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Reprogramaciones de controles OFM — cantidad por día y campus.
-   */
   async getReprogramacionesControlesFromSv(
     tokenSv: string,
   ): Promise<Record<string, unknown>[]> {
@@ -1392,10 +1666,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Busca el ID numérico de un usuario de SV por su username.
-   * Usa el endpoint GET /union_doctor_patient_attention/sv-user-id-by-username/:username
-   */
   async getSvUserIdByUsername(tokenSv: string, username: string): Promise<number | null> {
     try {
       const url = `${this.URL_BACK_SV}/union_doctor_patient_attention/sv-user-id-by-username/${encodeURIComponent(username)}`;
@@ -1410,10 +1680,6 @@ export class SvServices {
     }
   }
 
-  /**
-   * Asigna un ejecutivo de controles a un paciente en SV.
-   * Usa PATCH /union_doctor_patient_attention/assign-controller-executive
-   */
   async assignControllerExecutiveInSv(
     tokenSv: string,
     id_clinic_history: number,
@@ -1433,3 +1699,4 @@ export class SvServices {
     }
   }
 }
+  
