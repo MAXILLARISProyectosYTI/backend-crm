@@ -1,32 +1,25 @@
-import { IsString, IsOptional, IsInt, Min, Max, IsArray } from 'class-validator';
+import { IsInt, Min, Max, IsString, IsIn, IsOptional, IsArray } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
-export class ResumenEvolutivoQueryDto {
-  @IsString()
-  fecha_inicio: string;
-
-  @IsString()
-  fecha_fin: string;
-
-  @IsOptional()
+export class ComparativoMesQueryDto {
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  page?: number = 1;
+  @Min(2020)
+  @Max(2030)
+  año_inicio: number;
 
-  @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(100)
-  limit?: number = 12;
+  @Min(2020)
+  @Max(2030)
+  año_fin: number;
+
+  @IsString()
+  @IsIn(['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'])
+  mes: string;
 
   /**
-   * Filtro opcional de sedes. Acepta:
-   *   - ?campus_ids=1
-   *   - ?campus_ids=1,2,3
-   *   - ?campus_ids=1&campus_ids=2 (formato array)
-   * Si se omite o llega vacío => consolidado (todas las sedes).
+   * Filtro opcional de sedes (mismo formato que en ResumenEvolutivoQueryDto).
    */
   @IsOptional()
   @Transform(({ value }) => {

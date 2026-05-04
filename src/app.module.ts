@@ -27,6 +27,7 @@ import { KpiGerencialModule } from './kpi-gerencial/kpi-gerencial.module';
 import { IncidenciasModule } from './incidencias/incidencias.module';
 import { NotificacionesModule } from './notificaciones/notificaciones.module';
 import { FilteredUsersModule } from './filtered-users/filtered-users.module';
+import { PatientSegmentationModule } from './patient-segmentation/patient-segmentation.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { FilteredUsersModule } from './filtered-users/filtered-users.module';
     IncidenciasModule,
     NotificacionesModule,
     FilteredUsersModule,
+    PatientSegmentationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
