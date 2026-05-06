@@ -261,7 +261,7 @@ export class CrmControlesAssignmentService {
   }
 
   async getControlesExecutivosForApi(): Promise<
-    { id: string; userName: string; firstName: string; lastName: string }[]
+    { id: string; userName: string; firstName: string; lastName: string; cUsersv: string }[]
   > {
     const users = await this.getControlesExecutivos();
     return users.map((u) => ({
@@ -269,6 +269,7 @@ export class CrmControlesAssignmentService {
       userName: u.userName ?? '',
       firstName: u.firstName ?? '',
       lastName: u.lastName ?? '',
+      cUsersv: (u.cUsersv ?? '').trim(),
     }));
   }
 
@@ -351,6 +352,151 @@ export class CrmControlesAssignmentService {
     return {
       ok: true,
       message: `Paciente reasignado a ${executivo.firstName ?? ''} ${executivo.lastName ?? ''}`.trim(),
+    };
+  }
+
+  /**
+   * Reasigna TODOS los pacientes de un ejecutivo origen a otro ejecutivo destino.
+   * Obtiene el token SV y resuelve el sv_user_id del destino una sola vez para
+   * minimizar llamadas externas.
+   */
+  async bulkReassignPatients(
+    sourceUserName: string,
+    targetUserId: string,
+    _requestingUserId: string | null,
+  ): Promise<{ ok: boolean; count: number; errors: number; message?: string }> {
+    const targetExecutivo = await this.userRepository.findOne({
+      where: { id: targetUserId, deleted: false, isActive: true },
+    });
+
+    if (!targetExecutivo) {
+      return { ok: false, count: 0, errors: 0, message: 'Ejecutivo destino no encontrado o inactivo' };
+    }
+
+    const cUsersv = (targetExecutivo.cUsersv ?? '').trim();
+    if (!cUsersv) {
+      return {
+        ok: false,
+        count: 0,
+        errors: 0,
+        message: `El ejecutivo "${targetExecutivo.userName}" no tiene el campo Usuario SV configurado.`,
+      };
+    }
+
+    let tokenSv: string;
+    try {
+      const { tokenSv: t } = await this.svServices.getTokenSvAdmin();
+      tokenSv = t;
+    } catch (err) {
+      return {
+        ok: false,
+        count: 0,
+        errors: 0,
+        message: `No se pudo obtener token de SV: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    const svUserId = await this.resolveSvUserId(tokenSv, cUsersv);
+    if (!svUserId) {
+      return {
+        ok: false,
+        count: 0,
+        errors: 0,
+        message: `No se encontró usuario en SV con username "${cUsersv}".`,
+      };
+    }
+
+    // Obtener todos los pacientes asignados al ejecutivo origen desde SV
+    let allPatients: Record<string, unknown>[] = [];
+    try {
+      allPatients = await this.svServices.getCrmControlesPatientsFromSv(tokenSv);
+    } catch (err) {
+      this.logger.error(`Error obteniendo pacientes de SV para bulk-reassign: ${err instanceof Error ? err.message : err}`);
+      return { ok: false, count: 0, errors: 0, message: 'Error obteniendo listado de pacientes de SV.' };
+    }
+
+    const isSinAsignar = sourceUserName === '__sin_asignar__';
+    const sourcePatients = isSinAsignar
+      ? allPatients.filter((p) => {
+          const val = String(p['ejecutivo_controles'] ?? '').trim();
+          return val === '' || val === 'null' || val === 'undefined';
+        })
+      : allPatients.filter(
+          (p) => String(p['ejecutivo_controles'] ?? '').toLowerCase() === sourceUserName.toLowerCase(),
+        );
+
+    const sourceLabel = isSinAsignar ? 'Sin asignar' : `"${sourceUserName}"`;
+
+    if (sourcePatients.length === 0) {
+      return {
+        ok: true,
+        count: 0,
+        errors: 0,
+        message: `No se encontraron pacientes ${isSinAsignar ? 'sin ejecutivo asignado' : `asignados a "${sourceUserName}"`}.`,
+      };
+    }
+
+    this.logger.log(
+      `Bulk-reassign: ${sourcePatients.length} pacientes de ${sourceLabel} → "${targetExecutivo.userName}"`,
+    );
+
+    let count = 0;
+    let errors = 0;
+
+    // Procesar en lotes paralelos para evitar timeouts con grandes volúmenes
+    const BATCH_SIZE = 20;
+    const validPatients = sourcePatients.filter((p) => {
+      const id = Number(p['id_historia_clinica']);
+      return id && !isNaN(id);
+    });
+
+    for (let i = 0; i < validPatients.length; i += BATCH_SIZE) {
+      const batch = validPatients.slice(i, i + BATCH_SIZE);
+
+      const results = await Promise.allSettled(
+        batch.map(async (patient) => {
+          const clinicHistoryId = Number(patient['id_historia_clinica']);
+          const updated = await this.svServices.assignControllerExecutiveInSv(
+            tokenSv,
+            clinicHistoryId,
+            svUserId,
+          );
+          if (!updated) throw new Error(`SV no actualizó CH ${clinicHistoryId}`);
+          return { clinicHistoryId, patient };
+        }),
+      );
+
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          count++;
+          const { clinicHistoryId, patient } = result.value;
+          if (cUsersv && this.notificacionesService) {
+            const pacienteNombre = [
+              String(patient['nombre_paciente'] ?? ''),
+              String(patient['ap_paterno'] ?? ''),
+              String(patient['ap_materno'] ?? ''),
+            ].filter(Boolean).join(' ') || `Paciente HC ${clinicHistoryId}`;
+            this.notificacionesService
+              .notifyPatientAssignment(clinicHistoryId, pacienteNombre, cUsersv)
+              .catch((e) => this.logger.warn(`Error notificación bulk-reassign: ${e}`));
+          }
+        } else {
+          errors++;
+          this.logger.warn(`Bulk-reassign error: ${result.reason instanceof Error ? result.reason.message : result.reason}`);
+        }
+      }
+
+      this.logger.log(
+        `Bulk-reassign progreso: ${Math.min(i + BATCH_SIZE, validPatients.length)}/${validPatients.length} procesados`,
+      );
+    }
+
+    const targetName = `${targetExecutivo.firstName ?? ''} ${targetExecutivo.lastName ?? ''}`.trim() || targetExecutivo.userName;
+    return {
+      ok: true,
+      count,
+      errors,
+      message: `${count} paciente(s) reasignado(s) a ${targetName}${errors > 0 ? ` (${errors} errores)` : ''}.`,
     };
   }
 
