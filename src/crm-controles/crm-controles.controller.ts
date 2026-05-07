@@ -302,7 +302,7 @@ export class CrmControlesController {
   @UseGuards(AdminUserGuard)
   @Get('controles-users')
   async getControlesUsers(): Promise<
-    { id: string; userName: string; firstName: string; lastName: string }[]
+    { id: string; userName: string; firstName: string; lastName: string; cUsersv: string }[]
   > {
     return this.assignmentService.getControlesExecutivosForApi();
   }
@@ -327,6 +327,31 @@ export class CrmControlesController {
     // garantizando que cuando el frontend re-fetche ya tenga datos frescos.
     if (result.ok) {
       await this.crmControlesService.syncSinglePatient(body.clinicHistoryId).catch(() => null);
+      this.assignmentService.broadcastControlesUpdated();
+    }
+
+    return result;
+  }
+
+  /**
+   * Reasigna TODOS los pacientes de un ejecutivo origen a otro ejecutivo destino.
+   * Solo accesible por admins.
+   * Body: { sourceUserName: string; targetUserId: string }
+   */
+  @UseGuards(AdminUserGuard)
+  @Patch('bulk-reassign')
+  async bulkReassignPatients(
+    @Body() body: { sourceUserName: string; targetUserId: string },
+    @Request() req: { user?: { userId?: string } },
+  ): Promise<{ ok: boolean; count: number; errors: number; message?: string }> {
+    const result = await this.assignmentService.bulkReassignPatients(
+      body.sourceUserName,
+      body.targetUserId,
+      req.user?.userId ?? null,
+    );
+
+    if (result.ok && result.count > 0) {
+      this.crmControlesService.syncFromSv().catch(() => null);
       this.assignmentService.broadcastControlesUpdated();
     }
 

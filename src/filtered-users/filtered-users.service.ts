@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from 'src/user/user.entity';
-import { FILTERED_USERS_TEAM_IDS, MATCH_SV_USERNAME_ALLOWED_ROLE_IDS, ROLES_IDS, TEAMS_IDS } from 'src/globals/ids';
+import { FILTERED_USERS_TEAM_IDS, MATCH_SV_USERNAME_ALLOWED_ROLE_IDS, ROLES_IDS } from 'src/globals/ids';
 import { orderListAlphabetic } from 'src/user/utils/orderListAlphabetic';
 
 /** Tipos de usuario que no deben aparecer en el listado (p. ej. EspoCRM). */
@@ -14,20 +14,14 @@ const EXCLUDED_ROLE_IDS = [ROLES_IDS.CERRADORA, ROLES_IDS.ASISTENTE_COMERCIAL] a
 /** Roles que tienen permiso para acceder al SV directamente. */
 const SV_ALLOWED_ROLE_IDS = [
   ROLES_IDS.CERRADORA,
-  ROLES_IDS.CONTROLES,
-  ROLES_IDS.CONTROLES_LIMA,
-  ROLES_IDS.CONTROLES_AREQUIPA,
 ] as const;
-
-/** Equipos que tienen permiso para acceder al SV directamente (ejecutivos OI). */
-const SV_ALLOWED_TEAM_IDS = [TEAMS_IDS.EJ_COMERCIAL_OI] as const;
 
 export type UserPublic = Omit<User, 'password'>;
 
 export interface SvAccessResult {
   /** true si el svUserName corresponde a algún usuario del CRM. */
   hasCrmAccount: boolean;
-  /** true si ese usuario CRM tiene rol CERRADORA o CONTROLES (y por tanto puede acceder al SV). */
+  /** true si ese usuario CRM tiene rol CERRADORA o es admin (y por tanto puede acceder al SV). */
   allowed: boolean;
 }
 
@@ -110,7 +104,7 @@ export class FilteredUsersService {
    * Comprueba si un usuario del SV tiene permitido acceder al SV directamente.
    * Busca en el CRM por `c_usersv = svUserName`:
    * - Si no existe cuenta CRM → { hasCrmAccount: false, allowed: true } (usuario puro SV).
-   * - Si existe → verifica si tiene rol CERRADORA o CONTROLES.
+   * - Si existe → verifica si es admin o tiene rol CERRADORA.
    */
   async checkSvAccess(svUserName: string): Promise<SvAccessResult> {
     const normalized = svUserName.trim();
@@ -145,25 +139,7 @@ export class FilteredUsersService {
       )
       .getCount();
 
-    if (allowedByRole > 0) {
-      return { hasCrmAccount: true, allowed: true };
-    }
-
-    const allowedByTeam = await this.userRepository
-      .createQueryBuilder('u')
-      .where('u.id = :userId', { userId: crmUser.id })
-      .andWhere(
-        `EXISTS (
-          SELECT 1 FROM team_user tu
-          WHERE tu.user_id = u.id
-          AND (tu.deleted = false OR tu.deleted IS NULL)
-          AND tu.team_id IN (:...svAllowedTeamIds)
-        )`,
-        { svAllowedTeamIds: [...SV_ALLOWED_TEAM_IDS] },
-      )
-      .getCount();
-
-    return { hasCrmAccount: true, allowed: allowedByTeam > 0 };
+    return { hasCrmAccount: true, allowed: allowedByRole > 0 };
   }
 
   private withoutPassword(user: User): UserPublic {
