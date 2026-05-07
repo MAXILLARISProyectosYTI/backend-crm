@@ -263,6 +263,22 @@ export class CrmControlesController {
     return this.crmControlesService.createReservation(payload);
   }
 
+  /** Detalle de una reserva por ID — proxy a SV GET /reservation/:id. */
+  @Get('reservation/:reservationId')
+  async getReservationDetail(
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.getReservationDetail(reservationId);
+  }
+
+  /** Crea un bloqueo de agenda y notifica pacientes — proxy a SV POST /diary-lock. */
+  @Post('diary-lock')
+  async createDiaryLock(
+    @Body() payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.createDiaryLock(payload);
+  }
+
   /** Cancelar reserva (cita) — proxy a WSK reservation-cancel-for-client. */
   @Post('cancel-reservation')
   async cancelReservation(

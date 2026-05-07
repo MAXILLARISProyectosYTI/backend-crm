@@ -1282,6 +1282,36 @@ export class SvServices {
     }
   }
 
+  async getReservationDetail(reservationId: number, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    try {
+      const res = await axios.get(`${base}/reservation/${reservationId}`, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error getReservationDetail', reservationId, error);
+      throw new BadRequestException(`Error al obtener reserva ${reservationId}`);
+    }
+  }
+
+  async createDiaryLock(payload: Record<string, unknown>, tokenSv: string): Promise<Record<string, unknown>> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    try {
+      const res = await axios.post(`${base}/diary-lock`, payload, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenSv}` },
+        timeout: 20000,
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error createDiaryLock', error);
+      throw new BadRequestException('Error al crear bloqueo de agenda');
+    }
+  }
+
   async linkReservationToOS(osIds: number[], reservationId: number, tokenSv: string): Promise<{ message: string }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');
