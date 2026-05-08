@@ -656,7 +656,13 @@ export class UserService {
     if (campusId != null) {
       const state = await this.assignmentQueueStateService.getState(campusId, subCampaignId);
       if (state) {
-        const lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        // Buscar el userName en la lista activa; si el usuario está ocupado/inactivo
+        // y no aparece en listUsers, buscarlo directamente en BD para mantener la posición correcta
+        let lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        if (!lastUserName && state.lastAssignedUserId) {
+          const lastUserFromDb = await this.userRepository.findOne({ where: { id: state.lastAssignedUserId } });
+          lastUserName = lastUserFromDb?.userName ?? '';
+        }
         const lastAssignedRef = {
           opportunity_id: state.lastOpportunityId ?? '',
           opportunity_name: '',
@@ -773,7 +779,11 @@ export class UserService {
       assignedAt = state.lastAssignedAt instanceof Date ? state.lastAssignedAt.toISOString() : String(state.lastAssignedAt);
       opportunityId = state.lastOpportunityId ?? undefined;
       if (listUsers.length > 0) {
-        const lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        let lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+        if (!lastUserName && state.lastAssignedUserId) {
+          const lastUserFromDb = await this.userRepository.findOne({ where: { id: state.lastAssignedUserId } });
+          lastUserName = lastUserFromDb?.userName ?? '';
+        }
         const lastAssignedRef = {
           opportunity_id: state.lastOpportunityId ?? '',
           opportunity_name: '',
