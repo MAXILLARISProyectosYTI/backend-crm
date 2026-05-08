@@ -1282,6 +1282,33 @@ export class SvServices {
     }
   }
 
+  async noConfirmReschedule(
+    reservationId: number,
+    userId: number,
+    reason: string,
+    tokenSv: string,
+  ): Promise<{ code: number; message: string }> {
+    if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    try {
+      const res = await axios.post<{ code: number; message: string }>(
+        `${base}/reservation/no-confirm-reschedule`,
+        { reservationId, userId, reason },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenSv}`,
+          },
+          timeout: 15000,
+        },
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error noConfirmReschedule', reservationId, error);
+      throw new BadRequestException(`Error en no-confirm de reserva ${reservationId}`);
+    }
+  }
+
   async getReservationDetail(reservationId: number, tokenSv: string): Promise<Record<string, unknown>> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');

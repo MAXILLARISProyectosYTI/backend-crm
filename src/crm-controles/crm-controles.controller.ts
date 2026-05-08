@@ -287,6 +287,18 @@ export class CrmControlesController {
     return this.crmControlesService.cancelReservation(body.reservationId, body.userId, body.reason);
   }
 
+  /** No confirmado: cancela y envía link para reprogramación sin diary-lock. */
+  @Post('no-confirm-reschedule')
+  async noConfirmReschedule(
+    @Body() body: { reservationId: number; userId: number; reason: string },
+  ): Promise<{ code: number; message: string }> {
+    return this.crmControlesService.noConfirmReschedule(
+      body.reservationId,
+      body.userId,
+      body.reason,
+    );
+  }
+
   /** Vincular OS con reserva (PATCH /service-order-api/update-reservation). */
   @Patch('link-reservation-os')
   async linkReservationToOS(
