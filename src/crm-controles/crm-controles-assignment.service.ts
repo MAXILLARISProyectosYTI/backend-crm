@@ -415,21 +415,29 @@ export class CrmControlesAssignmentService {
       return { ok: false, count: 0, errors: 0, message: 'Error obteniendo listado de pacientes de SV.' };
     }
 
-    const sourcePatients = allPatients.filter(
-      (p) => String(p['ejecutivo_controles'] ?? '').toLowerCase() === sourceUserName.toLowerCase(),
-    );
+    const isSinAsignar = sourceUserName === '__sin_asignar__';
+    const sourcePatients = isSinAsignar
+      ? allPatients.filter((p) => {
+          const val = String(p['ejecutivo_controles'] ?? '').trim();
+          return val === '' || val === 'null' || val === 'undefined';
+        })
+      : allPatients.filter(
+          (p) => String(p['ejecutivo_controles'] ?? '').toLowerCase() === sourceUserName.toLowerCase(),
+        );
+
+    const sourceLabel = isSinAsignar ? 'Sin asignar' : `"${sourceUserName}"`;
 
     if (sourcePatients.length === 0) {
       return {
         ok: true,
         count: 0,
         errors: 0,
-        message: `No se encontraron pacientes asignados a "${sourceUserName}".`,
+        message: `No se encontraron pacientes ${isSinAsignar ? 'sin ejecutivo asignado' : `asignados a "${sourceUserName}"`}.`,
       };
     }
 
     this.logger.log(
-      `Bulk-reassign: ${sourcePatients.length} pacientes de "${sourceUserName}" → "${targetExecutivo.userName}"`,
+      `Bulk-reassign: ${sourcePatients.length} pacientes de ${sourceLabel} → "${targetExecutivo.userName}"`,
     );
 
     let count = 0;

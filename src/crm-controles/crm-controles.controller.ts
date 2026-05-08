@@ -263,12 +263,40 @@ export class CrmControlesController {
     return this.crmControlesService.createReservation(payload);
   }
 
+  /** Detalle de una reserva por ID — proxy a SV GET /reservation/:id. */
+  @Get('reservation/:reservationId')
+  async getReservationDetail(
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.getReservationDetail(reservationId);
+  }
+
+  /** Crea un bloqueo de agenda y notifica pacientes — proxy a SV POST /diary-lock. */
+  @Post('diary-lock')
+  async createDiaryLock(
+    @Body() payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.crmControlesService.createDiaryLock(payload);
+  }
+
   /** Cancelar reserva (cita) — proxy a WSK reservation-cancel-for-client. */
   @Post('cancel-reservation')
   async cancelReservation(
     @Body() body: { reservationId: number; userId: number; reason: string },
   ): Promise<{ code: number; message: string }> {
     return this.crmControlesService.cancelReservation(body.reservationId, body.userId, body.reason);
+  }
+
+  /** No confirmado: cancela y envía link para reprogramación sin diary-lock. */
+  @Post('no-confirm-reschedule')
+  async noConfirmReschedule(
+    @Body() body: { reservationId: number; userId: number; reason: string },
+  ): Promise<{ code: number; message: string }> {
+    return this.crmControlesService.noConfirmReschedule(
+      body.reservationId,
+      body.userId,
+      body.reason,
+    );
   }
 
   /** Vincular OS con reserva (PATCH /service-order-api/update-reservation). */
