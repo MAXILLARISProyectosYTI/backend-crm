@@ -28,6 +28,7 @@ import { IncidenciasModule } from './incidencias/incidencias.module';
 import { NotificacionesModule } from './notificaciones/notificaciones.module';
 import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 import { PatientSegmentationModule } from './patient-segmentation/patient-segmentation.module';
+import { OpportunityDerivationModule } from './opportunity-derivation/opportunity-derivation.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { PatientSegmentationModule } from './patient-segmentation/patient-segmen
     NotificacionesModule,
     FilteredUsersModule,
     PatientSegmentationModule,
+    OpportunityDerivationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

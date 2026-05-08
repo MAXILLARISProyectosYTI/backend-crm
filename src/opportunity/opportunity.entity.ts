@@ -238,6 +238,10 @@ export class Opportunity {
   @Column({ type: 'boolean', nullable: true, default: false, name: 'is_presaved' })
   isPresaved?: boolean;
 
+  /** Indica que esta oportunidad OFM/APNEA fue derivada para flujo OI paralelo */
+  @Column({ type: 'boolean', nullable: false, default: false, name: 'c_derived_to_oi' })
+  cDerivedToOi?: boolean;
+
   /** Sede (campus) para cola de autoasignación por sede */
   @Column({ type: 'integer', nullable: true, name: 'c_campus_id' })
   cCampusId?: number;

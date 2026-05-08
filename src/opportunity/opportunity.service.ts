@@ -36,6 +36,7 @@ import {
 import { CreateOpportunityResponse } from './dto/create-opportunity-response.dto';
 import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
 import { CampusItem } from 'src/sv-services/campus.types';
+import { OpportunityDerivation } from 'src/opportunity-derivation/opportunity-derivation.entity';
 
 @Injectable()
 export class OpportunityService {
@@ -48,6 +49,10 @@ export class OpportunityService {
     private readonly opportunityRepository: Repository<Opportunity>,
     @InjectRepository(OpportunityServiceOrder)
     private readonly opportunityServiceOrderRepository: Repository<OpportunityServiceOrder>,
+    @InjectRepository(OpportunityDerivation)
+    private readonly opportunityDerivationRepository: Repository<OpportunityDerivation>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     private readonly websocketService: OpportunityWebSocketService,
     private readonly contactService: ContactService,
     @Inject(forwardRef(() => UserService))
@@ -1258,8 +1263,19 @@ export class OpportunityService {
           queryBuilder.andWhere('opportunity.assigned_user_id IN (:...userIds)', { userIds });
         }
       } else {
-        // Si no es team leader ni TI/Owner, solo ver sus propias oportunidades
-        queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
+        // Ver propias oportunidades + las derivadas a OI asignadas a este ejecutivo
+        const derivedOpportunityIds = await this.opportunityDerivationRepository
+          .find({ where: { assignedUserId: userRequest, status: 'active' as any }, select: ['opportunityId'] })
+          .then((rows) => rows.map((r) => r.opportunityId));
+
+        if (derivedOpportunityIds.length > 0) {
+          queryBuilder.andWhere(
+            '(opportunity.assigned_user_id = :userRequest OR opportunity.id IN (:...derivedIds))',
+            { userRequest, derivedIds: derivedOpportunityIds },
+          );
+        } else {
+          queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
+        }
       }
     }
 
@@ -1331,8 +1347,52 @@ export class OpportunityService {
 
     const totalPages = Math.ceil(total / limit);
 
+    // Oportunidades derivadas asignadas al ejecutivo que hace la consulta
+    const derivedRows = await this.opportunityDerivationRepository
+      .find({ where: { assignedUserId: userRequest, status: 'active' as any }, select: ['opportunityId'] });
+    const derivedIds = new Set(derivedRows.map((r) => r.opportunityId));
+
+    // Obtener info del ejecutivo OI asignado a cada oportunidad derivada
+    const derivedOppIds = opportunities.filter((o) => o.cDerivedToOi).map((o) => o.id);
+    const derivationMap = new Map<string, { firstName?: string; lastName?: string; userName?: string }>();
+    if (derivedOppIds.length > 0) {
+      const derivations = await this.opportunityDerivationRepository.find({
+        where: { status: 'active' as any },
+        select: ['opportunityId', 'assignedUserId'],
+      });
+      const oppDerivationMap = new Map(derivations.map((d) => [d.opportunityId, d.assignedUserId]));
+      const relevantIds = derivedOppIds.map((id) => oppDerivationMap.get(id)).filter(Boolean) as string[];
+      if (relevantIds.length > 0) {
+        const oiUsers = await this.userRepository.find({
+          where: relevantIds.map((uid) => ({ id: uid })),
+          select: ['id', 'firstName', 'lastName', 'userName'],
+        });
+        const userById = new Map(oiUsers.map((u) => [u.id, u]));
+        derivedOppIds.forEach((oppId) => {
+          const uid = oppDerivationMap.get(oppId);
+          if (uid && userById.has(uid)) {
+            derivationMap.set(oppId, userById.get(uid)!);
+          }
+        });
+      }
+    }
+
+    // Enriquecer con tipoTratamiento, cDerivedToOi, isDerivedToMe y oiAssignedUser para la lista
+    const enriched = opportunities.map((opp) => {
+      const base = SUB_CAMPAIGN_NAMES[opp.cSubCampaignId ?? ''] ?? null;
+      const tipoTratamiento = opp.cDerivedToOi
+        ? base ? `${base} + OI` : 'OI'
+        : base;
+      const isDerivedToMe = derivedIds.has(opp.id);
+      const oiUser = derivationMap.get(opp.id);
+      const oiAssignedUser = oiUser
+        ? `${oiUser.firstName ?? ''} ${oiUser.lastName ?? ''}`.trim() || oiUser.userName || null
+        : null;
+      return { ...opp, tipoTratamiento, isDerivedToMe, oiAssignedUser };
+    });
+
     return {
-      opportunities,
+      opportunities: enriched,
       total,
       page,
       totalPages,
@@ -2278,7 +2338,7 @@ export class OpportunityService {
     return result;
   }
 
-  async redirectToManager(_usuario: string, opportunityId: string) {
+  async redirectToManager(_usuario: string, opportunityId: string, isOiDerivedFlow?: boolean) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
     });
@@ -2311,6 +2371,7 @@ export class OpportunityService {
       localNumber,
       historyCLinic,
       forceInitialFlow,
+      isOiDerivedFlow,
     );
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
