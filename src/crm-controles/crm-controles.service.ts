@@ -264,6 +264,15 @@ export class CrmControlesService implements OnModuleInit {
     return this.svServices.cancelReservation(reservationId, userId, reason, tokenSv);
   }
 
+  async noConfirmReschedule(
+    reservationId: number,
+    userId: number,
+    reason: string,
+  ): Promise<{ code: number; message: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.noConfirmReschedule(reservationId, userId, reason, tokenSv);
+  }
+
   async linkReservationToOS(osIds: number[], reservationId: number): Promise<{ message: string }> {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     return this.svServices.linkReservationToOS(osIds, reservationId, tokenSv);
