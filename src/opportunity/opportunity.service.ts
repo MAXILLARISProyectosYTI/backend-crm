@@ -404,6 +404,11 @@ export class OpportunityService {
         contactId: opportunity.contactId,
         cSeguimientocliente: Enum_Following.EN_SEGUIMIENTO,
         assignedUserId: opportunity.assignedUserId,
+        // Marca explícita: esta oportunidad es un "referido" (otro paciente
+        // con el mismo teléfono). Sin este flag el SV precarga al paciente
+        // original al inferir por número de teléfono. Ver
+        // sv-backend-main/.../clinic-history-crm.service.ts#getRedirectByOpportunityId
+        cIsReferralCreation: true,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
@@ -2365,6 +2370,14 @@ export class OpportunityService {
     // El frontend guarda el sentinel "FORCE_INITIAL" en cSeTrasfOtroServi.
     // Así no afecta flujos nativos de ninguna campaña.
     const forceInitialFlow = opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL';
+    // isReferralCreation: si la oportunidad fue creada por createWithSamePhoneNumber
+    // (botón "¡Empezar!" desde NewClientCard) significa que es OTRO paciente con el
+    // mismo teléfono. Avisamos al SV para que NO infiera el paciente por phoneNumber
+    // (de lo contrario precarga al original y rompe el flujo del NO).
+    // Fallback histórico: nombres terminados en " REF-N" (creados antes del flag).
+    const isReferralCreation =
+      opportunity.cIsReferralCreation === true ||
+      / REF-\d+$/.test(opportunity.name || '');
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(
       opportunityId,
       campaign.name!,
@@ -2372,6 +2385,7 @@ export class OpportunityService {
       historyCLinic,
       forceInitialFlow,
       isOiDerivedFlow,
+      isReferralCreation,
     );
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está

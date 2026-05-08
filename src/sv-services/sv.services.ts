@@ -494,6 +494,7 @@ export class SvServices {
     historyCLinic: string | undefined,
     forceInitialFlow?: boolean,
     isOiDerivedFlow?: boolean,
+    isReferralCreation?: boolean,
   ) {
     try {
       const params: Record<string, string> = {
@@ -506,6 +507,9 @@ export class SvServices {
       }
       if (isOiDerivedFlow === true) {
         params.isOiDerivedFlow = 'true';
+      }
+      if (isReferralCreation === true) {
+        params.isReferralCreation = 'true';
       }
       const responseRedirectByOpportunityId = await axios.get(
         `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`,
