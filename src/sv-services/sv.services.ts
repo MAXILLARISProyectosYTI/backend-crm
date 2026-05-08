@@ -493,6 +493,7 @@ export class SvServices {
     phoneNumber: string,
     historyCLinic: string | undefined,
     forceInitialFlow?: boolean,
+    isOiDerivedFlow?: boolean,
   ) {
     try {
       const params: Record<string, string> = {
@@ -502,6 +503,9 @@ export class SvServices {
       };
       if (forceInitialFlow === true) {
         params.forceInitialFlow = 'true';
+      }
+      if (isOiDerivedFlow === true) {
+        params.isOiDerivedFlow = 'true';
       }
       const responseRedirectByOpportunityId = await axios.get(
         `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`,

@@ -21,10 +21,12 @@ import { ContractPresave } from './contract-presave.entity';
 import { ContractPresaveService } from './contract-presave.service';
 import { AssignmentQueueStateModule } from '../assignment-queue-state/assignment-queue-state.module';
 import { CampusCoordinatesModule } from '../campus-coordinates/campus-coordinates.module';
+import { OpportunityDerivation } from '../opportunity-derivation/opportunity-derivation.entity';
+import { User } from '../user/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave, OpportunityServiceOrder]),
+    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave, OpportunityServiceOrder, OpportunityDerivation, User]),
     AssignmentQueueStateModule,
     CampusCoordinatesModule,
     ContactModule,

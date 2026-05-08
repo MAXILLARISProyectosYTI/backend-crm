@@ -68,9 +68,11 @@ export class OpportunityController {
   @Get('redirect')
   async redirectToManager(
     @Query('usuario') usuario: string,
-    @Query('uuid-opportunity') uuidOpportunity: string
+    @Query('uuid-opportunity') uuidOpportunity: string,
+    @Query('isOiDerivedFlow') isOiDerivedFlow?: string,
   ) {
-    const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity);
+    const oiDerived = isOiDerivedFlow === 'true' || isOiDerivedFlow === '1';
+    const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity, oiDerived);
     let response = redirectResponse;
 
     try {
