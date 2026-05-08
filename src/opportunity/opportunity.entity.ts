@@ -223,6 +223,18 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 255, nullable: true, name: 'c_c_conction_sv' })
   cCConctionSv?: string;
 
+  /**
+   * TRUE cuando la oportunidad fue creada con `createWithSamePhoneNumber`
+   * (botón "¡Empezar!" del NewClientCard) para registrar OTRO paciente con el
+   * mismo teléfono que el original (típicamente un familiar/referido).
+   *
+   * El SV (clinic-history-crm.service.ts) lo usa para NO precargar el paciente
+   * inferido por teléfono y forzar el flujo del NO (formulario vacío para
+   * crear el paciente nuevo).
+   */
+  @Column({ type: 'boolean', nullable: true, default: false, name: 'c_is_referral_creation' })
+  cIsReferralCreation?: boolean;
+
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_c_patientsname' })
   cCPatientsname?: string;
 
