@@ -264,9 +264,28 @@ export class CrmControlesService implements OnModuleInit {
     return this.svServices.cancelReservation(reservationId, userId, reason, tokenSv);
   }
 
+  async noConfirmReschedule(
+    reservationId: number,
+    userId: number,
+    reason: string,
+  ): Promise<{ code: number; message: string }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.noConfirmReschedule(reservationId, userId, reason, tokenSv);
+  }
+
   async linkReservationToOS(osIds: number[], reservationId: number): Promise<{ message: string }> {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     return this.svServices.linkReservationToOS(osIds, reservationId, tokenSv);
+  }
+
+  async getReservationDetail(reservationId: number): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.getReservationDetail(reservationId, tokenSv);
+  }
+
+  async createDiaryLock(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    return this.svServices.createDiaryLock(payload, tokenSv);
   }
 
   /** Sincroniza sesiones de control OFM desde SV */
