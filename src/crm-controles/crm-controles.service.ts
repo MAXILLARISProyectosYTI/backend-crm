@@ -269,8 +269,25 @@ export class CrmControlesService implements OnModuleInit {
     userId: number,
     reason: string,
   ): Promise<{ code: number; message: string }> {
-    const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    return this.svServices.noConfirmReschedule(reservationId, userId, reason, tokenSv);
+    const { tokenSv, data } = await this.svServices.getTokenSvAdmin();
+    // Si el frontend no pudo identificar al ejecutivo (la sesión de Controles
+    // del CRM no siempre tiene id SV), usamos el id del usuario admin SV que
+    // ya viene en la respuesta del signin. Así la auditoría siempre queda
+    // con un usuario real (admin) en vez de 0.
+    const adminInfo = data as { user?: { id?: number }; userId?: number } | undefined;
+    const adminUserId =
+      typeof adminInfo?.user?.id === 'number'
+        ? adminInfo.user.id
+        : typeof adminInfo?.userId === 'number'
+          ? adminInfo.userId
+          : 0;
+    const effectiveUserId = userId && userId > 0 ? userId : adminUserId;
+    return this.svServices.noConfirmReschedule(
+      reservationId,
+      effectiveUserId,
+      reason,
+      tokenSv,
+    );
   }
 
   async linkReservationToOS(osIds: number[], reservationId: number): Promise<{ message: string }> {
