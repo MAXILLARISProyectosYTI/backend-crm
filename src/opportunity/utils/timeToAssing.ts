@@ -34,10 +34,12 @@ const schedules: Record<number, { startHour: number; startMinute: number; endHou
     { startHour: 9, startMinute: 0, endHour: 13, endMinute: 0 },
     { startHour: 15, startMinute: 0, endHour: 18, endMinute: 30 },
   ],
-  6: [ // Sábado
-    { startHour: 8, startMinute: 30, endHour: 16, endMinute: 0 },
+  6: [ // Sábado — todo el día sin restricción
+    { startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 },
   ],
-  // 0 (Domingo) no tiene horarios
+  0: [ // Domingo — todo el día sin restricción
+    { startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 },
+  ],
 };
 
 export const timeToAssing = (): boolean => {
@@ -46,7 +48,7 @@ export const timeToAssing = (): boolean => {
   const hours = now.getHours();
   const minutes = now.getMinutes();
 
-  // Si es domingo, no hay horarios
+  // Si el día no tiene configuración de horario, no se asigna
   if (!schedules[day]) return false;
 
   // Revisar si está dentro de alguna franja
