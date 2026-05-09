@@ -1312,8 +1312,25 @@ export class SvServices {
       );
       return res.data;
     } catch (error) {
-      console.error('Error noConfirmReschedule', reservationId, error);
-      throw new BadRequestException(`Error en no-confirm de reserva ${reservationId}`);
+      // Propaga el detalle real del SV para no quedarnos con un 400 genérico
+      // que oculta la causa (tabla inexistente, validación, etc.). El frontend
+      // ya muestra `errorMsg` directo del backend, así esto se ve en la UI.
+      const ax = error as { response?: { status?: number; data?: unknown }; message?: string };
+      const status = ax?.response?.status;
+      const data = ax?.response?.data as { message?: string | string[]; error?: string } | undefined;
+      const detail =
+        (Array.isArray(data?.message) ? data?.message.join('; ') : data?.message) ||
+        data?.error ||
+        ax?.message ||
+        'sin detalle';
+      console.error('Error noConfirmReschedule', reservationId, {
+        status,
+        data,
+        message: ax?.message,
+      });
+      throw new BadRequestException(
+        `Error en no-confirm de reserva ${reservationId} (SV ${status ?? 'n/a'}): ${detail}`,
+      );
     }
   }
 
