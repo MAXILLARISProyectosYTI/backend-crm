@@ -7,6 +7,7 @@ import { Opportunity } from 'src/opportunity/opportunity.entity';
 import { UserModule } from 'src/user/user.module';
 import { AssignmentQueueStateModule } from 'src/assignment-queue-state/assignment-queue-state.module';
 import { ActionHistoryModule } from 'src/action-history/action-history.module';
+import { OpportunityModule } from 'src/opportunity/opportunity.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ActionHistoryModule } from 'src/action-history/action-history.module';
     UserModule,
     AssignmentQueueStateModule,
     ActionHistoryModule,
+    OpportunityModule,
   ],
   controllers: [OpportunityDerivationController],
   providers: [OpportunityDerivationService],
