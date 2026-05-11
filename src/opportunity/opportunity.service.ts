@@ -85,22 +85,33 @@ export class OpportunityService {
   /**
    * Crea una nueva oportunidad (registro de lead).
    * Flujo: validar teléfono → consultar paciente en SV → validar sede/empresa → crear contacto → asignar por cola (por sede) → crear oportunidad → enlazar con SV si aplica.
+   *
+   * @param options.allowDuplicatePhone Si es `true`, omite la validación de
+   *   "TELEFONO_YA_REGISTRADO". Lo usa el bridge SV → CRM para "Derivar a
+   *   OI" desde Historia Clínica: en ese escenario el paciente puede tener
+   *   ya una oportunidad OFM/APNEA y aun así crear una OI nueva paralela.
    */
-  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<CreateOpportunityResponse> {
+  async create(
+    createOpportunityDto: CreateOpportunityDto,
+    userId: string,
+    options: { allowDuplicatePhone?: boolean } = {},
+  ): Promise<CreateOpportunityResponse> {
     let contact: Contact | null = null;
 
     try {
       // —— 1. Validar que no exista ya una oportunidad con el mismo teléfono ——
-      const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
-      if (existingByPhone) {
-        const assignedUser = existingByPhone.assignedUserId;
-        const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
-        return {
-          status: 'error',
-          code: 'TELEFONO_YA_REGISTRADO',
-          message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
-          data: {},
-        };
+      if (!options.allowDuplicatePhone) {
+        const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
+        if (existingByPhone) {
+          const assignedUser = existingByPhone.assignedUserId;
+          const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+          return {
+            status: 'error',
+            code: 'TELEFONO_YA_REGISTRADO',
+            message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+            data: {},
+          };
+        }
       }
 
       // —— 2. Token SV y consultar si el paciente es nuevo o existente en el sistema vertical ——

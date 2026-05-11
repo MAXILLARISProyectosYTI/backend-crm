@@ -18,6 +18,9 @@ import {
   UploadedFiles,
   Query,
   Req,
+  Headers,
+  UnauthorizedException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { OpportunityService } from './opportunity.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
@@ -559,6 +562,97 @@ export class OpportunityController {
   async getByPhoneNumber(@Param('phoneNumber') phoneNumber: string) {
     return this.opportunityService.getOpportunitiesByPhoneNumber(phoneNumber);
   }
+
+  // ───────────────────── Bridge SV → CRM ─────────────────────
+  //
+  // Endpoints públicos (sin JWT) usados por `sv-backend-main` para el flujo
+  // "Derivar a OI" desde Historia Clínica SV. Se autentican con un secreto
+  // compartido vía header `X-Internal-Api-Key` (env `INTERNAL_API_KEY`).
+  //
+  // Para `create()` el CRM necesita un `userId` válido del CRM porque lo
+  // usa para conseguir el token SV. Resolvemos un "user bridge" configurado
+  // por env (`SV_BRIDGE_USER_NAME`, default `jherry.visalot`).
+
+  /** Valida el header secreto compartido entre sv-backend y backend-crm. */
+  private assertInternalApiKey(apiKey: string | undefined) {
+    const expected = process.env.INTERNAL_API_KEY;
+    if (!expected) {
+      throw new InternalServerErrorException(
+        'INTERNAL_API_KEY no configurada en el backend-crm',
+      );
+    }
+    if (!apiKey || apiKey !== expected) {
+      throw new UnauthorizedException('X-Internal-Api-Key inválida');
+    }
+  }
+
+  /** Resuelve el userId que actuará como "creador" para llamadas server-to-server. */
+  private async resolveBridgeUserId(): Promise<string> {
+    const userName = process.env.SV_BRIDGE_USER_NAME ?? 'jherry.visalot';
+    const user = await this.userService.findByUserName(userName);
+    if (!user) {
+      throw new InternalServerErrorException(
+        `SV bridge user "${userName}" no existe en el CRM. Configurar SV_BRIDGE_USER_NAME.`,
+      );
+    }
+    return user.id;
+  }
+
+  /**
+   * Lista oportunidades activas vinculadas a una HC. Lo consume el sv-backend
+   * para evaluar elegibilidad del botón "Derivar a OI".
+   */
+  @Public()
+  @Get('by-clinic-history-from-sv/:clinicHistoryCode')
+  async getOpportunitiesByClinicHistoryFromSv(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('clinicHistoryCode') clinicHistoryCode: string,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    return this.opportunityService.getOpportunityByClinicHistory(clinicHistoryCode);
+  }
+
+  /**
+   * Crea oportunidad desde el flujo SV (mismo pipeline que `register` pero
+   * sin requerir JWT). El `userId` se resuelve a un user bridge configurado.
+   *
+   * Importante: el flujo "Derivar a OI" desde HC permite que el paciente
+   * tenga otras oportunidades pre-existentes (OFM/APNEA). Por eso pasamos
+   * `allowDuplicatePhone: true` al `create()`, que omite la validación de
+   * teléfono único. La unicidad por campaña queda a cargo del front del SV
+   * (botón "Derivar a OI") y del propio sv-backend si en el futuro se quiere
+   * reactivar el chequeo por campaña.
+   */
+  @Public()
+  @Post('register-from-sv')
+  async registerFromSv(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Body() body: Omit<CreateOpportunityDto, 'files'>,
+  ): Promise<CreateOpportunityResponse> {
+    this.assertInternalApiKey(apiKey);
+    const bridgeUserId = await this.resolveBridgeUserId();
+    return this.opportunityService.create({ ...body }, bridgeUserId, {
+      allowDuplicatePhone: true,
+    });
+  }
+
+  /**
+   * Update parcial de campos de una oportunidad. El sv-backend lo usa para
+   * sobreescribir `cConctionSv` con los flags `isOiDerivedFlow=true` +
+   * `isFromControles=true` después de la creación.
+   */
+  @Public()
+  @Put('update-from-sv/:id')
+  async updateFromSv(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('id') id: string,
+    @Body() body: UpdateOpportunityDto,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    const bridgeUserId = await this.resolveBridgeUserId();
+    return this.opportunityService.update(id, body, bridgeUserId);
+  }
+  // ──────────────────── /Bridge SV → CRM ────────────────────
 
   @Public()
   @Get('get-token-sv/:userId')
