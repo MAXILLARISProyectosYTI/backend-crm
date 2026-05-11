@@ -46,4 +46,24 @@ export class OpportunityDerivationController {
     const opportunityIds = await this.service.getDerivedOpportunitiesForUser(userId);
     return { opportunityIds };
   }
+
+  /**
+   * Deriva a OI buscando la oportunidad OFM/APNEA por historia clínica (usado desde CRM Controles).
+   */
+  @Post('by-clinic-history/:hc/derive-to-oi')
+  async deriveByClinicHistory(
+    @Param('hc') hc: string,
+    @Req() req: any,
+  ) {
+    const userId: string = req.user?.userId ?? req.user?.id ?? '';
+    return this.service.deriveByClinicHistory(hc, userId);
+  }
+
+  /**
+   * Verifica si existe una derivación activa para el paciente identificado por su HC.
+   */
+  @Get('by-clinic-history/:hc')
+  async getDerivationByClinicHistory(@Param('hc') hc: string) {
+    return this.service.getDerivationByClinicHistory(hc);
+  }
 }

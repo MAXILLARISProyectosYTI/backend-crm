@@ -42,6 +42,10 @@ export class OpportunityDerivation {
   })
   status: DerivationStatus;
 
+  /** Origen de la derivación: 'controles' si vino del CRM Controles, null si es OFM directo */
+  @Column({ type: 'varchar', length: 20, nullable: true, name: 'source' })
+  source: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

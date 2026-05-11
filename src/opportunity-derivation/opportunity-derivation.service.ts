@@ -13,6 +13,7 @@ import { AssignmentQueueStateService } from 'src/assignment-queue-state/assignme
 import { ActionHistoryService } from 'src/action-history/action-history.service';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { CAMPAIGNS_IDS } from 'src/globals/ids';
+import { OpportunityService } from 'src/opportunity/opportunity.service';
 
 @Injectable()
 export class OpportunityDerivationService {
@@ -24,6 +25,7 @@ export class OpportunityDerivationService {
     private readonly userService: UserService,
     private readonly assignmentQueueStateService: AssignmentQueueStateService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly opportunityService: OpportunityService,
   ) {}
 
   async deriveToOi(
@@ -153,5 +155,64 @@ export class OpportunityDerivationService {
       select: ['opportunityId'],
     });
     return derivations.map((d) => d.opportunityId);
+  }
+
+  /**
+   * Deriva a OI buscando la oportunidad OFM/APNEA por historia clínica.
+   * Marca source='controles' para indicar que la derivación viene del CRM Controles.
+   */
+  async deriveByClinicHistory(
+    clinicHistoryCode: string,
+    createdByUserId: string,
+  ): Promise<OpportunityDerivation & { assignedUserName: string }> {
+    const opportunities = await this.opportunityService.getOpportunityByClinicHistory(clinicHistoryCode);
+
+    const ofmOpp = opportunities.find(
+      (o) => o.cSubCampaignId === CAMPAIGNS_IDS.OFM || o.cSubCampaignId === CAMPAIGNS_IDS.APNEA,
+    );
+
+    if (!ofmOpp) {
+      throw new NotFoundException(
+        `No se encontró oportunidad OFM/APNEA vinculada al HC ${clinicHistoryCode}`,
+      );
+    }
+
+    const derivation = await this.deriveToOi(ofmOpp.id, createdByUserId);
+
+    // Marcar la fuente como 'controles'
+    await this.derivationRepository.update({ id: derivation.id }, { source: 'controles' });
+
+    let assignedUserName = derivation.assignedUserId;
+    try {
+      const user = await this.userService.findOne(derivation.assignedUserId);
+      assignedUserName = user.userName ?? `${user.firstName} ${user.lastName}`.trim();
+    } catch {
+      // usuario no encontrado, se usa el ID como fallback
+    }
+
+    return { ...derivation, source: 'controles', assignedUserName };
+  }
+
+  /**
+   * Verifica si existe una derivación activa para un paciente identificado por su HC.
+   */
+  async getDerivationByClinicHistory(clinicHistoryCode: string): Promise<{
+    hasDerivation: boolean;
+    opportunityId: string | null;
+    derivation: OpportunityDerivation | null;
+    assignedUser: { id: string; firstName: string; lastName: string; userName: string } | null;
+  }> {
+    const opportunities = await this.opportunityService.getOpportunityByClinicHistory(clinicHistoryCode);
+
+    const ofmOpp = opportunities.find(
+      (o) => o.cSubCampaignId === CAMPAIGNS_IDS.OFM || o.cSubCampaignId === CAMPAIGNS_IDS.APNEA,
+    );
+
+    if (!ofmOpp) {
+      return { hasDerivation: false, opportunityId: null, derivation: null, assignedUser: null };
+    }
+
+    const result = await this.getDerivation(ofmOpp.id);
+    return { ...result, opportunityId: ofmOpp.id };
   }
 }
