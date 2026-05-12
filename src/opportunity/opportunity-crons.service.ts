@@ -98,6 +98,7 @@ export class OpportunityCronsService {
       }
 
       // Tracking local para mantener la rotación durante el bucle
+      // Clave: subCampaignId + campusId para no mezclar sedes distintas
       const lastAssignedUsersBySubcampaign = new Map<string, string>();
       let successCount = 0;
       let errorCount = 0;
@@ -106,10 +107,12 @@ export class OpportunityCronsService {
       for (const opportunity of opportunities) {
         try {
           if (opportunity) {
+            const campusId = opportunity.cCampusId ?? undefined;
             const nextUserAssigned =
               await this.getNextUserToAssingOpportunityWithTracking(
                 opportunity.cSubCampaignId || '',
                 lastAssignedUsersBySubcampaign,
+                campusId,
               );
 
 
@@ -128,10 +131,9 @@ export class OpportunityCronsService {
             );
 
             // Actualizar tracking local inmediatamente después de asignación exitosa
-            lastAssignedUsersBySubcampaign.set(
-              opportunity.cSubCampaignId || '',
-              nextUserAssigned.id,
-            );
+            // Clave por sede+subcampaña para no mezclar queues de Lima y Arequipa
+            const trackingKey = `${opportunity.cSubCampaignId || ''}_${opportunity.cCampusId ?? ''}`;
+            lastAssignedUsersBySubcampaign.set(trackingKey, nextUserAssigned.id);
             successCount++;
           }
         } catch (error) {
@@ -153,15 +155,19 @@ export class OpportunityCronsService {
 
   /**
    * Método mejorado que utiliza tracking local para mantener la rotación
-   * durante la ejecución del cron job
+   * durante la ejecución del cron job.
+   * campusId filtra la lista de usuarios y el "último asignado" para no mezclar sedes.
    */
   async getNextUserToAssingOpportunityWithTracking(
     subCampaignId: string,
     localTracking: Map<string, string>,
+    campusId?: number,
   ) {
     try {
-      let listUsers =
-        await this.userService.getUsersBySubCampaignId(subCampaignId);
+      // Usar lista filtrada por sede cuando está disponible
+      let listUsers = campusId != null
+        ? await this.userService.getUsersBySubCampaignIdAndCampusId(subCampaignId, campusId)
+        : await this.userService.getUsersBySubCampaignId(subCampaignId);
       let usersDefault: UserWithTeam[] = [];
 
       // Si no hay usuarios asignados, se asigna un usuario aleatorio del equipo por defecto
@@ -198,22 +204,24 @@ export class OpportunityCronsService {
         return userDetails;
       }
 
-      // Verificar si ya tenemos un tracking local para esta subcampaña
-      const lastAssignedUserId = localTracking.get(subCampaignId);
+      // Clave por sede+subcampaña (igual que en el mapa del loop principal)
+      const trackingKey = `${subCampaignId}_${campusId ?? ''}`;
+      const lastAssignedUserId = localTracking.get(trackingKey);
       let lastOpportunityAssigned: Partial<OpportunityWithUser> | null = null;
 
       if (lastAssignedUserId) {
-        // Usar el tracking local
+        // Usar el tracking local del batch actual
         const user = await this.userService.findOne(lastAssignedUserId);
         lastOpportunityAssigned = {
           assigned_user_id: lastAssignedUserId,
           assigned_user_user_name: user.userName || '',
         };
       } else {
-        // Primera asignación, consultar EspoCRM
+        // Primera asignación del batch: consultar BD usando la misma sede
         lastOpportunityAssigned =
           await this.opportunityService.getLastOpportunityAssigned(
             subCampaignId,
+            campusId,
           );
       }
 
