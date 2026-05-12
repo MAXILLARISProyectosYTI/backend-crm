@@ -85,22 +85,41 @@ export class OpportunityService {
   /**
    * Crea una nueva oportunidad (registro de lead).
    * Flujo: validar teléfono → consultar paciente en SV → validar sede/empresa → crear contacto → asignar por cola (por sede) → crear oportunidad → enlazar con SV si aplica.
+   *
+   * @param options.allowDuplicatePhone Si es `true`, omite la validación de
+   *   "TELEFONO_YA_REGISTRADO". Lo usa el bridge SV → CRM para "Derivar a
+   *   OI" desde Historia Clínica: en ese escenario el paciente puede tener
+   *   ya una oportunidad OFM/APNEA y aun así crear una OI nueva paralela.
    */
-  async create(createOpportunityDto: CreateOpportunityDto, userId: string): Promise<CreateOpportunityResponse> {
+  async create(
+    createOpportunityDto: CreateOpportunityDto,
+    userId: string,
+    options: { allowDuplicatePhone?: boolean } = {},
+  ): Promise<CreateOpportunityResponse> {
+    // —— 0. Flujo paciente REFERIDO (bridge SV → CRM): teléfono compartido con
+    //       otra HC. Reusamos contactId del titular, generamos REF-N y NO
+    //       inferimos paciente por teléfono. Toda la lógica está aislada en
+    //       `createReferralFromSv` para no contaminar el camino feliz.
+    if (createOpportunityDto.isReferral) {
+      return this.createReferralFromSv(createOpportunityDto, userId);
+    }
+
     let contact: Contact | null = null;
 
     try {
       // —— 1. Validar que no exista ya una oportunidad con el mismo teléfono ——
-      const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
-      if (existingByPhone) {
-        const assignedUser = existingByPhone.assignedUserId;
-        const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
-        return {
-          status: 'error',
-          code: 'TELEFONO_YA_REGISTRADO',
-          message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
-          data: {},
-        };
+      if (!options.allowDuplicatePhone) {
+        const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
+        if (existingByPhone) {
+          const assignedUser = existingByPhone.assignedUserId;
+          const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+          return {
+            status: 'error',
+            code: 'TELEFONO_YA_REGISTRADO',
+            message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+            data: {},
+          };
+        }
       }
 
       // —— 2. Token SV y consultar si el paciente es nuevo o existente en el sistema vertical ——
@@ -330,6 +349,207 @@ export class OpportunityService {
         }
       }
       const message = error?.message ?? 'Error al crear la oportunidad';
+      if (message === 'NO_USUARIOS_PARA_ASIGNAR') {
+        return {
+          status: 'error',
+          code: 'SIN_USUARIOS_PARA_ASIGNAR',
+          message: 'No hay usuarios disponibles para asignar en esta campaña/sede.',
+          data: {},
+        };
+      }
+      throw new BadRequestException(message);
+    }
+  }
+
+  /**
+   * Bridge SV → CRM: crea una oportunidad como REFERIDO de otra oportunidad
+   * pre-existente (titular del teléfono).
+   *
+   * Diferencias vs `create()` normal:
+   *   - NO consulta `getPatientIsNew(phone)`: usaría al titular del teléfono
+   *     y nos daría datos del paciente equivocado.
+   *   - NO crea contacto nuevo: reusa `contactId` del titular.
+   *   - Marca `cIsReferralCreation = true` y nombre con sufijo `REF-N`.
+   *   - Usa los datos del paciente referido (vienen en `dto.referredPatient`)
+   *     para hidratar `cPatientsname`, `cPatientDocument`, etc.
+   *   - Hace round-robin OI normal (no hereda el ejecutivo del titular).
+   *   - Vincula `clinic_history_crm` al paciente REFERIDO (`patientIdOverride`).
+   *
+   * Precondición: la oportunidad principal debe existir (verificado por el
+   * sv-backend antes de llamar a este endpoint).
+   */
+  private async createReferralFromSv(
+    dto: CreateOpportunityDto,
+    userId: string,
+  ): Promise<CreateOpportunityResponse> {
+    try {
+      if (!dto.primaryOpportunityId) {
+        return {
+          status: 'error',
+          code: 'REFERIDO_FALTA_PRIMARY',
+          message: 'Falta primaryOpportunityId en payload de referido',
+          data: {},
+        };
+      }
+      if (!dto.patientIdOverride) {
+        return {
+          status: 'error',
+          code: 'REFERIDO_FALTA_PATIENT',
+          message: 'Falta patientIdOverride en payload de referido',
+          data: {},
+        };
+      }
+
+      const primary = await this.opportunityRepository.findOne({
+        where: { id: dto.primaryOpportunityId },
+        relations: ['assignedUserId'],
+      });
+      if (!primary) {
+        return {
+          status: 'error',
+          code: 'REFERIDO_PRIMARY_NO_EXISTE',
+          message: `La oportunidad principal ${dto.primaryOpportunityId} no existe en CRM`,
+          data: {},
+        };
+      }
+      if (!primary.contactId) {
+        return {
+          status: 'error',
+          code: 'REFERIDO_PRIMARY_SIN_CONTACTO',
+          message: 'La oportunidad principal no tiene contactId',
+          data: {},
+        };
+      }
+
+      const refPatient = dto.referredPatient ?? {};
+      const referredFullName = [
+        refPatient.name,
+        refPatient.lastNameFather,
+        refPatient.lastNameMother,
+      ]
+        .filter(Boolean)
+        .map((s) => String(s).trim())
+        .join(' ')
+        .trim() || dto.name;
+
+      // Calcular siguiente REF-N basándonos en oportunidades del mismo
+      // contactId (todas las del "núcleo" del titular). Si no hay match con
+      // ese contactId, caemos al patrón legacy de buscar por baseName.
+      const refRegex = / REF-(\d+)$/;
+      const siblingsByContact = await this.opportunityRepository.find({
+        where: { contactId: primary.contactId, deleted: false },
+      });
+
+      let nextRefName: string;
+      if (siblingsByContact.length > 0) {
+        let highestRef = 1;
+        for (const op of siblingsByContact) {
+          const match = (op.name ?? '').match(refRegex);
+          if (match) {
+            const refNumber = parseInt(match[1], 10);
+            if (refNumber > highestRef) highestRef = refNumber;
+          }
+        }
+        nextRefName = `${referredFullName} REF-${highestRef + 1}`;
+      } else {
+        nextRefName = `${referredFullName} REF-2`;
+      }
+
+      // Asignación round-robin OI por (subcampaña + sede) — igual que `create()`.
+      const isTimeToAssign = timeToAssing();
+      let userToAssign: User | null = null;
+      const campusId = Number(dto.campusId) || primary.cCampusId || undefined;
+      if (isTimeToAssign) {
+        userToAssign = await this.userService.getNextUserToAssign(
+          dto.subCampaignId,
+          campusId,
+        );
+      }
+
+      const today = new Date();
+      const payload: Partial<Opportunity> = {
+        id: this.idGeneratorService.generateId(),
+        name: nextRefName,
+        cNumeroDeTelefono: dto.phoneNumber,
+        closeDate: today,
+        createdAt: today,
+        stage: Enum_Stage.GESTION_INICIAL,
+        campaignId: dto.campaignId,
+        cSubCampaignId: dto.subCampaignId,
+        cCanal: dto.channel,
+        contactId: primary.contactId,
+        cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
+        cIsReferralCreation: true,
+        cClinicHistory: dto.referredClinicHistoryCode ?? undefined,
+        cPatientsname: refPatient.name ?? undefined,
+        cPatientsPaternalLastName: refPatient.lastNameFather ?? undefined,
+        cPatientsMaternalLastName: refPatient.lastNameMother ?? undefined,
+        cPatientDocument: refPatient.documentNumber ?? undefined,
+        cPatientDocumentType: refPatient.documentType ?? 'DNI',
+      };
+      if (userToAssign) payload.assignedUserId = userToAssign;
+      if (dto.observation) payload.cObs = dto.observation;
+      if (campusId != null) payload.cCampusId = campusId;
+
+      const opportunity = this.opportunityRepository.create(payload);
+      const saved = await this.opportunityRepository.save(opportunity);
+
+      // URL de redirección: usa el ejecutivo recién asignado (no hereda el del
+      // titular). El sv-backend sobreescribe luego con flags isOiDerivedFlow.
+      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id ?? ''}&uuid-opportunity=${saved.id}`;
+      const updated = await this.update(saved.id, { cConctionSv }, userId);
+
+      if (userToAssign && campusId != null) {
+        await this.assignmentQueueStateService.recordAssignment(
+          campusId,
+          dto.subCampaignId,
+          userToAssign.id,
+          saved.id,
+        );
+      }
+
+      // Vincular HC ↔ oportunidad en SV apuntando al paciente REFERIDO.
+      try {
+        const user = await this.userService.findOne(userId);
+        const { tokenSv } = await this.svServices.getTokenSv(
+          user.cUsersv!,
+          user.cContraseaSv!,
+        );
+        await this.svServices.createClinicHistoryCrm(
+          {
+            espoId: updated.id,
+            patientId: dto.patientIdOverride,
+          } as CreateClinicHistoryCrmDto,
+          tokenSv,
+        );
+      } catch (linkError: any) {
+        // No abortamos: la oportunidad ya está creada. El sv-backend también
+        // intenta crear `clinic_history_crm` por idempotencia.
+        console.error(
+          '⚠️ createReferralFromSv: fallo al crear clinic_history_crm en SV:',
+          linkError?.message,
+        );
+      }
+
+      if (updated.assignedUserId) {
+        await this.websocketService.notifyNewOpportunity(updated);
+      }
+
+      await this.actionHistoryService.addRecord({
+        targetId: updated.id,
+        target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
+        userId,
+        message: `Oportunidad creada como REFERIDA de ${primary.id} (${primary.name})`,
+      });
+
+      return {
+        status: 'success',
+        code: 'OPORTUNIDAD_CREADA',
+        message: 'Oportunidad referida creada correctamente',
+        data: { opportunity: updated },
+      };
+    } catch (error: any) {
+      const message = error?.message ?? 'Error al crear oportunidad referida';
       if (message === 'NO_USUARIOS_PARA_ASIGNAR') {
         return {
           status: 'error',
