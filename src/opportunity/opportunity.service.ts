@@ -2598,9 +2598,10 @@ export class OpportunityService {
     const isReferralCreation =
       opportunity.cIsReferralCreation === true ||
       / REF-\d+$/.test(opportunity.name || '');
-    // Si la campaña es OI, siempre forzar el selector de 3 opciones sin importar
-    // si el frontend envió o no el flag isOiDerivedFlow.
-    const effectiveOiDerived = isOiDerivedFlow || campaign.name === 'OI';
+    // Si la sub-campaña es OI, siempre forzar el selector de 3 opciones sin importar
+    // si el frontend envió o no el flag isOiDerivedFlow. Comparamos por ID (constante)
+    // en lugar del nombre de la BD para evitar fallos por diferencias de capitalización.
+    const effectiveOiDerived = isOiDerivedFlow || opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI;
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(
       opportunityId,
       campaign.name!,
