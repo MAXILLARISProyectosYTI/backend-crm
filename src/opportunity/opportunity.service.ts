@@ -2598,13 +2598,16 @@ export class OpportunityService {
     const isReferralCreation =
       opportunity.cIsReferralCreation === true ||
       / REF-\d+$/.test(opportunity.name || '');
+    // Si la campaña es OI, siempre forzar el selector de 3 opciones sin importar
+    // si el frontend envió o no el flag isOiDerivedFlow.
+    const effectiveOiDerived = isOiDerivedFlow || campaign.name === 'OI';
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(
       opportunityId,
       campaign.name!,
       localNumber,
       historyCLinic,
       forceInitialFlow,
-      isOiDerivedFlow,
+      effectiveOiDerived,
       isReferralCreation,
     );
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
