@@ -99,6 +99,15 @@ export class CreateOpportunityDto {
     documentType?: string;
   };
 
+  /**
+   * Código de la HC SV del paciente (flujo no-referido). Se persiste como
+   * `cClinicHistory` en la oportunidad. Permite que el redirect manager
+   * encuentre al paciente directamente por HC sin depender del teléfono.
+   */
+  @IsOptional()
+  @IsString()
+  clinicHistoryCode?: string;
+
   @IsOptional()
   files?: Express.Multer.File[];
 }
