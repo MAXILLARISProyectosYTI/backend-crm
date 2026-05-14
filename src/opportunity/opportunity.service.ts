@@ -2623,6 +2623,8 @@ export class OpportunityService {
     // Si el SV no encontró paciente en su BD (dataPatient = null) pero la
     // oportunidad en CRM ya tiene nombre/HC/contacto, exponemos esos datos
     // al frontend para que la cabecera del selector OI no se vea vacía.
+    // En referidos (mismo teléfono, paciente nuevo) NO copiamos cClinicHistory:
+    // suele seguir siendo la HC del titular; el Flujo OI debe verse como creación.
     if (effectiveOiDerived && (!redirectResponse?.dataPatient || redirectResponse.dataPatient === null)) {
       try {
         const fallbackPatient: Record<string, any> = {};
@@ -2630,7 +2632,9 @@ export class OpportunityService {
         if (opportunity.cPatientsPaternalLastName) fallbackPatient.lastNameFather = opportunity.cPatientsPaternalLastName;
         if (opportunity.cPatientsMaternalLastName) fallbackPatient.lastNameMother = opportunity.cPatientsMaternalLastName;
         if (opportunity.cPatientDocument) fallbackPatient.documentNumber = opportunity.cPatientDocument;
-        if (opportunity.cClinicHistory) fallbackPatient.history = opportunity.cClinicHistory;
+        if (opportunity.cClinicHistory && !isReferralCreation) {
+          fallbackPatient.history = opportunity.cClinicHistory;
+        }
         if (Object.keys(fallbackPatient).length > 0) {
           (redirectResponse as any).dataPatient = fallbackPatient;
         }
