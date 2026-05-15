@@ -256,6 +256,13 @@ export class OpportunityService {
       if (Object.keys(metadata).length > 0) {
         payloadOpportunity.cMetadata = JSON.stringify(metadata);
       }
+      // Si el caller (sv-backend en flujo "Derivar a OI desde HC SV") nos pasó
+      // la HC del paciente, persistirla directamente en la oportunidad. Esto
+      // garantiza que el redirect manager encuentre al paciente por HC sin
+      // depender de la inferencia por teléfono (que falla en HCs antiguas).
+      if (createOpportunityDto.clinicHistoryCode?.trim()) {
+        payloadOpportunity.cClinicHistory = createOpportunityDto.clinicHistoryCode.trim();
+      }
 
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
       const savedOpportunity = await this.opportunityRepository.save(opportunity);
@@ -490,6 +497,8 @@ export class OpportunityService {
       if (userToAssign) payload.assignedUserId = userToAssign;
       if (dto.observation) payload.cObs = dto.observation;
       if (campusId != null) payload.cCampusId = campusId;
+      // No heredar sede de atención del titular: el ejecutivo la confirma en CRM (modal) o en portal.
+      payload.cCampusAtencionId = null;
 
       const opportunity = this.opportunityRepository.create(payload);
       const saved = await this.opportunityRepository.save(opportunity);
@@ -629,6 +638,8 @@ export class OpportunityService {
         // original al inferir por número de teléfono. Ver
         // sv-backend-main/.../clinic-history-crm.service.ts#getRedirectByOpportunityId
         cIsReferralCreation: true,
+        // Sede de atención debe elegirse en CRM (Gestiona) o en la tarjeta de referido; no copiar del titular.
+        cCampusAtencionId: null,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
@@ -2598,9 +2609,10 @@ export class OpportunityService {
     const isReferralCreation =
       opportunity.cIsReferralCreation === true ||
       / REF-\d+$/.test(opportunity.name || '');
-    // Si la campaña es OI, siempre forzar el selector de 3 opciones sin importar
-    // si el frontend envió o no el flag isOiDerivedFlow.
-    const effectiveOiDerived = isOiDerivedFlow || campaign.name === 'OI';
+    // Si la sub-campaña es OI, siempre forzar el selector de 3 opciones sin importar
+    // si el frontend envió o no el flag isOiDerivedFlow. Comparamos por ID (constante)
+    // en lugar del nombre de la BD para evitar fallos por diferencias de capitalización.
+    const effectiveOiDerived = isOiDerivedFlow || opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI;
     const redirectResponse = await this.svServices.getRedirectByOpportunityId(
       opportunityId,
       campaign.name!,
@@ -2610,6 +2622,29 @@ export class OpportunityService {
       effectiveOiDerived,
       isReferralCreation,
     );
+
+    // ── Enriquecer respuesta OI con datos de la oportunidad CRM ─────────────
+    // Si el SV no encontró paciente en su BD (dataPatient = null) pero la
+    // oportunidad en CRM ya tiene nombre/HC/contacto, exponemos esos datos
+    // al frontend para que la cabecera del selector OI no se vea vacía.
+    // En referidos (mismo teléfono, paciente nuevo) NO copiamos cClinicHistory:
+    // suele seguir siendo la HC del titular; el Flujo OI debe verse como creación.
+    if (effectiveOiDerived && (!redirectResponse?.dataPatient || redirectResponse.dataPatient === null)) {
+      try {
+        const fallbackPatient: Record<string, any> = {};
+        if (opportunity.cPatientsname) fallbackPatient.name = opportunity.cPatientsname;
+        if (opportunity.cPatientsPaternalLastName) fallbackPatient.lastNameFather = opportunity.cPatientsPaternalLastName;
+        if (opportunity.cPatientsMaternalLastName) fallbackPatient.lastNameMother = opportunity.cPatientsMaternalLastName;
+        if (opportunity.cPatientDocument) fallbackPatient.documentNumber = opportunity.cPatientDocument;
+        if (opportunity.cClinicHistory && !isReferralCreation) {
+          fallbackPatient.history = opportunity.cClinicHistory;
+        }
+        if (Object.keys(fallbackPatient).length > 0) {
+          (redirectResponse as any).dataPatient = fallbackPatient;
+        }
+      } catch { /* no-op */ }
+    }
+
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
