@@ -498,7 +498,7 @@ export class OpportunityService {
       if (dto.observation) payload.cObs = dto.observation;
       if (campusId != null) payload.cCampusId = campusId;
       // No heredar sede de atención del titular: el ejecutivo la confirma en CRM (modal) o en portal.
-      payload.cCampusAtencionId = null;
+      payload.cCampusAtencionId = undefined;
 
       const opportunity = this.opportunityRepository.create(payload);
       const saved = await this.opportunityRepository.save(opportunity);
@@ -639,7 +639,7 @@ export class OpportunityService {
         // sv-backend-main/.../clinic-history-crm.service.ts#getRedirectByOpportunityId
         cIsReferralCreation: true,
         // Sede de atención debe elegirse en CRM (Gestiona) o en la tarjeta de referido; no copiar del titular.
-        cCampusAtencionId: null,
+        cCampusAtencionId: undefined,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
