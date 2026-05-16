@@ -14,6 +14,7 @@ import { Enum_Following } from './dto/enums';
 import { DateTime } from 'luxon';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
+import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
 
 @Injectable()
 export class OpportunityCronsService {
@@ -33,6 +34,7 @@ export class OpportunityCronsService {
     private readonly userService: UserService,
     private readonly opportunityService: OpportunityService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly assignmentQueueStateService: AssignmentQueueStateService,
   ) {}
 
   @Cron('0 30 9 * * *')
@@ -100,6 +102,8 @@ export class OpportunityCronsService {
       // Tracking local para mantener la rotación durante el bucle
       // Clave: subCampaignId + campusId para no mezclar sedes distintas
       const lastAssignedUsersBySubcampaign = new Map<string, string>();
+      // Para recordar también el id de la última oportunidad asignada por key
+      const lastOpportunityIdByKey = new Map<string, string>();
       let successCount = 0;
       let errorCount = 0;
 
@@ -134,6 +138,7 @@ export class OpportunityCronsService {
             // Clave por sede+subcampaña para no mezclar queues de Lima y Arequipa
             const trackingKey = `${opportunity.cSubCampaignId || ''}_${opportunity.cCampusId ?? ''}`;
             lastAssignedUsersBySubcampaign.set(trackingKey, nextUserAssigned.id);
+            lastOpportunityIdByKey.set(trackingKey, opportunity.id);
             successCount++;
           }
         } catch (error) {
@@ -143,6 +148,25 @@ export class OpportunityCronsService {
           );
           errorCount++;
           // Continuar con la siguiente oportunidad en caso de error
+        }
+      }
+
+      // Sincronizar assignment_queue_state con el resultado del batch para que
+      // el siguiente lead regular continúe desde donde terminó el cron.
+      for (const [key, userId] of lastAssignedUsersBySubcampaign.entries()) {
+        try {
+          const [subCampaignId, campusIdStr] = key.split('_');
+          const campusId = campusIdStr ? Number(campusIdStr) : null;
+          if (subCampaignId && campusId != null && !isNaN(campusId)) {
+            await this.assignmentQueueStateService.recordAssignment(
+              campusId,
+              subCampaignId,
+              userId,
+              lastOpportunityIdByKey.get(key) ?? null,
+            );
+          }
+        } catch (err) {
+          console.error('❌ Error actualizando assignment_queue_state tras batch:', err);
         }
       }
     } catch (error) {
