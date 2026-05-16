@@ -144,7 +144,11 @@ export class OpportunityService {
       const isPacienteNuevo = OpportunityService.CODES_PACIENTE_NUEVO.includes(code);
       const isPacienteExistente = OpportunityService.CODES_PACIENTE_EXISTENTE.includes(code);
 
-      if (isPacienteExistente && svData.is_assigned) {
+      // Cuando viene de register-from-sv (allowDuplicatePhone=true), el SV ya
+      // validó la elegibilidad por código de HC específico antes de llamar este
+      // endpoint. Saltamos el bloqueo por teléfono compartido para permitir que
+      // hermanos/familiares con el mismo número tengan oportunidades OI independientes.
+      if (isPacienteExistente && svData.is_assigned && !options.allowDuplicatePhone) {
         return {
           status: 'error',
           code: 'PACIENTE_YA_ASIGNADO',
@@ -284,7 +288,15 @@ export class OpportunityService {
         espoId: newOpportunity.id,
       };
 
-      if (isPacienteExistente && svData.patient) {
+      // Cuando se provee clinicHistoryCode explícito (flujo "Derivar a OI" desde SV), el
+      // lookup por teléfono puede devolver un paciente DISTINTO que comparte el número.
+      // En ese caso omitimos la hidratación desde svData para no contaminar la oportunidad
+      // del paciente correcto con datos del que comparte teléfono. El sv-backend registrará
+      // el patientId correcto en clinic_history_crm en un paso posterior.
+      const explicitHcCode = createOpportunityDto.clinicHistoryCode?.trim();
+      const phoneFoundMatchesHc = !explicitHcCode || svData.patient?.history === explicitHcCode;
+
+      if (isPacienteExistente && svData.patient && phoneFoundMatchesHc) {
         const patient = svData.patient;
         const complete = svData.complete;
         const dataReservation = svData.data_reservation;
@@ -498,7 +510,7 @@ export class OpportunityService {
       if (dto.observation) payload.cObs = dto.observation;
       if (campusId != null) payload.cCampusId = campusId;
       // No heredar sede de atención del titular: el ejecutivo la confirma en CRM (modal) o en portal.
-      payload.cCampusAtencionId = null;
+      payload.cCampusAtencionId = undefined;
 
       const opportunity = this.opportunityRepository.create(payload);
       const saved = await this.opportunityRepository.save(opportunity);
@@ -639,7 +651,7 @@ export class OpportunityService {
         // sv-backend-main/.../clinic-history-crm.service.ts#getRedirectByOpportunityId
         cIsReferralCreation: true,
         // Sede de atención debe elegirse en CRM (Gestiona) o en la tarjeta de referido; no copiar del titular.
-        cCampusAtencionId: null,
+        cCampusAtencionId: undefined,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
