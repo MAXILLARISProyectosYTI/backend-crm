@@ -241,12 +241,28 @@ export class OpportunityCronsService {
           assigned_user_user_name: user.userName || '',
         };
       } else {
-        // Primera asignación del batch: consultar BD usando la misma sede
-        lastOpportunityAssigned =
-          await this.opportunityService.getLastOpportunityAssigned(
-            subCampaignId,
-            campusId,
-          );
+        // Primera asignación del batch: usar assignment_queue_state como fuente
+        // única de verdad (igual que getNextUserToAssign en el flujo normal).
+        const campusIdForState = campusId ?? 0;
+        const state = await this.assignmentQueueStateService.getState(campusIdForState, subCampaignId);
+        if (state) {
+          let lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+          if (!lastUserName) {
+            const dbUser = await this.userService.findOne(state.lastAssignedUserId).catch(() => null);
+            lastUserName = dbUser?.userName ?? '';
+          }
+          lastOpportunityAssigned = {
+            assigned_user_id: state.lastAssignedUserId,
+            assigned_user_user_name: lastUserName,
+          };
+        } else {
+          // Fallback solo si no existe state en la cola aún
+          lastOpportunityAssigned =
+            await this.opportunityService.getLastOpportunityAssigned(
+              subCampaignId,
+              campusId,
+            );
+        }
       }
 
       if (!lastOpportunityAssigned) {
