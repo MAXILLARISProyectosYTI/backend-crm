@@ -227,20 +227,23 @@ export class OpportunitiesClosersService {
         if (svData?.fecha) fechaCotizacion = svData.fecha;
       }
 
-      // Prioridad 1: JOIN directo por opportunityId (c_sub_campaign_id del JOIN)
-      const rawSubCampaignId: string | null = raw[index]?.c_sub_campaign_id ?? null;
-      let tipoTratamiento: string | null = rawSubCampaignId ? (SUB_CAMPAIGN_NAMES[rawSubCampaignId] ?? null) : null;
+      // Prioridad 1: tipo de tratamiento desde SV por cotizacionId (más específico y exacto)
+      let tipoTratamiento: string | null = null;
+      if (entity.cotizacionId) {
+        const svData = treatmentByCotizacion[Number(entity.cotizacionId)];
+        if (svData?.tipo) tipoTratamiento = svData.tipo;
+      }
 
-      // Prioridad 2: oportunidad CRM por historia clínica
+      // Prioridad 2: JOIN directo por opportunityId (c_sub_campaign_id del JOIN)
+      const rawSubCampaignId: string | null = raw[index]?.c_sub_campaign_id ?? null;
+      if (!tipoTratamiento) {
+        tipoTratamiento = rawSubCampaignId ? (SUB_CAMPAIGN_NAMES[rawSubCampaignId] ?? null) : null;
+      }
+
+      // Prioridad 3: oportunidad CRM por historia clínica
       if (!tipoTratamiento && entity.hCPatient && subCampaignByHistory.has(entity.hCPatient)) {
         const id = subCampaignByHistory.get(entity.hCPatient)!;
         tipoTratamiento = SUB_CAMPAIGN_NAMES[id] ?? null;
-      }
-
-      // Prioridad 3 (definitivo): tipo de tratamiento desde SV por cotizacionId
-      if (!tipoTratamiento && entity.cotizacionId) {
-        const svData = treatmentByCotizacion[Number(entity.cotizacionId)];
-        if (svData?.tipo) tipoTratamiento = svData.tipo;
       }
 
       return {
