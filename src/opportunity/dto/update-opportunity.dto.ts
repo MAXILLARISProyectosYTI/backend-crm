@@ -184,7 +184,7 @@ export class UpdateOpportunityDto {
   cEnvironment?: string;
 
   @IsOptional()
-  @IsDateString()
+  @IsString()
   cAppointment?: string;
 
   @IsOptional()
@@ -287,6 +287,12 @@ export class UpdateOpportunityDto {
   @IsOptional()
   @IsDateString()
   createdAt?: string;
+
+  @IsOptional()
+  cFacturas?: {
+    comprobante_soles: string | null;
+    comprobante_dolares: string | null;
+  };
 }
 
 
