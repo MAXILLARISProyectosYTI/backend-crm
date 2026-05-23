@@ -713,14 +713,9 @@ export class OpportunityService {
 
     const saved = await this.opportunityRepository.save(opportunity);
 
-    if (opportunity.cCampusId != null && opportunity.cSubCampaignId) {
-      await this.assignmentQueueStateService.recordAssignment(
-        opportunity.cCampusId,
-        opportunity.cSubCampaignId,
-        assignedUserId,
-        opportunityId,
-      );
-    }
+    // La reasignación manual NO actualiza assignment_queue_state para no
+    // desplazar la posición de la cola automática de round-robin.
+    // El siguiente lead automático continuará desde donde estaba antes de la reasignación.
 
     return saved;
 
@@ -1330,15 +1325,11 @@ export class OpportunityService {
     // Obtener la oportunidad actualizada con relaciones
     const updatedOpportunity = await this.getOneWithEntity(id);
 
-    // Estado estable de cola: si se cambió el usuario asignado, actualizar estado por sede + subcampaña
-    if (updateData.assignedUserId != null && updatedOpportunity.cCampusId != null && updatedOpportunity.cSubCampaignId && updatedOpportunity.assignedUserId?.id) {
-      await this.assignmentQueueStateService.recordAssignment(
-        updatedOpportunity.cCampusId,
-        updatedOpportunity.cSubCampaignId,
-        updatedOpportunity.assignedUserId.id,
-        updatedOpportunity.id,
-      );
-    }
+    // NOTA: NO actualizar assignment_queue_state aquí.
+    // La cola round-robin solo se actualiza en los flujos automáticos:
+    // createOpportunity() y el batch del cron (ambos llaman recordAssignment explícitamente).
+    // Si se actualizara aquí, cualquier reasignación manual (PATCH, changeData, etc.)
+    // desplazaría el puntero y saltaría usuarios en la cola automática.
     
     // No notificar por WebSocket si solo se actualiza la tipificación
     if (!isOnlyTypificationUpdate) {
@@ -1743,7 +1734,11 @@ export class OpportunityService {
   async getOpportunitiesNotAssigned(): Promise<Opportunity[]> {
     return await this.opportunityRepository
       .createQueryBuilder("o")
-      .where("o.assigned_user_id IS NULL OR o.assigned_user_id = ''")
+      .where("(o.assigned_user_id IS NULL OR o.assigned_user_id = '')")
+      .andWhere("o.deleted = :deleted", { deleted: false })
+      .andWhere("o.c_sub_campaign_id IS NOT NULL")
+      .andWhere("o.c_campus_id IS NOT NULL")
+      .andWhere("o.name NOT ILIKE :ref", { ref: '%REF-%' })
       .orderBy("o.created_at", "ASC")
       .getMany();
   }
