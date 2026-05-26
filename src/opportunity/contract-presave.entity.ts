@@ -82,6 +82,12 @@ export class ContractPresave {
   registeredPayments: string; // JSON string con los pagos del Paso 2
 
   // ========================================
+  // FORMULARIO DE PAGO EN CURSO (JSON)
+  // ========================================
+  @Column({ name: "current_payment_form_data", type: "text", nullable: true })
+  currentPaymentFormData: string; // JSON string con los campos del formulario sin agregar
+
+  // ========================================
   // TIMESTAMPS
   // ========================================
   @CreateDateColumn({ name: "created_at" })
