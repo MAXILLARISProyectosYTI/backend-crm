@@ -2574,6 +2574,19 @@ export class OpportunityService {
     });
   }
 
+  async getAllOpportunitiesByPhone(phoneNumber: string): Promise<Opportunity[]> {
+    const digits = phoneNumber.replace(/\D/g, '').slice(-9);
+    if (!digits) return [];
+    return this.opportunityRepository.find({
+      where: {
+        cNumeroDeTelefono: ILike(`%${digits}%`),
+        deleted: false,
+      },
+      relations: ['assignedUserId'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
   async getOpportunityByClinicHistory(clinicHistory: string) {
     const opportunities = await this.opportunityRepository.find({
       where: { cClinicHistory: clinicHistory, deleted: false },
