@@ -632,6 +632,16 @@ export class OpportunityController {
     return this.opportunityService.getAllOpportunitiesByDocument(documentNumber);
   }
 
+  @Public()
+  @Get('get-all-by-phone/:phoneNumber')
+  async getAllByPhone(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('phoneNumber') phoneNumber: string,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    return this.opportunityService.getAllOpportunitiesByPhone(phoneNumber);
+  }
+
   /**
    * Crea oportunidad desde el flujo SV (mismo pipeline que `register` pero
    * sin requerir JWT). El `userId` se resuelve a un user bridge configurado.
