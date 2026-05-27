@@ -317,7 +317,7 @@ export class OpportunityCronsService {
       const cmp = lastUserName.localeCompare(
         user.userName ?? '',
         'es',
-        { sensitivity: 'base' },
+        { sensitivity: 'accent' },
       );
       if (cmp < 0) return user;
     }
