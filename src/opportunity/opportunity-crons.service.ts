@@ -14,6 +14,7 @@ import { Enum_Following } from './dto/enums';
 import { DateTime } from 'luxon';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
+import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
 
 @Injectable()
 export class OpportunityCronsService {
@@ -33,6 +34,7 @@ export class OpportunityCronsService {
     private readonly userService: UserService,
     private readonly opportunityService: OpportunityService,
     private readonly actionHistoryService: ActionHistoryService,
+    private readonly assignmentQueueStateService: AssignmentQueueStateService,
   ) {}
 
   @Cron('0 30 9 * * *')
@@ -100,6 +102,8 @@ export class OpportunityCronsService {
       // Tracking local para mantener la rotación durante el bucle
       // Clave: subCampaignId + campusId para no mezclar sedes distintas
       const lastAssignedUsersBySubcampaign = new Map<string, string>();
+      // Para recordar también el id de la última oportunidad asignada por key
+      const lastOpportunityIdByKey = new Map<string, string>();
       let successCount = 0;
       let errorCount = 0;
 
@@ -134,6 +138,7 @@ export class OpportunityCronsService {
             // Clave por sede+subcampaña para no mezclar queues de Lima y Arequipa
             const trackingKey = `${opportunity.cSubCampaignId || ''}_${opportunity.cCampusId ?? ''}`;
             lastAssignedUsersBySubcampaign.set(trackingKey, nextUserAssigned.id);
+            lastOpportunityIdByKey.set(trackingKey, opportunity.id);
             successCount++;
           }
         } catch (error) {
@@ -143,6 +148,25 @@ export class OpportunityCronsService {
           );
           errorCount++;
           // Continuar con la siguiente oportunidad en caso de error
+        }
+      }
+
+      // Sincronizar assignment_queue_state con el resultado del batch para que
+      // el siguiente lead regular continúe desde donde terminó el cron.
+      for (const [key, userId] of lastAssignedUsersBySubcampaign.entries()) {
+        try {
+          const [subCampaignId, campusIdStr] = key.split('_');
+          const campusId = campusIdStr ? Number(campusIdStr) : null;
+          if (subCampaignId && campusId != null && !isNaN(campusId)) {
+            await this.assignmentQueueStateService.recordAssignment(
+              campusId,
+              subCampaignId,
+              userId,
+              lastOpportunityIdByKey.get(key) ?? null,
+            );
+          }
+        } catch (err) {
+          console.error('❌ Error actualizando assignment_queue_state tras batch:', err);
         }
       }
     } catch (error) {
@@ -217,12 +241,28 @@ export class OpportunityCronsService {
           assigned_user_user_name: user.userName || '',
         };
       } else {
-        // Primera asignación del batch: consultar BD usando la misma sede
-        lastOpportunityAssigned =
-          await this.opportunityService.getLastOpportunityAssigned(
-            subCampaignId,
-            campusId,
-          );
+        // Primera asignación del batch: usar assignment_queue_state como fuente
+        // única de verdad (igual que getNextUserToAssign en el flujo normal).
+        const campusIdForState = campusId ?? 0;
+        const state = await this.assignmentQueueStateService.getState(campusIdForState, subCampaignId);
+        if (state) {
+          let lastUserName = listUsers.find((u) => u.id === state.lastAssignedUserId)?.userName ?? '';
+          if (!lastUserName) {
+            const dbUser = await this.userService.findOne(state.lastAssignedUserId).catch(() => null);
+            lastUserName = dbUser?.userName ?? '';
+          }
+          lastOpportunityAssigned = {
+            assigned_user_id: state.lastAssignedUserId,
+            assigned_user_user_name: lastUserName,
+          };
+        } else {
+          // Fallback solo si no existe state en la cola aún
+          lastOpportunityAssigned =
+            await this.opportunityService.getLastOpportunityAssigned(
+              subCampaignId,
+              campusId,
+            );
+        }
       }
 
       if (!lastOpportunityAssigned) {
@@ -258,43 +298,32 @@ export class OpportunityCronsService {
    */
   private getNextUserWithLocalTracking(
     listUsers: User[],
-    lastOpportunityAssigned: Partial<OpportunityWithUser>
+    lastOpportunityAssigned: Partial<OpportunityWithUser>,
   ): User | null {
-    const lastUserAssigned = lastOpportunityAssigned.assigned_user_id;
-    const lastUserAssignedName = lastOpportunityAssigned.assigned_user_user_name;
+    if (!listUsers.length) return null;
 
-    // Encontrar el índice del último usuario asignado en la lista ordenada alfabéticamente
-    const lastUserIndex = listUsers.findIndex((user) => user.id === lastUserAssigned);
-    
-    let nextUserIndex = 0; // Por defecto el primer usuario
-    
+    const lastUserId   = lastOpportunityAssigned.assigned_user_id;
+    const lastUserName = (lastOpportunityAssigned.assigned_user_user_name ?? '').trim();
+
+    // Caso 1: el usuario sigue activo → tomar el siguiente con wrap-around
+    const lastUserIndex = listUsers.findIndex((u) => u.id === lastUserId);
     if (lastUserIndex !== -1) {
-      // Si encontramos el usuario en la lista actual, tomar el siguiente
-      nextUserIndex = (lastUserIndex + 1) % listUsers.length;
-    } else {
-      // Si el usuario ya no está en la lista, inferir su posición alfabética
-      // basándose en su nombre para determinar quién sería el siguiente
-      let inferredPosition = 0;
-      
-      for (let i = 0; i < listUsers.length; i++) {
-        // Comparar alfabéticamente para encontrar dónde estaría el usuario eliminado
-        if (lastUserAssignedName && listUsers[i].userName && 
-            lastUserAssignedName.localeCompare(listUsers[i].userName || "", "es", { sensitivity: "base" }) < 0) {
-          // El usuario eliminado estaría antes que este usuario en la lista
-          // Por lo tanto, este usuario actual sería el siguiente en la rotación
-          inferredPosition = i;
-          break;
-        }
-        // Si llegamos al final sin encontrar un usuario "mayor", 
-        // significa que el usuario eliminado estaría al final, 
-        // entonces el siguiente sería el primer usuario (posición 0)
-        inferredPosition = 0;
-      }
-      
-      nextUserIndex = inferredPosition;
+      return listUsers[(lastUserIndex + 1) % listUsers.length];
     }
-    
-    return listUsers[nextUserIndex];
+
+    // Caso 2: usuario fuera de la lista (ocupado/removido) → primer usuario
+    // cuyo nombre viene DESPUÉS del último asignado alfabéticamente
+    for (const user of listUsers) {
+      const cmp = lastUserName.localeCompare(
+        user.userName ?? '',
+        'es',
+        { sensitivity: 'accent' },
+      );
+      if (cmp < 0) return user;
+    }
+
+    // Wrap-around: ninguno viene después → volver al primero
+    return listUsers[0];
   }
 
   /**

@@ -108,17 +108,26 @@ export class OpportunityService {
 
     try {
       // —— 1. Validar que no exista ya una oportunidad con el mismo teléfono ——
+      // Excepción: si la oportunidad existente tiene más de 6 meses, se trata como nuevo lead.
       if (!options.allowDuplicatePhone) {
         const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
         if (existingByPhone) {
-          const assignedUser = existingByPhone.assignedUserId;
-          const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
-          return {
-            status: 'error',
-            code: 'TELEFONO_YA_REGISTRADO',
-            message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
-            data: {},
-          };
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+          const opportunityDate = existingByPhone.createdAt ? new Date(existingByPhone.createdAt) : null;
+          const isOlderThan6Months = opportunityDate !== null && opportunityDate < sixMonthsAgo;
+
+          if (!isOlderThan6Months) {
+            const assignedUser = existingByPhone.assignedUserId;
+            const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+            return {
+              status: 'error',
+              code: 'TELEFONO_YA_REGISTRADO',
+              message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+              data: {},
+            };
+          }
+          // Si tiene más de 6 meses, permitir continuar como nuevo lead
         }
       }
 
@@ -148,7 +157,9 @@ export class OpportunityService {
       // validó la elegibilidad por código de HC específico antes de llamar este
       // endpoint. Saltamos el bloqueo por teléfono compartido para permitir que
       // hermanos/familiares con el mismo número tengan oportunidades OI independientes.
-      if (isPacienteExistente && svData.is_assigned && !options.allowDuplicatePhone) {
+      // También se omite el bloqueo si el SV indica is_new=true (paciente con 6+ meses),
+      // ya que debe ingresar a la cola como nuevo lead.
+      if (isPacienteExistente && svData.is_assigned && !svData.is_new && !options.allowDuplicatePhone) {
         return {
           status: 'error',
           code: 'PACIENTE_YA_ASIGNADO',
@@ -713,14 +724,9 @@ export class OpportunityService {
 
     const saved = await this.opportunityRepository.save(opportunity);
 
-    if (opportunity.cCampusId != null && opportunity.cSubCampaignId) {
-      await this.assignmentQueueStateService.recordAssignment(
-        opportunity.cCampusId,
-        opportunity.cSubCampaignId,
-        assignedUserId,
-        opportunityId,
-      );
-    }
+    // La reasignación manual NO actualiza assignment_queue_state para no
+    // desplazar la posición de la cola automática de round-robin.
+    // El siguiente lead automático continuará desde donde estaba antes de la reasignación.
 
     return saved;
 
@@ -760,14 +766,22 @@ export class OpportunityService {
     try {
       const existingByPhone = await this.findOneByPhoneNumber(createOpportunityDto.phoneNumber);
       if (existingByPhone) {
-        const assignedUser = existingByPhone.assignedUserId;
-        const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
-        return {
-          status: 'error',
-          code: 'TELEFONO_YA_REGISTRADO',
-          message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
-          data: {},
-        };
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        const opportunityDate = existingByPhone.createdAt ? new Date(existingByPhone.createdAt) : null;
+        const isOlderThan6Months = opportunityDate !== null && opportunityDate < sixMonthsAgo;
+
+        if (!isOlderThan6Months) {
+          const assignedUser = existingByPhone.assignedUserId;
+          const assignedName = assignedUser?.userName ?? ([assignedUser?.firstName, assignedUser?.lastName].filter(Boolean).join(' ').trim() || 'Sin asignar');
+          return {
+            status: 'error',
+            code: 'TELEFONO_YA_REGISTRADO',
+            message: `Ya existe una oportunidad con este número de teléfono. Asignada a: ${assignedName}`,
+            data: {},
+          };
+        }
+        // Si tiene más de 6 meses, permitir continuar como nuevo lead
       }
 
       if (!createOpportunityDto.assignedUserId) {
@@ -796,7 +810,9 @@ export class OpportunityService {
       const isPacienteNuevo = OpportunityService.CODES_PACIENTE_NUEVO.includes(code);
       const isPacienteExistente = OpportunityService.CODES_PACIENTE_EXISTENTE.includes(code);
 
-      if (isPacienteExistente && svData.is_assigned) {
+      // Bloquear solo si el paciente tiene menos de 6 meses asignado (is_new=false).
+      // Si is_new=true (6+ meses), debe ingresar a la cola como nuevo lead.
+      if (isPacienteExistente && svData.is_assigned && !svData.is_new) {
         return {
           status: 'error',
           code: 'PACIENTE_YA_ASIGNADO',
@@ -1330,15 +1346,11 @@ export class OpportunityService {
     // Obtener la oportunidad actualizada con relaciones
     const updatedOpportunity = await this.getOneWithEntity(id);
 
-    // Estado estable de cola: si se cambió el usuario asignado, actualizar estado por sede + subcampaña
-    if (updateData.assignedUserId != null && updatedOpportunity.cCampusId != null && updatedOpportunity.cSubCampaignId && updatedOpportunity.assignedUserId?.id) {
-      await this.assignmentQueueStateService.recordAssignment(
-        updatedOpportunity.cCampusId,
-        updatedOpportunity.cSubCampaignId,
-        updatedOpportunity.assignedUserId.id,
-        updatedOpportunity.id,
-      );
-    }
+    // NOTA: NO actualizar assignment_queue_state aquí.
+    // La cola round-robin solo se actualiza en los flujos automáticos:
+    // createOpportunity() y el batch del cron (ambos llaman recordAssignment explícitamente).
+    // Si se actualizara aquí, cualquier reasignación manual (PATCH, changeData, etc.)
+    // desplazaría el puntero y saltaría usuarios en la cola automática.
     
     // No notificar por WebSocket si solo se actualiza la tipificación
     if (!isOnlyTypificationUpdate) {
@@ -1743,7 +1755,11 @@ export class OpportunityService {
   async getOpportunitiesNotAssigned(): Promise<Opportunity[]> {
     return await this.opportunityRepository
       .createQueryBuilder("o")
-      .where("o.assigned_user_id IS NULL OR o.assigned_user_id = ''")
+      .where("(o.assigned_user_id IS NULL OR o.assigned_user_id = '')")
+      .andWhere("o.deleted = :deleted", { deleted: false })
+      .andWhere("o.c_sub_campaign_id IS NOT NULL")
+      .andWhere("o.c_campus_id IS NOT NULL")
+      .andWhere("o.name NOT ILIKE :ref", { ref: '%REF-%' })
       .orderBy("o.created_at", "ASC")
       .getMany();
   }
