@@ -92,5 +92,12 @@ export class CreateContractPresaveDto {
   @IsOptional()
   @IsString()
   registeredPayments?: string;
+
+  // ========================================
+  // FORMULARIO DE PAGO EN CURSO (JSON string)
+  // ========================================
+  @IsOptional()
+  @IsString()
+  currentPaymentFormData?: string;
 }
 

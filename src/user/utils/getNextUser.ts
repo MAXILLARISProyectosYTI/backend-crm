@@ -26,11 +26,13 @@ export const getNextUser = (listUsers: User[], lastOpportunityAssigned: Opportun
   // ── Caso 2: usuario fuera de la lista (ocupado/eliminado) ─────────────────
   // Recorremos la lista (ya ordenada alfabéticamente) y devolvemos el primero
   // cuyo nombre sea estrictamente posterior al del último asignado.
+  // Usamos sensitivity:'accent' para distinguir nombres que difieran en tildes/case,
+  // evitando empates que saltarían usuarios.
   for (const user of listUsers) {
     const cmp = lastUserName.localeCompare(
       user.userName ?? '',
       'es',
-      { sensitivity: 'base' },
+      { sensitivity: 'accent' },
     );
     if (cmp < 0) {
       // lastUserName < user.userName → este usuario es el siguiente en orden
