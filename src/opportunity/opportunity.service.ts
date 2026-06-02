@@ -157,9 +157,11 @@ export class OpportunityService {
       // validó la elegibilidad por código de HC específico antes de llamar este
       // endpoint. Saltamos el bloqueo por teléfono compartido para permitir que
       // hermanos/familiares con el mismo número tengan oportunidades OI independientes.
-      // También se omite el bloqueo si el SV indica is_new=true (paciente con 6+ meses),
-      // ya que debe ingresar a la cola como nuevo lead.
-      if (isPacienteExistente && svData.is_assigned && !svData.is_new && !options.allowDuplicatePhone) {
+      // Solo se omite el bloqueo de is_assigned cuando el código es PACIENTE_EXISTE_MAS_6_MESES
+      // (paciente antiguo sin historial completo de evaluación). Para PACIENTE_EXISTE_COMPLETO,
+      // SOLO_RESERVA y SOLO_PAGO siempre se bloquea, ya que el paciente ya está en tratamiento.
+      const isMas6MesesSinDatos = code === 'PACIENTE_EXISTE_MAS_6_MESES';
+      if (isPacienteExistente && svData.is_assigned && !isMas6MesesSinDatos && !options.allowDuplicatePhone) {
         return {
           status: 'error',
           code: 'PACIENTE_YA_ASIGNADO',
@@ -810,9 +812,10 @@ export class OpportunityService {
       const isPacienteNuevo = OpportunityService.CODES_PACIENTE_NUEVO.includes(code);
       const isPacienteExistente = OpportunityService.CODES_PACIENTE_EXISTENTE.includes(code);
 
-      // Bloquear solo si el paciente tiene menos de 6 meses asignado (is_new=false).
-      // Si is_new=true (6+ meses), debe ingresar a la cola como nuevo lead.
-      if (isPacienteExistente && svData.is_assigned && !svData.is_new) {
+      // Solo se omite el bloqueo de is_assigned cuando el código es PACIENTE_EXISTE_MAS_6_MESES.
+      // Para PACIENTE_EXISTE_COMPLETO, SOLO_RESERVA y SOLO_PAGO siempre se bloquea.
+      const isMas6MesesSinDatosManual = code === 'PACIENTE_EXISTE_MAS_6_MESES';
+      if (isPacienteExistente && svData.is_assigned && !isMas6MesesSinDatosManual) {
         return {
           status: 'error',
           code: 'PACIENTE_YA_ASIGNADO',

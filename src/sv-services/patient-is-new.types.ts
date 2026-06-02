@@ -14,6 +14,7 @@ export type PatientIsNewResponseCode =
   | 'PACIENTE_EXISTE_SOLO_PAGO'
   | 'PACIENTE_EXISTE_MAS_6_MESES'
   | 'PACIENTE_EXISTE_MENOS_6_MESES'
+  | 'PACIENTE_CON_CONTROL_ATENDIDO'
   | 'ERROR';
 
 /** Última reserva de evaluación (si existe) */
@@ -71,8 +72,8 @@ export interface LastMovements {
 
 /** Data que se envía al CRM */
 export interface PatientIsNewCrmData {
-  /** Siempre se puede asignar (otro flujo puede restringir después) */
-  can_assign: true;
+  /** false cuando el paciente no debe asignarse desde Management Leads */
+  can_assign: boolean;
   /** Si se considera paciente nuevo para el flujo CRM */
   is_new: boolean;
   /** Si ya está asignado a una oportunidad en clinic_history_crm */
