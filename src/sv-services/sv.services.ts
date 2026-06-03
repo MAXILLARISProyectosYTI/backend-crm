@@ -104,10 +104,16 @@ export class SvServices {
     }
   }
 
-  async getPatientIsNew(phoneNumber: string, tokenSv: string): Promise<PatientIsNewCrmResponse> {
+  async getPatientIsNew(
+    phoneNumber: string,
+    tokenSv: string,
+    options: { blockAttendedControl?: boolean } = {},
+  ): Promise<PatientIsNewCrmResponse> {
     try {
+      const blockAttendedControl = options.blockAttendedControl !== false;
+      const query = blockAttendedControl ? '' : '?blockAttendedControl=false';
       const responseClinicHistory = await axios.get<PatientIsNewCrmResponse>(
-        `${this.URL_BACK_SV}/clinic-history/patient-is-new-crm/${phoneNumber}`,
+        `${this.URL_BACK_SV}/clinic-history/patient-is-new-crm/${phoneNumber}${query}`,
         {
           headers: {
             Authorization: `Bearer ${tokenSv}`
