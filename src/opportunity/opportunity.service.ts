@@ -137,6 +137,7 @@ export class OpportunityService {
       const dataSv: PatientIsNewCrmResponse = await this.svServices.getPatientIsNew(
         createOpportunityDto.phoneNumber,
         tokenSv,
+        { blockAttendedControl: !options.allowDuplicatePhone },
       );
 
       if (dataSv.status === 'error' || dataSv.code === 'ERROR') {
@@ -797,7 +798,11 @@ export class OpportunityService {
 
       const user = await this.userService.findOne(userId);
       const { tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!);
-      const dataSv = await this.svServices.getPatientIsNew(createOpportunityDto.phoneNumber, tokenSv);
+      const dataSv = await this.svServices.getPatientIsNew(
+        createOpportunityDto.phoneNumber,
+        tokenSv,
+        { blockAttendedControl: true },
+      );
 
       if (dataSv.status === 'error' || dataSv.code === 'ERROR') {
         return {
@@ -1012,6 +1017,12 @@ export class OpportunityService {
       },
     });
     return response.length > 0;
+  }
+
+  async findOne(id: string): Promise<Opportunity | null> {
+    return await this.opportunityRepository.findOne({
+      where: { id, deleted: false },
+    });
   }
 
   /** Devuelve la primera oportunidad con ese teléfono (y usuario asignado) si existe, para mostrar a quién pertenece. */
