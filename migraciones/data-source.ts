@@ -36,6 +36,8 @@ export default new DataSource({
     join(migrationsDir, '1746820000000-OpportunityReferralCreationFlag.ts'),
     join(migrationsDir, '1747526400000-AddSourceToDerivation.ts'),
     join(migrationsDir, '1748390400000-AddCurrentPaymentFormDataToContractPresave.ts'),
+    join(migrationsDir, '1749000000000-CreateCrmCerradoraSolicitudes.ts'),
+    join(migrationsDir, '1749100000000-AddHasDigitalContractToCOportunidadCerradora.ts'),
   ],
   migrationsTableName: 'migrations',
 });
