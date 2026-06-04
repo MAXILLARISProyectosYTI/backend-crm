@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CrmCerradoraSolicitud } from './crm-cerradora-solicitud.entity';
+import { OpportunitiesClosers } from '../opportunities-closers/opportunities-closers.entity';
 import { CrmCerradoresService } from './crm-cerradoras.service';
 import { CrmCerradoresController } from './crm-cerradoras.controller';
 import { CrmCerradoresContratosController } from './crm-cerradoras-contratos.controller';
@@ -9,7 +10,7 @@ import { OpportunitiesClosersModule } from '../opportunities-closers/opportuniti
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([CrmCerradoraSolicitud]),
+    TypeOrmModule.forFeature([CrmCerradoraSolicitud, OpportunitiesClosers]),
     UserModule,
     OpportunitiesClosersModule,
   ],

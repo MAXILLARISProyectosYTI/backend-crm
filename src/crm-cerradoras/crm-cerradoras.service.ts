@@ -9,6 +9,8 @@ import { Repository, DataSource } from 'typeorm';
 import { Client } from 'pg';
 import axios from 'axios';
 import { CrmCerradoraSolicitud } from './crm-cerradora-solicitud.entity';
+import { OpportunitiesClosers } from '../opportunities-closers/opportunities-closers.entity';
+import { dedupeOpportunitiesByPatient } from './utils/paciente-owner.util';
 import { CreateSolicitudDto } from './dto/create-solicitud.dto';
 import { ResponderSolicitudDto } from './dto/responder-solicitud.dto';
 import { ActualizarFirmaDto } from './dto/actualizar-firma.dto';
@@ -18,6 +20,7 @@ import { ROLES_IDS } from '../globals/ids';
 import { OpportunitiesClosersService } from '../opportunities-closers/opportunities-closers.service';
 import type { ContractChannel, ContractTypeFilter } from './utils/contract-channel.util';
 import { getDocusealProductionCutover } from './utils/contract-channel.util';
+import { isCloserOpportunityCommissionable } from './utils/closer-commission.util';
 
 export interface PacienteCerradora {
   opportunityId: string;
@@ -41,6 +44,10 @@ export interface PacienteCerradora {
   tipoTratamiento?: string | null;
   fechaCotizacion?: string | null;
   fechaLimiteCierre?: Date | null;
+  isPresaved?: boolean;
+  comisionDemoraAprobada?: boolean;
+  esComisionable?: boolean;
+  dateEnd?: Date | null;
 }
 
 export interface ListPacientesContratosParams {
@@ -62,6 +69,8 @@ export class CrmCerradoresService {
   constructor(
     @InjectRepository(CrmCerradoraSolicitud)
     private readonly solicitudRepo: Repository<CrmCerradoraSolicitud>,
+    @InjectRepository(OpportunitiesClosers)
+    private readonly opportunityRepo: Repository<OpportunitiesClosers>,
     private readonly userService: UserService,
     private readonly dataSource: DataSource,
     private readonly opportunitiesClosersService: OpportunitiesClosersService,
@@ -122,7 +131,8 @@ export class CrmCerradoresService {
       },
     );
 
-    let data: PacienteCerradora[] = result.opportunities.map((op) =>
+    const dedupedOps = dedupeOpportunitiesByPatient(result.opportunities);
+    let data: PacienteCerradora[] = dedupedOps.map((op) =>
       this.mapOpportunityToPaciente(op),
     );
 
@@ -142,9 +152,9 @@ export class CrmCerradoresService {
 
     return {
       data,
-      total: result.total,
+      total: dedupedOps.length,
       page: result.page,
-      totalPages: result.totalPages,
+      totalPages: Math.max(1, Math.ceil(dedupedOps.length / limit)),
       docusealProductionDate: getDocusealProductionCutover().toISOString().slice(0, 10),
     };
   }
@@ -224,7 +234,24 @@ export class CrmCerradoresService {
     tipoTratamiento?: string | null;
     fechaCotizacion?: string | null;
     fechaLimiteCierre?: Date | null;
+    isPresaved?: boolean;
+    hasContractPresave?: boolean;
+    hasRegisteredPayment?: boolean;
+    comisionDemoraAprobada?: boolean;
+    dateEnd?: Date | null;
+    facturaId?: string | null;
   }): PacienteCerradora {
+    const esComisionable = isCloserOpportunityCommissionable({
+      status: op.status,
+      dateEnd: op.dateEnd,
+      isPresaved: op.isPresaved,
+      hasContractPresave: op.hasContractPresave,
+      firmaContrato: op.firmaContrato,
+      facturaId: op.facturaId,
+      facturado: op.facturado,
+      hasRegisteredPayment: op.hasRegisteredPayment,
+      comisionDemoraAprobada: op.comisionDemoraAprobada,
+    });
     return {
       opportunityId: op.id,
       pacienteNombre: op.name || '',
@@ -249,6 +276,10 @@ export class CrmCerradoresService {
       tipoTratamiento: op.tipoTratamiento ?? null,
       fechaCotizacion: op.fechaCotizacion ?? null,
       fechaLimiteCierre: op.fechaLimiteCierre ?? null,
+      isPresaved: !!op.isPresaved,
+      comisionDemoraAprobada: !!op.comisionDemoraAprobada,
+      esComisionable,
+      dateEnd: op.dateEnd ?? null,
     };
   }
 
@@ -305,6 +336,7 @@ export class CrmCerradoresService {
       pacienteNombre: dto.pacienteNombre,
       clinicHistoryId: dto.clinicHistoryId ?? null,
       quotationId: dto.quotationId ?? null,
+      opportunityId: dto.opportunityId ?? null,
       tipoSolicitud: dto.tipoSolicitud,
       motivo: dto.motivo,
       monto: dto.monto ?? null,
@@ -340,14 +372,72 @@ export class CrmCerradoresService {
 
     const saved = await this.solicitudRepo.save(solicitud);
 
-    // Si la solicitud fue APROBADA, enviarla a MaxiCobranzas (Demoras CRM)
     if (saved.estado === 'aprobada') {
+      await this.marcarComisionDemoraAprobada(saved);
       this.enviarAMaxiCobranzas(saved, adminInfo.username).catch(err => {
         this.logger.error(`Error al enviar solicitud ${saved.id} a MaxiCobranzas: ${err.message}`, err.stack);
       });
     }
 
     return saved;
+  }
+
+  /**
+   * Al aprobar la solicitud, la oportunidad del paciente pasa a comisionable (solo esa fila/cerradora).
+   */
+  private async marcarComisionDemoraAprobada(
+    solicitud: CrmCerradoraSolicitud,
+  ): Promise<void> {
+    const op = await this.resolveOpportunityForSolicitud(solicitud);
+    if (!op) {
+      this.logger.warn(
+        `Solicitud ${solicitud.id}: no se encontró oportunidad cerradora para marcar comisión aprobada`,
+      );
+      return;
+    }
+    op.comisionDemoraAprobada = true;
+    await this.opportunityRepo.save(op);
+    this.logger.log(
+      `Solicitud ${solicitud.id} aprobada → oportunidad ${op.id} comision_demora_aprobada=true`,
+    );
+  }
+
+  private async resolveOpportunityForSolicitud(
+    solicitud: CrmCerradoraSolicitud,
+  ): Promise<OpportunitiesClosers | null> {
+    if (solicitud.opportunityId) {
+      return this.opportunityRepo.findOne({
+        where: { id: solicitud.opportunityId, deleted: false },
+      });
+    }
+
+    const qb = this.opportunityRepo
+      .createQueryBuilder('op')
+      .leftJoin('user', 'u', 'u.id = op.assignedUserId')
+      .addSelect('u.userName', 'assigned_user_name')
+      .where('op.deleted = :deleted', { deleted: false });
+
+    if (solicitud.quotationId) {
+      qb.andWhere('op.cotizacionId = :cot', { cot: String(solicitud.quotationId) });
+    } else if (solicitud.clinicHistoryId) {
+      qb.andWhere('op.hCPatient ILIKE :hc', {
+        hc: `%${solicitud.clinicHistoryId}%`,
+      });
+    } else {
+      qb.andWhere('LOWER(TRIM(op.name)) = LOWER(TRIM(:name))', {
+        name: solicitud.pacienteNombre,
+      });
+    }
+
+    const { entities, raw } = await qb.getRawAndEntities();
+    const username = solicitud.cerradoraUsername?.toLowerCase();
+    for (let i = 0; i < entities.length; i++) {
+      const assigned = (raw[i]?.assigned_user_name as string | undefined)?.toLowerCase();
+      if (!username || assigned === username) {
+        return entities[i];
+      }
+    }
+    return entities[0] ?? null;
   }
 
   /**

@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { OpportunitiesClosersService } from './opportunities-closers.service';
 import { OpportunitiesClosersController } from './opportunities-closers.controller';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
+import { ContractPresave } from 'src/opportunity/contract-presave.entity';
 import { UserModule } from 'src/user/user.module';
 import { SvServices } from 'src/sv-services/sv.services';
 import { FilesModule } from 'src/files/files.module';
@@ -13,7 +14,7 @@ import { CampusTeamModule } from 'src/campus-team/campus-team.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([OpportunitiesClosers]),
+    TypeOrmModule.forFeature([OpportunitiesClosers, ContractPresave]),
     UserModule,
     FilesModule,
     ActionHistoryModule,

@@ -1,6 +1,8 @@
 import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, Not, DataSource } from 'typeorm';
+import { Repository, IsNull, Not, DataSource, In } from 'typeorm';
+import { ContractPresave } from 'src/opportunity/contract-presave.entity';
+import { parsePresaveHasRegisteredPayments } from '../crm-cerradoras/utils/closer-commission.util';
 import { Client } from 'pg';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
@@ -40,6 +42,8 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
   constructor(
     @InjectRepository(OpportunitiesClosers)
     private readonly opportunitiesClosersRepository: Repository<OpportunitiesClosers>,
+    @InjectRepository(ContractPresave)
+    private readonly contractPresaveRepository: Repository<ContractPresave>,
     private readonly svServices: SvServices,
     private readonly userService: UserService,
     private readonly filesService: FilesService,
@@ -102,7 +106,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     todayOnly?: boolean,
     filterAssignedUserId?: string,
     options?: { forPacientesPanel?: boolean; contractType?: ContractTypeFilter },
-  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null; fechaEvaluacion?: Date | string | null; isPresaved?: boolean; fechaLimiteCierre?: Date | null; firmaContrato?: 'pendiente' | 'firmado' | 'rechazado'; facturado?: boolean; solicitudesPendientes?: number; ultimaSolicitudId?: number | null; tipoContrato?: string | null; fechaContrato?: Date | null; monto?: number | null; hasDigitalContract?: boolean; contractChannel?: ContractChannel })[], total: number, page: number, totalPages: number }> {
+  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null; fechaEvaluacion?: Date | string | null; isPresaved?: boolean; hasContractPresave?: boolean; hasRegisteredPayment?: boolean; fechaLimiteCierre?: Date | null; firmaContrato?: 'pendiente' | 'firmado' | 'rechazado'; facturado?: boolean; solicitudesPendientes?: number; ultimaSolicitudId?: number | null; tipoContrato?: string | null; fechaContrato?: Date | null; monto?: number | null; hasDigitalContract?: boolean; contractChannel?: ContractChannel; comisionDemoraAprobada?: boolean })[], total: number, page: number, totalPages: number }> {
     const forPacientesPanel = options?.forPacientesPanel === true;
     const contractType = options?.contractType ?? 'todos';
     const effectiveLimit = forPacientesPanel ? Math.min(limit, 5000) : limit;
@@ -115,12 +119,13 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         .addSelect('u.userName', 'assigned_user_name')
         .addSelect('op.has_digital_contract', 'has_digital_contract')
         .where('op.deleted = :deleted', { deleted: false });
+      qb
+        .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
+        .addSelect('opp.is_presaved', 'is_presaved');
       if (!forPacientesPanel) {
         qb
-          .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
           .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
-          .addSelect('opp.c_fecha_de_reservacion', 'c_fecha_de_reservacion')
-          .addSelect('opp.is_presaved', 'is_presaved');
+          .addSelect('opp.c_fecha_de_reservacion', 'c_fecha_de_reservacion');
       }
       if (filterAssignedUserId) {
         qb.andWhere('op.assignedUserId = :filterAssignedUserId', { filterAssignedUserId });
@@ -371,6 +376,32 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
       if (row.clinic_history) svContractsByHistory.set(row.clinic_history, row);
     }
 
+    const presaveByQuotationId = new Map<
+      number,
+      { hasPresave: boolean; hasRegisteredPayment: boolean }
+    >();
+    const pageQuotationIds = [
+      ...new Set(
+        entities
+          .map((e) => Number(e.cotizacionId))
+          .filter((id) => id && !isNaN(id)),
+      ),
+    ];
+    if (pageQuotationIds.length > 0) {
+      const presaves = await this.contractPresaveRepository.find({
+        where: { quotationId: In(pageQuotationIds) },
+        select: ['quotationId', 'registeredPayments'],
+      });
+      for (const p of presaves) {
+        presaveByQuotationId.set(p.quotationId, {
+          hasPresave: true,
+          hasRegisteredPayment: parsePresaveHasRegisteredPayments(
+            p.registeredPayments,
+          ),
+        });
+      }
+    }
+
     let opportunities = entities.map((entity, index) => {
       const sedeAtencion = (entity.hCPatient && sedeByHistory.get(entity.hCPatient)) ?? defaultSede;
 
@@ -485,6 +516,12 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         hasSvContract: !!svContract,
       });
 
+      const cotIdNum = entity.cotizacionId ? Number(entity.cotizacionId) : NaN;
+      const presaveMeta =
+        !isNaN(cotIdNum) && presaveByQuotationId.has(cotIdNum)
+          ? presaveByQuotationId.get(cotIdNum)!
+          : { hasPresave: false, hasRegisteredPayment: false };
+
       return {
         ...entity,
         contractId: contractId ?? entity.contractId,
@@ -494,6 +531,8 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         fechaCotizacion,
         fechaEvaluacion: raw[index]?.c_fecha_de_reservacion || null,
         isPresaved: raw[index]?.is_presaved === true || raw[index]?.is_presaved === 1 || false,
+        hasContractPresave: presaveMeta.hasPresave,
+        hasRegisteredPayment: presaveMeta.hasRegisteredPayment,
         fechaLimiteCierre,
         firmaContrato,
         facturado,
@@ -504,6 +543,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         fechaContrato,
         hasDigitalContract,
         contractChannel: channel,
+        comisionDemoraAprobada: entity.comisionDemoraAprobada === true,
       };
     });
 
