@@ -30,6 +30,9 @@ export class CrmCerradoraSolicitud {
   @Column({ type: 'int', nullable: true, name: 'quotation_id' })
   quotationId: number | null;
 
+  @Column({ type: 'varchar', length: 17, nullable: true, name: 'opportunity_id' })
+  opportunityId: string | null;
+
   /** Tipo de demora: por presentación de contrato o por facturación */
   @Column({ type: 'varchar', length: 30, name: 'tipo_solicitud', default: 'demora_contrato' })
   tipoSolicitud: TipoSolicitud;

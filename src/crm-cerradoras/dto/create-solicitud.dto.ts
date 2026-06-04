@@ -15,6 +15,11 @@ export class CreateSolicitudDto {
   @IsNumber()
   quotationId?: number | null;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(17)
+  opportunityId?: string | null;
+
   @IsEnum(['demora_contrato', 'demora_facturacion'])
   tipoSolicitud: TipoSolicitud;
 
