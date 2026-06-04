@@ -60,10 +60,9 @@ export class CrmCerradoresController {
 
   /**
    * GET /crm-cerradoras/solicitudes
-   * Lista de solicitudes de demora.
-   * - Admin: ve todas.
-   * - Cerradora: ve solo las suyas.
+   * Lista de solicitudes de demora (revisión). Solo administradores CRM.
    */
+  @UseGuards(AdminUserGuard)
   @Get('solicitudes')
   async getSolicitudes(@Request() req: { user?: { userId?: string } }) {
     return this.cerradoresService.getSolicitudes(req.user?.userId ?? '');

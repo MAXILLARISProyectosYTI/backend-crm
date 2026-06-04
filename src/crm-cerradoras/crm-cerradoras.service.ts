@@ -130,6 +130,16 @@ export class CrmCerradoresService {
     };
   }
 
+  private async assertMisPacientesAccess(userId: string): Promise<void> {
+    const isAdmin = await this.isAdmin(userId);
+    if (isAdmin) return;
+    const roles = await this.userService.getRoleIds(userId);
+    if (roles.includes(ROLES_IDS.CERRADORA)) return;
+    throw new ForbiddenException(
+      'Solo usuarios cerradoras o administradores pueden acceder a Mis Pacientes',
+    );
+  }
+
   async getPacientesCerradora(
     userId: string,
     params: ListPacientesContratosParams = {},
@@ -141,6 +151,7 @@ export class CrmCerradoresService {
     docusealProductionDate: string;
   }> {
     try {
+      await this.assertMisPacientesAccess(userId);
       return await this.listPacientesContratos(userId, {
         ...params,
         filterByAssignedUser: true,
@@ -222,14 +233,16 @@ export class CrmCerradoresService {
     };
   }
 
-  /** Obtiene solicitudes de demora. Admin ve todas; cerradora solo las suyas. */
+  /** Lista de solicitudes de demora para revisión. Solo administradores CRM. */
   async getSolicitudes(userId: string): Promise<{ data: CrmCerradoraSolicitud[]; pendientes: number }> {
     const admin = await this.isAdmin(userId);
-    const userInfo = await this.getUserInfo(userId);
+    if (!admin) {
+      throw new ForbiddenException(
+        'Solo administradores pueden ver el listado de solicitudes de demora',
+      );
+    }
 
-    const where = admin ? {} : { cerradoraUsername: userInfo.username };
     const data = await this.solicitudRepo.find({
-      where,
       order: { createdAt: 'DESC' },
     });
 
