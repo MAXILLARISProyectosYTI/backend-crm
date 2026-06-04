@@ -101,10 +101,15 @@ export class CrmCerradoresService {
 
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(Math.max(1, params.limit ?? 5000), 5000);
+    const contractType = params.contractType ?? 'todos';
+    /** Físico/digital se resuelve tras enriquecer con SV; hay que filtrar antes de paginar. */
+    const needsChannelFilter = contractType !== 'todos';
+    const fetchPage = needsChannelFilter ? 1 : page;
+    const fetchLimit = needsChannelFilter ? 5000 : limit;
 
     const result = await this.opportunitiesClosersService.findAll(
-      page,
-      limit,
+      fetchPage,
+      fetchLimit,
       params.search,
       undefined,
       params.dateFrom,
@@ -113,13 +118,27 @@ export class CrmCerradoresService {
       filterAssignedUserId,
       {
         forPacientesPanel: true,
-        contractType: params.contractType ?? 'todos',
+        contractType,
       },
     );
 
-    const data: PacienteCerradora[] = result.opportunities.map((op) =>
+    let data: PacienteCerradora[] = result.opportunities.map((op) =>
       this.mapOpportunityToPaciente(op),
     );
+
+    if (needsChannelFilter) {
+      const total = data.length;
+      const totalPages = Math.max(1, Math.ceil(total / limit));
+      const start = (page - 1) * limit;
+      data = data.slice(start, start + limit);
+      return {
+        data,
+        total,
+        page,
+        totalPages,
+        docusealProductionDate: getDocusealProductionCutover().toISOString().slice(0, 10),
+      };
+    }
 
     return {
       data,
