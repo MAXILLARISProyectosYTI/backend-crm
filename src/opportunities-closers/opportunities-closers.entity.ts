@@ -191,6 +191,14 @@ export class OpportunitiesClosers {
   })
   contractId?: string;
 
+  @Column({
+    type: 'boolean',
+    nullable: true,
+    default: false,
+    name: 'has_digital_contract',
+  })
+  hasDigitalContract?: boolean;
+
   @Column({ 
     type: 'varchar', 
     length: 17, 
@@ -199,4 +207,3 @@ export class OpportunitiesClosers {
   })
   opportunityId?: string;
 }
-

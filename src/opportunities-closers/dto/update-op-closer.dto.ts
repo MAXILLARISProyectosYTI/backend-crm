@@ -100,6 +100,10 @@ export class UpdateOpCloserDto {
   contractId?: string;
 
   @IsOptional()
+  @IsBoolean()
+  hasDigitalContract?: boolean;
+
+  @IsOptional()
   @IsString()
   opportunityId?: string;
 }
