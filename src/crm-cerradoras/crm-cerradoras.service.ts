@@ -10,7 +10,6 @@ import { Client } from 'pg';
 import axios from 'axios';
 import { CrmCerradoraSolicitud } from './crm-cerradora-solicitud.entity';
 import { OpportunitiesClosers } from '../opportunities-closers/opportunities-closers.entity';
-import { dedupeOpportunitiesByPatient } from './utils/paciente-owner.util';
 import { CreateSolicitudDto } from './dto/create-solicitud.dto';
 import { ResponderSolicitudDto } from './dto/responder-solicitud.dto';
 import { ActualizarFirmaDto } from './dto/actualizar-firma.dto';
@@ -20,7 +19,7 @@ import { ROLES_IDS } from '../globals/ids';
 import { OpportunitiesClosersService } from '../opportunities-closers/opportunities-closers.service';
 import type { ContractChannel, ContractTypeFilter } from './utils/contract-channel.util';
 import { getDocusealProductionCutover } from './utils/contract-channel.util';
-import { isCloserOpportunityCommissionable } from './utils/closer-commission.util';
+import { isCloserOpportunityCommissionable, hasCloserGestionEvidence } from './utils/closer-commission.util';
 
 export interface PacienteCerradora {
   opportunityId: string;
@@ -47,6 +46,7 @@ export interface PacienteCerradora {
   isPresaved?: boolean;
   comisionDemoraAprobada?: boolean;
   esComisionable?: boolean;
+  gestionado?: boolean;
   dateEnd?: Date | null;
 }
 
@@ -100,6 +100,7 @@ export class CrmCerradoresService {
   ): Promise<{
     data: PacienteCerradora[];
     total: number;
+    totalOportunidades: number;
     page: number;
     totalPages: number;
     docusealProductionDate: string;
@@ -111,50 +112,69 @@ export class CrmCerradoresService {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(Math.max(1, params.limit ?? 5000), 5000);
     const contractType = params.contractType ?? 'todos';
-    /** Físico/digital se resuelve tras enriquecer con SV; hay que filtrar antes de paginar. */
-    const needsChannelFilter = contractType !== 'todos';
-    const fetchPage = needsChannelFilter ? 1 : page;
-    const fetchLimit = needsChannelFilter ? 5000 : limit;
 
-    const result = await this.opportunitiesClosersService.findAll(
-      fetchPage,
-      fetchLimit,
-      params.search,
-      undefined,
-      params.dateFrom,
-      params.dateTo,
-      params.todayOnly === true,
+    const panelFilters = {
       filterAssignedUserId,
-      {
-        forPacientesPanel: true,
-        contractType,
-      },
-    );
+      search: params.search,
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      todayOnly: params.todayOnly === true,
+    };
 
-    const dedupedOps = dedupeOpportunitiesByPatient(result.opportunities);
-    let data: PacienteCerradora[] = dedupedOps.map((op) =>
-      this.mapOpportunityToPaciente(op),
-    );
-
-    if (needsChannelFilter) {
-      const total = data.length;
-      const totalPages = Math.max(1, Math.ceil(total / limit));
-      const start = (page - 1) * limit;
-      data = data.slice(start, start + limit);
-      return {
-        data,
-        total,
+    const stats = await this.opportunitiesClosersService.getPacientesPanelStats(panelFilters);
+    const representativeIds =
+      await this.opportunitiesClosersService.getPacientesPanelRepresentativeIds(
+        panelFilters,
         page,
-        totalPages,
+        limit,
+      );
+
+    if (representativeIds.length === 0) {
+      return {
+        data: [],
+        total: stats.totalPacientes,
+        totalOportunidades: stats.totalOportunidades,
+        page,
+        totalPages: Math.max(1, Math.ceil(stats.totalPacientes / limit)),
         docusealProductionDate: getDocusealProductionCutover().toISOString().slice(0, 10),
       };
     }
 
+    const result = await this.opportunitiesClosersService.findAll(
+      1,
+      representativeIds.length,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        forPacientesPanel: true,
+        contractType,
+        ids: representativeIds,
+      },
+    );
+
+    const byId = new Map(result.opportunities.map((op) => [op.id, op]));
+    let data: PacienteCerradora[] = representativeIds
+      .map((id) => byId.get(id))
+      .filter((op): op is NonNullable<typeof op> => !!op)
+      .map((op) => this.mapOpportunityToPaciente(op));
+
+    if (contractType !== 'todos') {
+      data = data.filter((p) => p.contractChannel === contractType);
+    }
+
+    const total = stats.totalPacientes;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
     return {
       data,
-      total: dedupedOps.length,
-      page: result.page,
-      totalPages: Math.max(1, Math.ceil(dedupedOps.length / limit)),
+      total,
+      totalOportunidades: stats.totalOportunidades,
+      page,
+      totalPages,
       docusealProductionDate: getDocusealProductionCutover().toISOString().slice(0, 10),
     };
   }
@@ -241,6 +261,15 @@ export class CrmCerradoresService {
     dateEnd?: Date | null;
     facturaId?: string | null;
   }): PacienteCerradora {
+    const gestionado =
+      hasCloserGestionEvidence({
+        isPresaved: op.isPresaved,
+        hasContractPresave: op.hasContractPresave,
+        firmaContrato: op.firmaContrato,
+        facturado: op.facturado,
+        facturaId: op.facturaId,
+        hasRegisteredPayment: op.hasRegisteredPayment,
+      }) || !!op.comisionDemoraAprobada;
     const esComisionable = isCloserOpportunityCommissionable({
       status: op.status,
       dateEnd: op.dateEnd,
@@ -279,6 +308,7 @@ export class CrmCerradoresService {
       isPresaved: !!op.isPresaved,
       comisionDemoraAprobada: !!op.comisionDemoraAprobada,
       esComisionable,
+      gestionado,
       dateEnd: op.dateEnd ?? null,
     };
   }
@@ -330,6 +360,12 @@ export class CrmCerradoresService {
       }
     }
 
+    const resolved = await this.resolveContractFinancials({
+      quotationId: dto.quotationId ?? null,
+      clinicHistoryId: dto.clinicHistoryId ?? null,
+      opportunityId: dto.opportunityId ?? null,
+    });
+
     const solicitud = this.solicitudRepo.create({
       cerradoraUsername,
       cerradoraNombre,
@@ -339,8 +375,8 @@ export class CrmCerradoresService {
       opportunityId: dto.opportunityId ?? null,
       tipoSolicitud: dto.tipoSolicitud,
       motivo: dto.motivo,
-      monto: dto.monto ?? null,
-      tipoContrato: dto.tipoContrato ?? null,
+      monto: dto.monto ?? resolved.monto,
+      tipoContrato: dto.tipoContrato ?? resolved.tipoContrato,
       estado: 'pendiente',
       firmaContrato: 'pendiente',
       facturado: false,
@@ -373,10 +409,12 @@ export class CrmCerradoresService {
     const saved = await this.solicitudRepo.save(solicitud);
 
     if (saved.estado === 'aprobada') {
-      await this.marcarComisionDemoraAprobada(saved);
-      this.enviarAMaxiCobranzas(saved, adminInfo.username).catch(err => {
-        this.logger.error(`Error al enviar solicitud ${saved.id} a MaxiCobranzas: ${err.message}`, err.stack);
+      const enriched = await this.enriquecerMontoSolicitud(saved);
+      await this.marcarComisionDemoraAprobada(enriched);
+      this.enviarAMaxiCobranzas(enriched, adminInfo.username).catch(err => {
+        this.logger.error(`Error al enviar solicitud ${enriched.id} a MaxiCobranzas: ${err.message}`, err.stack);
       });
+      return enriched;
     }
 
     return saved;
@@ -440,6 +478,128 @@ export class CrmCerradoresService {
     return entities[0] ?? null;
   }
 
+  /** Completa monto/tipoContrato en la solicitud consultando SV si faltan. */
+  private async enriquecerMontoSolicitud(
+    solicitud: CrmCerradoraSolicitud,
+  ): Promise<CrmCerradoraSolicitud> {
+    if (solicitud.monto != null && solicitud.tipoContrato) {
+      return solicitud;
+    }
+
+    const resolved = await this.resolveContractFinancials({
+      quotationId: solicitud.quotationId,
+      clinicHistoryId: solicitud.clinicHistoryId,
+      opportunityId: solicitud.opportunityId,
+    });
+
+    let changed = false;
+    if (solicitud.monto == null && resolved.monto != null) {
+      solicitud.monto = resolved.monto;
+      changed = true;
+    }
+    if (!solicitud.tipoContrato && resolved.tipoContrato) {
+      solicitud.tipoContrato = resolved.tipoContrato;
+      changed = true;
+    }
+
+    return changed ? this.solicitudRepo.save(solicitud) : solicitud;
+  }
+
+  /** Busca amount y num del contrato en SV por cotización, HC u oportunidad. */
+  private async resolveContractFinancials(input: {
+    quotationId?: number | null;
+    clinicHistoryId?: number | null;
+    opportunityId?: string | null;
+  }): Promise<{ monto: number | null; tipoContrato: string | null }> {
+    let quotationId = input.quotationId ?? null;
+    let clinicHistoryId = input.clinicHistoryId ?? null;
+    let hCPatient: string | null = null;
+    let contractId: number | null = null;
+
+    if (input.opportunityId) {
+      const op = await this.opportunityRepo.findOne({
+        where: { id: input.opportunityId, deleted: false },
+      });
+      if (op) {
+        quotationId = quotationId ?? (op.cotizacionId ? Number(op.cotizacionId) || null : null);
+        hCPatient = op.hCPatient ?? null;
+        if (!clinicHistoryId && hCPatient) {
+          clinicHistoryId = parseInt(hCPatient.replace(/\D/g, ''), 10) || null;
+        }
+        if (op.contractId && /^\d+$/.test(op.contractId)) {
+          contractId = parseInt(op.contractId, 10);
+        }
+      }
+    }
+
+    const svClient = new Client({
+      host: process.env.SV_DB_HOST || '161.132.211.235',
+      port: parseInt(process.env.SV_DB_PORT || '5501', 10),
+      user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
+      database: process.env.SV_DB_DATABASE || 'sv_dev',
+      password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
+    });
+
+    try {
+      await svClient.connect();
+
+      if (contractId) {
+        const byId = await svClient.query(
+          `SELECT c.amount, c.num
+           FROM contract c
+           WHERE c.id = $1 AND c.state = 1
+           LIMIT 1`,
+          [contractId],
+        );
+        if (byId.rows[0]) {
+          return this.mapSvContractRow(byId.rows[0]);
+        }
+      }
+
+      if (quotationId || clinicHistoryId || hCPatient) {
+        const byRefs = await svClient.query(
+          `SELECT c.amount, c.num
+           FROM contract c
+           INNER JOIN clinic_history ch ON c.idclinichistory = ch.id
+           WHERE c.state = 1
+             AND (
+               ($1::int IS NOT NULL AND c.idquotation = $1)
+               OR ($2::varchar IS NOT NULL AND ch.history = $2)
+               OR ($3::int IS NOT NULL AND REGEXP_REPLACE(ch.history, '[^0-9]', '', 'g') = $3::text)
+             )
+           ORDER BY c.id DESC
+           LIMIT 1`,
+          [quotationId, hCPatient, clinicHistoryId],
+        );
+        if (byRefs.rows[0]) {
+          return this.mapSvContractRow(byRefs.rows[0]);
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`No se pudo resolver monto del contrato en SV: ${msg}`);
+    } finally {
+      try {
+        await svClient.end();
+      } catch {
+        // ignore
+      }
+    }
+
+    return { monto: null, tipoContrato: null };
+  }
+
+  private mapSvContractRow(row: {
+    amount?: string | number | null;
+    num?: string | null;
+  }): { monto: number | null; tipoContrato: string | null } {
+    const montoRaw = row.amount != null ? Number(row.amount) : null;
+    return {
+      monto: montoRaw != null && !Number.isNaN(montoRaw) ? montoRaw : null,
+      tipoContrato: row.num?.trim() ? row.num.trim() : null,
+    };
+  }
+
   /**
    * Envía una solicitud aprobada al módulo Demoras CRM de MaxiCobranzas.
    * Se llama de forma asíncrona (fire-and-forget) para no bloquear la respuesta al admin.
@@ -458,6 +618,12 @@ export class CrmCerradoresService {
 
     const url = `${baseUrl}/v1/cerradoras/solicitudes`;
 
+    const monto =
+      solicitud.monto != null && Number(solicitud.monto) > 0
+        ? Number(solicitud.monto)
+        : 0;
+    const tipoContrato = solicitud.tipoContrato?.trim() || 'contado';
+
     const payload = {
       idSolicitudCrm: solicitud.id,
       paciente: solicitud.pacienteNombre,
@@ -467,8 +633,8 @@ export class CrmCerradoresService {
       cerradoraNombre: solicitud.cerradoraNombre,
       tipoDemora: solicitud.tipoSolicitud === 'demora_facturacion' ? 'Demora de Facturación' : 'Demora de Contrato',
       justificacion: solicitud.motivo ?? '',
-      monto: solicitud.monto ? Number(solicitud.monto) : 0,
-      tipoContrato: solicitud.tipoContrato ?? 'contado',
+      monto,
+      tipoContrato,
       aprobadoPor: adminUsername,
       fechaAprobacion: new Date().toISOString(),
     };
