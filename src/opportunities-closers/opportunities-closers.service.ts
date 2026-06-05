@@ -1,6 +1,6 @@
 import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, Not, DataSource, In } from 'typeorm';
+import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
 import { parsePresaveHasRegisteredPayments } from '../crm-cerradoras/utils/closer-commission.util';
 import { Client } from 'pg';
@@ -25,6 +25,11 @@ import {
   type ContractChannel,
   type ContractTypeFilter,
 } from '../crm-cerradoras/utils/contract-channel.util';
+import {
+  buildPacientesPanelWhere,
+  PACIENTE_PANEL_KEY_SQL,
+  type PacientesPanelFilters,
+} from '../crm-cerradoras/utils/pacientes-panel.query';
 
 @Injectable()
 export class OpportunitiesClosersService implements OnApplicationBootstrap {
@@ -105,7 +110,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     dateTo?: string,
     todayOnly?: boolean,
     filterAssignedUserId?: string,
-    options?: { forPacientesPanel?: boolean; contractType?: ContractTypeFilter },
+    options?: { forPacientesPanel?: boolean; contractType?: ContractTypeFilter; ids?: string[] },
   ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null; fechaEvaluacion?: Date | string | null; isPresaved?: boolean; hasContractPresave?: boolean; hasRegisteredPayment?: boolean; fechaLimiteCierre?: Date | null; firmaContrato?: 'pendiente' | 'firmado' | 'rechazado'; facturado?: boolean; solicitudesPendientes?: number; ultimaSolicitudId?: number | null; tipoContrato?: string | null; fechaContrato?: Date | null; monto?: number | null; hasDigitalContract?: boolean; contractChannel?: ContractChannel; comisionDemoraAprobada?: boolean })[], total: number, page: number, totalPages: number }> {
     const forPacientesPanel = options?.forPacientesPanel === true;
     const contractType = options?.contractType ?? 'todos';
@@ -126,6 +131,9 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         qb
           .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
           .addSelect('opp.c_fecha_de_reservacion', 'c_fecha_de_reservacion');
+      }
+      if (options?.ids?.length) {
+        qb.andWhere('op.id IN (:...panelIds)', { panelIds: options.ids });
       }
       if (filterAssignedUserId) {
         qb.andWhere('op.assignedUserId = :filterAssignedUserId', { filterAssignedUserId });
@@ -160,13 +168,24 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
           );
         });
       }
-      // Filtros de fecha: sobre createdAt de la oportunidad cerradora
+      // Filtro "Hoy": cierre ganado marcado hoy (inicia plazo 24 h) o cuyo plazo vence hoy
       if (todayOnly) {
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const todayEnd = new Date();
-        todayEnd.setHours(23, 59, 59, 999);
-        qb.andWhere('op.createdAt BETWEEN :todayStart AND :todayEnd', { todayStart, todayEnd });
+        const todayStart = DateTime.now().setZone('America/Lima').startOf('day').toJSDate();
+        const todayEnd = DateTime.now().setZone('America/Lima').endOf('day').toJSDate();
+        qb.andWhere('LOWER(TRIM(op.status)) IN (:...winStatuses)', {
+          winStatuses: ['ganado', 'cierre ganado', 'win'],
+        });
+        qb.andWhere('op.dateEnd IS NOT NULL');
+        qb.andWhere(
+          new Brackets((sub) => {
+            sub
+              .where('op.dateEnd BETWEEN :todayStart AND :todayEnd', { todayStart, todayEnd })
+              .orWhere("(op.dateEnd + INTERVAL '24 hours') BETWEEN :todayStart AND :todayEnd", {
+                todayStart,
+                todayEnd,
+              });
+          }),
+        );
       } else {
         if (dateFrom) {
           qb.andWhere('op.createdAt >= :dateFrom', { dateFrom: new Date(`${dateFrom}T00:00:00`) });
@@ -900,6 +919,60 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     return buffer;
+  }
+
+  /** Totales reales para Mis Pacientes (pacientes únicos vs filas de cotización). */
+  async getPacientesPanelStats(
+    filters: PacientesPanelFilters,
+  ): Promise<{ totalPacientes: number; totalOportunidades: number }> {
+    const { whereSql, params } = buildPacientesPanelWhere(filters);
+    const [row] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(DISTINCT ${PACIENTE_PANEL_KEY_SQL})::int AS pacientes,
+        COUNT(*)::int AS oportunidades
+      FROM c_oportunidad_cerradora op
+      LEFT JOIN opportunity opp ON opp.id = op.opportunity_id
+      WHERE ${whereSql}
+      `,
+      params,
+    );
+    return {
+      totalPacientes: Number(row?.pacientes ?? 0),
+      totalOportunidades: Number(row?.oportunidades ?? 0),
+    };
+  }
+
+  /** Una oportunidad representativa por paciente (misma regla que dedupe en memoria). */
+  async getPacientesPanelRepresentativeIds(
+    filters: PacientesPanelFilters,
+    page: number,
+    limit: number,
+  ): Promise<string[]> {
+    const { whereSql, params } = buildPacientesPanelWhere(filters);
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
+    const rows = await this.dataSource.query(
+      `
+      SELECT sub.id
+      FROM (
+        SELECT DISTINCT ON (${PACIENTE_PANEL_KEY_SQL})
+          op.id,
+          op.created_at
+        FROM c_oportunidad_cerradora op
+        LEFT JOIN opportunity opp ON opp.id = op.opportunity_id
+        WHERE ${whereSql}
+        ORDER BY ${PACIENTE_PANEL_KEY_SQL},
+          (CASE WHEN COALESCE(opp.is_presaved, false) OR NULLIF(TRIM(op.factura_id), '') IS NOT NULL THEN 0 ELSE 1 END),
+          (CASE WHEN COALESCE(op.comision_demora_aprobada, false) THEN 0 ELSE 1 END),
+          op.created_at DESC
+      ) sub
+      ORDER BY sub.created_at DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      `,
+      [...params, limit, (page - 1) * limit],
+    );
+    return rows.map((r: { id: string }) => r.id);
   }
 
   async existsOpportunityCloserByQuotationId(quotationId: string) {
