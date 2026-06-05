@@ -39,6 +39,12 @@ export class CreateIncidenciaDto {
   @IsString()
   @MaxLength(50)
   areaDestino?: string;
+
+  /** Solo para mapeo a SV en el front; no se persiste en CRM. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  areaId?: number;
 }
 
 export class UpdateEstadoDto {

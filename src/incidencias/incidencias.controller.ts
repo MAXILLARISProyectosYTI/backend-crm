@@ -26,22 +26,28 @@ export class IncidenciasController {
 
   /** Admin → todas; usuario regular → solo las de sus pacientes asignados. Filtra por área si se pasa ?area= */
   @Get()
-  findAll(
+  async findAll(
     @Request() req: { user?: { userId?: string } },
     @Query('pacienteId') pacienteId?: string,
     @Query('area') area?: string,
   ) {
     const pid = pacienteId ? parseInt(pacienteId, 10) : NaN;
+    if (!isNaN(pid)) {
+      return this.service.findForPatient(pid);
+    }
     return this.service.findAllForUser(
       req.user?.userId ?? null,
-      !isNaN(pid) ? pid : undefined,
+      undefined,
       area || undefined,
     );
   }
 
   @Post()
-  create(@Body() dto: CreateIncidenciaDto) {
-    return this.service.create(dto);
+  create(
+    @Body() dto: CreateIncidenciaDto,
+    @Request() req: { user?: { userId?: string } },
+  ) {
+    return this.service.create(dto, req.user?.userId ?? null);
   }
 
   @Patch(':id/estado')

@@ -1,9 +1,43 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Incidencia, EstadoIncidencia } from './incidencia.entity';
 import { User } from 'src/user/user.entity';
 import { CreateIncidenciaDto, UpdateEstadoDto } from './incidencias.dto';
+import { SvServices } from 'src/sv-services/sv.services';
+import { IncidenciaRemotaDto, SvIssueJoinRaw } from './incidencias-sv.types';
+
+const SV_PRIORITY_LABEL: Record<number, string> = {
+  1: 'Baja',
+  2: 'Alta',
+  3: 'Media',
+  4: 'Baja',
+};
+const SV_STATUS_LABEL: Record<string, string> = {
+  a: 'Abierta',
+  c: 'Abierta',
+  u: 'En revisión',
+  p: 'En revisión',
+  d: 'Cerrada',
+};
+const AREA_NAME_FALLBACK: Record<string, number> = {
+  cobranza: 1,
+  cobranzas: 1,
+  clínica: 2,
+  clinica: 2,
+  laboratorio: 3,
+  ventas: 4,
+  facturación: 5,
+  facturacion: 5,
+  recepción: 5,
+  recepcion: 5,
+};
 
 @Injectable()
 export class IncidenciasService implements OnModuleInit {
@@ -14,6 +48,7 @@ export class IncidenciasService implements OnModuleInit {
     private readonly repo: Repository<Incidencia>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    private readonly svServices: SvServices,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -57,11 +92,11 @@ export class IncidenciasService implements OnModuleInit {
     return this.repo.find({ order: { fechaCreacion: 'DESC' } });
   }
 
-  /**
-   * Admin → todas; usuario regular → solo las de sus pacientes asignados.
-   * Si se pasa `area`, filtra adicionalmente por area_destino.
-   */
-  async findAllForUser(userId: string | null, pacienteId?: number, area?: string): Promise<Incidencia[]> {
+  async findAllForUser(
+    userId: string | null,
+    pacienteId?: number,
+    area?: string,
+  ): Promise<Incidencia[]> {
     if (pacienteId) return this.findByPaciente(pacienteId);
 
     const qb = this.repo.createQueryBuilder('i').orderBy('i.fechaCreacion', 'DESC');
@@ -89,18 +124,283 @@ export class IncidenciasService implements OnModuleInit {
     });
   }
 
-  async create(dto: CreateIncidenciaDto): Promise<Incidencia> {
+  async findForPatient(pacienteId: number): Promise<IncidenciaRemotaDto[]> {
+    const fromSv = await this.listFromSvForPatient(pacienteId);
+    if (fromSv.length > 0) return fromSv;
+    const local = await this.findByPaciente(pacienteId);
+    return local.map((inc) => this.localToRemota(inc));
+  }
+
+  /**
+   * Lista incidencias como las ve Historia clínica (collection-interactions + issue_body).
+   */
+  async listFromSvForPatient(pacienteId: number): Promise<IncidenciaRemotaDto[]> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getCollectionInteractionsForClient(
+        pacienteId,
+        tokenSv,
+      );
+      return rows
+        .filter((row) => this.isSvIncidenciaRow(row))
+        .map((row) => this.mapCollectionRowToRemota(row, pacienteId));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`listFromSvForPatient ${pacienteId}: ${msg}`);
+      return [];
+    }
+  }
+
+  /**
+   * Intenta SV (POST /issues). Si no hay contrato o falla SV, guarda en CRM y avisa.
+   */
+  async create(
+    dto: CreateIncidenciaDto,
+    crmUserId: string | null = null,
+  ): Promise<IncidenciaRemotaDto> {
+    try {
+      return await this.createInSv(dto, crmUserId);
+    } catch (err) {
+      const reason =
+        err instanceof Error ? err.message : 'No se pudo sincronizar con SV';
+      this.logger.warn(`Incidencia paciente ${dto.pacienteId} → solo CRM: ${reason}`);
+      const local = await this.createLocal(dto);
+      return {
+        ...this.localToRemota(local),
+        soloCrm: true,
+        mensajeSv: reason,
+      };
+    }
+  }
+
+  private async createInSv(
+    dto: CreateIncidenciaDto,
+    crmUserId: string | null,
+  ): Promise<IncidenciaRemotaDto> {
+    if (!this.svServices) {
+      throw new ServiceUnavailableException('Servicio SV no disponible');
+    }
+
+    const auth = await this.resolveSvAuth(crmUserId, dto.ejecutivoUsername);
+    const { tokenSv, svUserId, svUsername } = auth;
+
+    const contractId = await this.svServices.getActiveContractIdForPatient(
+      dto.pacienteId,
+      tokenSv,
+    );
+    if (!contractId) {
+      throw new BadRequestException(
+        `El paciente ${dto.pacienteId} no tiene contrato en SV. La incidencia se guardará solo en CRM Controles.`,
+      );
+    }
+
+    const typeId = await this.svServices.resolveIssueTypeId(dto.tipo, tokenSv);
+    const priorityId = await this.svServices.resolveIssuePriorityId(
+      dto.prioridad,
+      tokenSv,
+    );
+    const areaId = await this.resolveAreaId(dto, tokenSv);
+    const areasCatalog = await this.svServices.getIssueAreas(tokenSv);
+    const areaName =
+      areasCatalog.find((a) => a.id === areaId)?.name ??
+      dto.areaDestino ??
+      'Recepción';
+
+    this.logger.log(
+      `POST SV /issues paciente=${dto.pacienteId} contract=${contractId} area=${areaId} autor=${svUsername ?? svUserId ?? 'admin'}`,
+    );
+
+    const created = await this.svServices.createIssue(tokenSv, {
+      patientId: dto.pacienteId,
+      contractId,
+      affectation: dto.prioridad === 'Alta' ? 4 : dto.prioridad === 'Baja' ? 2 : 3,
+      description: `[${dto.tipo}] ${dto.titulo}\n\n${dto.descripcion}`,
+      typeId,
+      priorityId,
+      areas: [areaId],
+      ...(svUserId != null ? { userId: svUserId } : {}),
+    });
+
+    this.logger.log(
+      `Incidencia SV #${created.id} creada (visible en listByIdForClient) paciente ${dto.pacienteId}`,
+    );
+
+    const remota = this.mapSvToRemota(created as unknown as SvIssueJoinRaw, dto, areaName);
+    if (svUsername) remota.creadaPor = svUsername;
+    return remota;
+  }
+
+  /**
+   * Token SV del creador → si no, del ejecutivo asignado → admin + userId del creador/ejecutivo.
+   */
+  private async resolveSvAuth(
+    crmUserId: string | null,
+    ejecutivoUsername?: string,
+  ): Promise<{ tokenSv: string; svUserId?: number; svUsername?: string }> {
+    const tryUserToken = async (
+      user: User | null,
+    ): Promise<{ tokenSv: string; svUsername: string } | null> => {
+      const username = user?.cUsersv?.trim();
+      if (!username || !user?.cContraseaSv) return null;
+      try {
+        const { tokenSv } = await this.svServices.getTokenSv(username, user.cContraseaSv);
+        return { tokenSv, svUsername: username };
+      } catch {
+        return null;
+      }
+    };
+
+    if (crmUserId) {
+      const creator = await this.userRepo.findOne({
+        where: { id: crmUserId, deleted: false },
+      });
+      const creatorToken = await tryUserToken(creator);
+      if (creatorToken) return creatorToken;
+    }
+
+    const execKey = ejecutivoUsername?.trim().toLowerCase();
+    if (execKey) {
+      const exec = await this.userRepo
+        .createQueryBuilder('u')
+        .where('LOWER(TRIM(u.cUsersv)) = :exec', { exec: execKey })
+        .andWhere('(u.deleted IS NULL OR u.deleted = false)')
+        .getOne();
+      const execToken = await tryUserToken(exec);
+      if (execToken) return execToken;
+    }
+
+    let targetUsername: string | null = null;
+    if (crmUserId) {
+      const creator = await this.userRepo.findOne({ where: { id: crmUserId } });
+      targetUsername = creator?.cUsersv?.trim() ?? null;
+    }
+    if (!targetUsername && ejecutivoUsername?.trim()) {
+      targetUsername = ejecutivoUsername.trim();
+    }
+
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    if (targetUsername) {
+      const svUserId = await this.svServices.getSvUserIdByUsername(
+        tokenSv,
+        targetUsername,
+      );
+      if (svUserId) {
+        return { tokenSv, svUserId, svUsername: targetUsername };
+      }
+    }
+
+    return { tokenSv };
+  }
+
+  private isSvIncidenciaRow(row: Record<string, unknown>): boolean {
+    if (String(row.detail ?? '').toUpperCase() === 'INCIDENCIA') return true;
+    if (row.issueHeadId != null) return true;
+    const bodies = row.issueBodies;
+    return Array.isArray(bodies) && bodies.length > 0;
+  }
+
+  private mapCollectionRowToRemota(
+    row: Record<string, unknown>,
+    pacienteId: number,
+  ): IncidenciaRemotaDto {
+    const bodies = Array.isArray(row.issueBodies)
+      ? (row.issueBodies as Array<Record<string, unknown>>)
+      : [];
+    const body = bodies[0];
+    const status = String(body?.status ?? 'c');
+    const prioId = body?.priorityId != null ? Number(body.priorityId) : null;
+
+    return {
+      id: body?.id != null ? Number(body.id) : Number(row.id),
+      titulo: String(body?.subject ?? row.detail ?? 'Incidencia'),
+      descripcion: String(body?.descripcion ?? row.observation ?? ''),
+      tipo: 'Incidencia',
+      prioridad:
+        (prioId != null ? SV_PRIORITY_LABEL[prioId] : null) ?? 'Media',
+      estado: SV_STATUS_LABEL[status] ?? 'Abierta',
+      pacienteId,
+      pacienteNombre: '',
+      creadaPor: String(row.username ?? 'SV'),
+      areaDestino: null,
+      fechaCreacion: String(
+        body?.createdDate ?? row.date ?? new Date().toISOString(),
+      ),
+    };
+  }
+
+  private async resolveAreaId(dto: CreateIncidenciaDto, tokenSv: string): Promise<number> {
+    if (dto.areaId != null && dto.areaId > 0) return dto.areaId;
+
+    const areas = await this.svServices.getIssueAreas(tokenSv);
+    if (dto.areaDestino?.trim() && areas.length > 0) {
+      const byName = areas.find(
+        (a) => a.name.trim().toLowerCase() === dto.areaDestino!.trim().toLowerCase(),
+      );
+      if (byName) return byName.id;
+    }
+    if (areas.length > 0) {
+      const recep = areas.find((a) => /recepción|recepcion/i.test(a.name));
+      return recep?.id ?? areas[0].id;
+    }
+
+    const key = (dto.areaDestino ?? 'recepción').trim().toLowerCase();
+    return AREA_NAME_FALLBACK[key] ?? 5;
+  }
+
+  private mapSvToRemota(
+    raw: SvIssueJoinRaw,
+    dto: CreateIncidenciaDto,
+    areaName: string,
+  ): IncidenciaRemotaDto {
+    const prioId = raw.priority?.id;
+    const prioridad =
+      (prioId != null ? SV_PRIORITY_LABEL[prioId] : null) ??
+      raw.priority?.name ??
+      dto.prioridad;
+
+    return {
+      id: raw.id,
+      titulo: raw.type?.name ?? dto.titulo,
+      descripcion: raw.description ?? dto.descripcion,
+      tipo: raw.type?.name ?? dto.tipo,
+      prioridad,
+      estado: SV_STATUS_LABEL[raw.status ?? 'c'] ?? 'Abierta',
+      pacienteId: raw.patientId ?? dto.pacienteId,
+      pacienteNombre: dto.pacienteNombre,
+      creadaPor: dto.creadaPor ?? 'CRM Controles',
+      areaDestino: areaName,
+      fechaCreacion: raw.createdDate ?? new Date().toISOString(),
+    };
+  }
+
+  private localToRemota(inc: Incidencia): IncidenciaRemotaDto {
+    return {
+      id: inc.id,
+      titulo: inc.titulo,
+      descripcion: inc.descripcion,
+      tipo: inc.tipo,
+      prioridad: inc.prioridad,
+      estado: inc.estado,
+      pacienteId: inc.pacienteId,
+      pacienteNombre: inc.pacienteNombre,
+      creadaPor: inc.creadaPor,
+      areaDestino: inc.areaDestino,
+      fechaCreacion: inc.fechaCreacion.toISOString(),
+    };
+  }
+
+  private async createLocal(dto: CreateIncidenciaDto): Promise<Incidencia> {
     const inc = new Incidencia();
-    inc.titulo             = dto.titulo;
-    inc.descripcion        = dto.descripcion;
-    inc.tipo               = dto.tipo as Incidencia['tipo'];
-    inc.prioridad          = dto.prioridad as Incidencia['prioridad'];
-    inc.pacienteId         = dto.pacienteId;
-    inc.pacienteNombre     = dto.pacienteNombre;
-    inc.creadaPor          = dto.creadaPor ?? 'Admin';
-    inc.ejecutivoUsername   = dto.ejecutivoUsername?.trim().toLowerCase() ?? null;
-    inc.areaDestino        = dto.areaDestino ?? 'Recepción';
-    inc.estado             = 'Abierta';
+    inc.titulo = dto.titulo;
+    inc.descripcion = dto.descripcion;
+    inc.tipo = dto.tipo as Incidencia['tipo'];
+    inc.prioridad = dto.prioridad as Incidencia['prioridad'];
+    inc.pacienteId = dto.pacienteId;
+    inc.pacienteNombre = dto.pacienteNombre;
+    inc.creadaPor = dto.creadaPor ?? 'Admin';
+    inc.ejecutivoUsername = dto.ejecutivoUsername?.trim().toLowerCase() ?? null;
+    inc.areaDestino = dto.areaDestino ?? 'Recepción';
+    inc.estado = 'Abierta';
     return this.repo.save(inc);
   }
 
