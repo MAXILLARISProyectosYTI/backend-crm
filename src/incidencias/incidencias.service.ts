@@ -13,6 +13,25 @@ import { CreateIncidenciaDto, UpdateEstadoDto } from './incidencias.dto';
 import { SvServices } from 'src/sv-services/sv.services';
 import { IncidenciaRemotaDto, SvIssueJoinRaw } from './incidencias-sv.types';
 
+export interface SyncPendingIncidenciaItem {
+  crmId: number;
+  pacienteId: number;
+  pacienteNombre: string;
+  titulo: string;
+  status: 'pending' | 'synced' | 'failed';
+  svIssueId?: number;
+  error?: string;
+}
+
+export interface SyncPendingIncidenciasResult {
+  dryRun: boolean;
+  total: number;
+  synced: number;
+  failed: number;
+  normalizedAreas: number;
+  items: SyncPendingIncidenciaItem[];
+}
+
 const SV_PRIORITY_LABEL: Record<number, string> = {
   1: 'Baja',
   2: 'Alta',
@@ -26,6 +45,9 @@ const SV_STATUS_LABEL: Record<string, string> = {
   p: 'En revisión',
   d: 'Cerrada',
 };
+/** SV guarda `description` en `issue_body.descripcion` (VARCHAR 100). Textos largos → 500. */
+const SV_ISSUE_DESCRIPTION_MAX = 100;
+
 const AREA_NAME_FALLBACK: Record<string, number> = {
   cobranza: 1,
   cobranzas: 1,
@@ -278,7 +300,7 @@ export class IncidenciasService implements OnModuleInit {
       patientId: dto.pacienteId,
       contractId,
       affectation: dto.prioridad === 'Alta' ? 4 : dto.prioridad === 'Baja' ? 2 : 3,
-      description: `[${dto.tipo}] ${dto.titulo}\n\n${dto.descripcion}`,
+      description: this.buildSvIssueDescription(dto),
       typeId,
       priorityId,
       areas: [areaId],
@@ -293,6 +315,24 @@ export class IncidenciasService implements OnModuleInit {
     if (svUsername) remota.creadaPor = svUsername;
     remota.svIssueId = Number(created.id) || remota.id;
     return remota;
+  }
+
+  /** Texto compatible con `issue_body.descripcion` (máx. 100 caracteres en SV). */
+  private buildSvIssueDescription(dto: CreateIncidenciaDto): string {
+    const full = `[${dto.tipo}] ${dto.titulo}\n\n${dto.descripcion}`;
+    if (full.length <= SV_ISSUE_DESCRIPTION_MAX) return full;
+
+    const header = `[${dto.tipo}] ${dto.titulo}`;
+    if (header.length >= SV_ISSUE_DESCRIPTION_MAX) {
+      return `${header.slice(0, SV_ISSUE_DESCRIPTION_MAX - 3)}...`;
+    }
+
+    const room = SV_ISSUE_DESCRIPTION_MAX - header.length - 2;
+    const body =
+      dto.descripcion.length <= room
+        ? dto.descripcion
+        : `${dto.descripcion.slice(0, Math.max(0, room - 3))}...`;
+    return `${header}\n\n${body}`;
   }
 
   private async resolveCreadaPorLabel(
@@ -519,6 +559,116 @@ export class IncidenciasService implements OnModuleInit {
     inc.syncStatus = opts?.syncStatus ?? 'failed';
     inc.syncError = opts?.syncError ?? null;
     return this.repo.save(inc);
+  }
+
+  /**
+   * Sincroniza a SV (Historia clínica) todas las filas de crm_incidencias sin sv_issue_id.
+   * Uso: `npm run incidencias:sync-sv` o `--dry-run` para solo listar pendientes.
+   */
+  async syncPendingToSv(opts?: { dryRun?: boolean }): Promise<SyncPendingIncidenciasResult> {
+    await this.ensureSchema();
+    const dryRun = opts?.dryRun === true;
+
+    const normalizedAreas = await this.normalizePendingAreaTypos();
+    const pending = await this.repo
+      .createQueryBuilder('i')
+      .where('i.sv_issue_id IS NULL')
+      .orderBy('i.id', 'ASC')
+      .getMany();
+
+    const result: SyncPendingIncidenciasResult = {
+      dryRun,
+      total: pending.length,
+      synced: 0,
+      failed: 0,
+      normalizedAreas,
+      items: [],
+    };
+
+    if (pending.length === 0) {
+      this.logger.log('No hay incidencias CRM pendientes de sincronizar con SV.');
+      return result;
+    }
+
+    this.logger.log(
+      `${dryRun ? '[DRY-RUN] ' : ''}${pending.length} incidencia(s) pendiente(s) de sync SV`,
+    );
+
+    for (const inc of pending) {
+      const item: SyncPendingIncidenciaItem = {
+        crmId: inc.id,
+        pacienteId: inc.pacienteId,
+        pacienteNombre: inc.pacienteNombre,
+        titulo: inc.titulo,
+        status: dryRun ? 'pending' : 'failed',
+      };
+      result.items.push(item);
+
+      if (dryRun) continue;
+
+      try {
+        const dto = this.incidenciaToCreateDto(inc);
+        const remota = await this.createInSv(dto, null);
+        const svIssueId = remota.svIssueId ?? remota.id;
+        await this.repo.update(inc.id, {
+          svIssueId: Number.isFinite(Number(svIssueId)) ? Number(svIssueId) : null,
+          syncStatus: 'synced',
+          syncError: null,
+          ...(remota.creadaPor ? { creadaPor: remota.creadaPor } : {}),
+        });
+        item.status = 'synced';
+        item.svIssueId = Number(svIssueId);
+        result.synced += 1;
+        this.logger.log(
+          `CRM #${inc.id} → SV issue #${svIssueId} (paciente ${inc.pacienteId})`,
+        );
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        await this.repo.update(inc.id, {
+          syncStatus: 'failed',
+          syncError: error,
+        });
+        item.status = 'failed';
+        item.error = error;
+        result.failed += 1;
+        this.logger.warn(`CRM #${inc.id} paciente ${inc.pacienteId}: ${error}`);
+      }
+    }
+
+    return result;
+  }
+
+  /** Corrige typos conocidos en area_destino antes de migrar. */
+  private async normalizePendingAreaTypos(): Promise<number> {
+    const rows = (await this.repo.query(`
+      UPDATE crm_incidencias
+      SET area_destino = 'Clínica'
+      WHERE sv_issue_id IS NULL
+        AND LOWER(TRIM(area_destino)) IN ('clínuca', 'clinuca')
+      RETURNING id
+    `)) as Array<{ id: number }>;
+    const count = rows?.length ?? 0;
+    if (count > 0) {
+      this.logger.log(`Área corregida Clínuca → Clínica en ${count} fila(s)`);
+    }
+    return count;
+  }
+
+  private incidenciaToCreateDto(inc: Incidencia): CreateIncidenciaDto {
+    const ejecutivo = inc.ejecutivoUsername?.trim();
+    const creadaPor =
+      ejecutivo || (inc.creadaPor !== 'Admin' ? inc.creadaPor : undefined);
+    return {
+      titulo: inc.titulo,
+      descripcion: inc.descripcion,
+      tipo: inc.tipo,
+      prioridad: inc.prioridad,
+      pacienteId: inc.pacienteId,
+      pacienteNombre: inc.pacienteNombre,
+      creadaPor,
+      ejecutivoUsername: ejecutivo || undefined,
+      areaDestino: inc.areaDestino ?? 'Recepción',
+    };
   }
 
   async updateEstado(id: number, dto: UpdateEstadoDto): Promise<Incidencia | null> {
