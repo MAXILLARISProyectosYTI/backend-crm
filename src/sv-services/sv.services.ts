@@ -1847,6 +1847,53 @@ export class SvServices {
     return null;
   }
 
+  /**
+   * Crea en SV un contrato técnico si el paciente no tiene ninguno (incidencias HC).
+   */
+  async ensureContractForIncidents(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<number> {
+    const base = this.svApiBase();
+    const url = `${base}/contract/ensure-for-incidents/${clinicHistoryId}`;
+    try {
+      const res = await axios.post<{ contractId: number; created: boolean }>(
+        url,
+        {},
+        {
+          headers: { Authorization: `Bearer ${tokenSv}` },
+          timeout: 20000,
+        },
+      );
+      const id = res.data?.contractId;
+      if (id == null) {
+        throw new BadRequestException(
+          `SV no devolvió contractId al asegurar contrato para paciente ${clinicHistoryId}`,
+        );
+      }
+      return Number(id);
+    } catch (error: unknown) {
+      const ax = error as {
+        response?: { status?: number; data?: unknown };
+        message?: string;
+      };
+      const status = ax?.response?.status;
+      const detail =
+        typeof ax.response?.data === 'object' && ax.response?.data !== null
+          ? JSON.stringify(ax.response.data)
+          : ax.message ?? 'Error desconocido';
+      console.error('ensureContractForIncidents', clinicHistoryId, detail);
+      if (status === 404) {
+        throw new BadRequestException(
+          `El SV no tiene desplegado POST /contract/ensure-for-incidents. Despliega sv-backend-main para sincronizar incidencias con Historia clínica.`,
+        );
+      }
+      throw new BadRequestException(
+        `No se pudo asegurar contrato SV para incidencias (HC ${clinicHistoryId}): ${detail}`,
+      );
+    }
+  }
+
   async getIssueAreas(tokenSv: string): Promise<Array<{ id: number; name: string }>> {
     try {
       const url = `${this.svApiBase()}/issues/areas`;

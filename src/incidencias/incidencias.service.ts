@@ -42,6 +42,7 @@ const AREA_NAME_FALLBACK: Record<string, number> = {
 @Injectable()
 export class IncidenciasService implements OnModuleInit {
   private readonly logger = new Logger(IncidenciasService.name);
+  private schemaReady: Promise<void> | null = null;
 
   constructor(
     @InjectRepository(Incidencia)
@@ -52,6 +53,18 @@ export class IncidenciasService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    await this.ensureSchema();
+  }
+
+  /** Crea/actualiza columnas de crm_incidencias (idempotente). */
+  private async ensureSchema(): Promise<void> {
+    if (!this.schemaReady) {
+      this.schemaReady = this.runSchemaMigrations();
+    }
+    return this.schemaReady;
+  }
+
+  private async runSchemaMigrations(): Promise<void> {
     try {
       await this.repo.query(`
         CREATE TABLE IF NOT EXISTS crm_incidencias (
@@ -66,29 +79,38 @@ export class IncidenciasService implements OnModuleInit {
           creada_por           VARCHAR(100)  NOT NULL DEFAULT 'Admin',
           ejecutivo_username   VARCHAR(100),
           area_destino         VARCHAR(50)   DEFAULT 'CRM Controles',
+          sv_issue_id          INTEGER,
+          sync_status          VARCHAR(20)   DEFAULT 'synced',
+          sync_error           TEXT,
           fecha_creacion       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
           fecha_actualizacion  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
         );
       `);
-      await this.repo.query(`
-        DO $$ BEGIN
-          ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS ejecutivo_username VARCHAR(100);
-        EXCEPTION WHEN duplicate_column THEN NULL;
-        END $$;
-      `);
-      await this.repo.query(`
-        DO $$ BEGIN
-          ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS area_destino VARCHAR(50) DEFAULT 'CRM Controles';
-        EXCEPTION WHEN duplicate_column THEN NULL;
-        END $$;
-      `);
+      await this.repo.query(
+        `ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS ejecutivo_username VARCHAR(100);`,
+      );
+      await this.repo.query(
+        `ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS area_destino VARCHAR(50) DEFAULT 'CRM Controles';`,
+      );
+      await this.repo.query(
+        `ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS sv_issue_id INTEGER;`,
+      );
+      await this.repo.query(
+        `ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS sync_status VARCHAR(20) DEFAULT 'synced';`,
+      );
+      await this.repo.query(
+        `ALTER TABLE crm_incidencias ADD COLUMN IF NOT EXISTS sync_error TEXT;`,
+      );
       this.logger.log('Tabla crm_incidencias lista ✓');
     } catch (err) {
+      this.schemaReady = null;
       this.logger.error('Error creando tabla crm_incidencias:', err);
+      throw err;
     }
   }
 
-  findAll(): Promise<Incidencia[]> {
+  async findAll(): Promise<Incidencia[]> {
+    await this.ensureSchema();
     return this.repo.find({ order: { fechaCreacion: 'DESC' } });
   }
 
@@ -97,6 +119,7 @@ export class IncidenciasService implements OnModuleInit {
     pacienteId?: number,
     area?: string,
   ): Promise<Incidencia[]> {
+    await this.ensureSchema();
     if (pacienteId) return this.findByPaciente(pacienteId);
 
     const qb = this.repo.createQueryBuilder('i').orderBy('i.fechaCreacion', 'DESC');
@@ -117,7 +140,8 @@ export class IncidenciasService implements OnModuleInit {
     return qb.getMany();
   }
 
-  findByPaciente(pacienteId: number): Promise<Incidencia[]> {
+  async findByPaciente(pacienteId: number): Promise<Incidencia[]> {
+    await this.ensureSchema();
     return this.repo.find({
       where: { pacienteId },
       order: { fechaCreacion: 'DESC' },
@@ -125,10 +149,18 @@ export class IncidenciasService implements OnModuleInit {
   }
 
   async findForPatient(pacienteId: number): Promise<IncidenciaRemotaDto[]> {
+    await this.ensureSchema();
     const fromSv = await this.listFromSvForPatient(pacienteId);
-    if (fromSv.length > 0) return fromSv;
     const local = await this.findByPaciente(pacienteId);
-    return local.map((inc) => this.localToRemota(inc));
+    const legacyLocal = local
+      .filter((inc) => inc.svIssueId == null)
+      .map((inc) => this.localToRemota(inc));
+    if (fromSv.length === 0) return legacyLocal;
+    const svIds = new Set(fromSv.map((i) => i.id));
+    const extraLocal = local
+      .filter((inc) => inc.svIssueId != null && !svIds.has(inc.svIssueId))
+      .map((inc) => this.localToRemota(inc));
+    return [...fromSv, ...extraLocal, ...legacyLocal];
   }
 
   /**
@@ -152,19 +184,42 @@ export class IncidenciasService implements OnModuleInit {
   }
 
   /**
-   * Intenta SV (POST /issues). Si no hay contrato o falla SV, guarda en CRM y avisa.
+   * Intenta crear en SV (HC). Siempre guarda en CRM.
+   * Si SV responde bien → visible en Historia clínica + listado CRM.
+   * Si SV falla → queda en CRM con soloCrm y mensaje (comportamiento previo).
    */
   async create(
     dto: CreateIncidenciaDto,
     crmUserId: string | null = null,
   ): Promise<IncidenciaRemotaDto> {
+    await this.ensureSchema();
+    const enriched: CreateIncidenciaDto = {
+      ...dto,
+      creadaPor: dto.creadaPor ?? (await this.resolveCreadaPorLabel(crmUserId)),
+    };
+
     try {
-      return await this.createInSv(dto, crmUserId);
+      const remota = await this.createInSv(enriched, crmUserId);
+      try {
+        await this.saveMirrorFromSv(enriched, remota);
+      } catch (mirrorErr) {
+        this.logger.warn(
+          `Incidencia SV ok pero falló espejo CRM paciente ${dto.pacienteId}: ${
+            mirrorErr instanceof Error ? mirrorErr.message : mirrorErr
+          }`,
+        );
+      }
+      return remota;
     } catch (err) {
       const reason =
         err instanceof Error ? err.message : 'No se pudo sincronizar con SV';
-      this.logger.warn(`Incidencia paciente ${dto.pacienteId} → solo CRM: ${reason}`);
-      const local = await this.createLocal(dto);
+      this.logger.warn(
+        `Incidencia paciente ${dto.pacienteId} → solo CRM: ${reason}`,
+      );
+      const local = await this.createLocal(enriched, {
+        syncStatus: 'failed',
+        syncError: reason,
+      });
       return {
         ...this.localToRemota(local),
         soloCrm: true,
@@ -184,13 +239,22 @@ export class IncidenciasService implements OnModuleInit {
     const auth = await this.resolveSvAuth(crmUserId, dto.ejecutivoUsername);
     const { tokenSv, svUserId, svUsername } = auth;
 
-    const contractId = await this.svServices.getActiveContractIdForPatient(
+    let contractId = await this.svServices.getActiveContractIdForPatient(
       dto.pacienteId,
       tokenSv,
     );
     if (!contractId) {
+      this.logger.log(
+        `Paciente ${dto.pacienteId} sin contrato: creando contrato técnico en SV`,
+      );
+      contractId = await this.svServices.ensureContractForIncidents(
+        dto.pacienteId,
+        tokenSv,
+      );
+    }
+    if (!contractId) {
       throw new BadRequestException(
-        `El paciente ${dto.pacienteId} no tiene contrato en SV. La incidencia se guardará solo en CRM Controles.`,
+        `No se pudo obtener ni crear contrato SV para el paciente ${dto.pacienteId}`,
       );
     }
 
@@ -227,7 +291,43 @@ export class IncidenciasService implements OnModuleInit {
 
     const remota = this.mapSvToRemota(created as unknown as SvIssueJoinRaw, dto, areaName);
     if (svUsername) remota.creadaPor = svUsername;
+    remota.svIssueId = Number(created.id) || remota.id;
     return remota;
+  }
+
+  private async resolveCreadaPorLabel(
+    crmUserId: string | null,
+  ): Promise<string> {
+    if (!crmUserId) return 'CRM Controles';
+    const user = await this.userRepo.findOne({
+      where: { id: crmUserId, deleted: false },
+    });
+    const svUser = user?.cUsersv?.trim();
+    if (svUser) return svUser;
+    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+    return user?.userName?.trim() || name || 'CRM Controles';
+  }
+
+  private async saveMirrorFromSv(
+    dto: CreateIncidenciaDto,
+    remota: IncidenciaRemotaDto,
+  ): Promise<void> {
+    const inc = new Incidencia();
+    inc.titulo = dto.titulo;
+    inc.descripcion = dto.descripcion;
+    inc.tipo = dto.tipo as Incidencia['tipo'];
+    inc.prioridad = dto.prioridad as Incidencia['prioridad'];
+    inc.pacienteId = dto.pacienteId;
+    inc.pacienteNombre = dto.pacienteNombre;
+    inc.creadaPor = remota.creadaPor ?? dto.creadaPor ?? 'CRM Controles';
+    inc.ejecutivoUsername = dto.ejecutivoUsername?.trim().toLowerCase() ?? null;
+    inc.areaDestino = remota.areaDestino ?? dto.areaDestino ?? 'Recepción';
+    inc.estado = (remota.estado as Incidencia['estado']) ?? 'Abierta';
+    const svId = remota.svIssueId ?? remota.id;
+    inc.svIssueId = Number.isFinite(Number(svId)) ? Number(svId) : null;
+    inc.syncStatus = 'synced';
+    inc.syncError = null;
+    await this.repo.save(inc);
   }
 
   /**
@@ -370,10 +470,12 @@ export class IncidenciasService implements OnModuleInit {
       creadaPor: dto.creadaPor ?? 'CRM Controles',
       areaDestino: areaName,
       fechaCreacion: raw.createdDate ?? new Date().toISOString(),
+      svIssueId: raw.id,
     };
   }
 
   private localToRemota(inc: Incidencia): IncidenciaRemotaDto {
+    const soloCrm = inc.syncStatus === 'failed' || inc.svIssueId == null;
     return {
       id: inc.id,
       titulo: inc.titulo,
@@ -386,10 +488,22 @@ export class IncidenciasService implements OnModuleInit {
       creadaPor: inc.creadaPor,
       areaDestino: inc.areaDestino,
       fechaCreacion: inc.fechaCreacion.toISOString(),
+      svIssueId: inc.svIssueId,
+      ...(soloCrm
+        ? {
+            soloCrm: true,
+            mensajeSv:
+              inc.syncError ??
+              'Incidencia pendiente de sincronizar con Historia clínica',
+          }
+        : {}),
     };
   }
 
-  private async createLocal(dto: CreateIncidenciaDto): Promise<Incidencia> {
+  private async createLocal(
+    dto: CreateIncidenciaDto,
+    opts?: { syncStatus?: string; syncError?: string | null },
+  ): Promise<Incidencia> {
     const inc = new Incidencia();
     inc.titulo = dto.titulo;
     inc.descripcion = dto.descripcion;
@@ -397,10 +511,13 @@ export class IncidenciasService implements OnModuleInit {
     inc.prioridad = dto.prioridad as Incidencia['prioridad'];
     inc.pacienteId = dto.pacienteId;
     inc.pacienteNombre = dto.pacienteNombre;
-    inc.creadaPor = dto.creadaPor ?? 'Admin';
+    inc.creadaPor = dto.creadaPor ?? 'CRM Controles';
     inc.ejecutivoUsername = dto.ejecutivoUsername?.trim().toLowerCase() ?? null;
     inc.areaDestino = dto.areaDestino ?? 'Recepción';
     inc.estado = 'Abierta';
+    inc.svIssueId = null;
+    inc.syncStatus = opts?.syncStatus ?? 'failed';
+    inc.syncError = opts?.syncError ?? null;
     return this.repo.save(inc);
   }
 

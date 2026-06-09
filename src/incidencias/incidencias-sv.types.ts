@@ -11,10 +11,12 @@ export interface IncidenciaRemotaDto {
   creadaPor: string;
   areaDestino: string | null;
   fechaCreacion: string;
-  /** true si solo quedó en CRM (sin contrato SV o error de sync). */
+  /** true si solo quedó en CRM (legacy / fallo de sync). */
   soloCrm?: boolean;
   /** Aviso para el usuario cuando no llegó a Historia clínica SV. */
   mensajeSv?: string;
+  /** ID del issue en SV cuando la incidencia está en Historia clínica. */
+  svIssueId?: number | null;
 }
 
 export interface SvIssueJoinRaw {
