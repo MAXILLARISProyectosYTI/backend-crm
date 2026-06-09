@@ -268,7 +268,14 @@ export class CrmControlesService implements OnModuleInit {
     reservationId: number,
     userId: number,
     reason: string,
-  ): Promise<{ code: number; message: string }> {
+  ): Promise<{
+    code: number;
+    message: string;
+    notificationSent?: boolean;
+    notificationError?: string | null;
+    traceId?: string | null;
+    publicLink?: string;
+  }> {
     const { tokenSv, data } = await this.svServices.getTokenSvAdmin();
     // Si el frontend no pudo identificar al ejecutivo (la sesión de Controles
     // del CRM no siempre tiene id SV), usamos el id del usuario admin SV que

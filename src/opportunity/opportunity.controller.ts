@@ -612,6 +612,36 @@ export class OpportunityController {
     return this.opportunityService.getOpportunityByClinicHistory(clinicHistoryCode);
   }
 
+  @Public()
+  @Get('get-by-document/:documentNumber')
+  async getByDocument(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('documentNumber') documentNumber: string,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    return this.opportunityService.getOpportunityByDocument(documentNumber);
+  }
+
+  @Public()
+  @Get('get-all-by-document/:documentNumber')
+  async getAllByDocument(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('documentNumber') documentNumber: string,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    return this.opportunityService.getAllOpportunitiesByDocument(documentNumber);
+  }
+
+  @Public()
+  @Get('get-all-by-phone/:phoneNumber')
+  async getAllByPhone(
+    @Headers('x-internal-api-key') apiKey: string,
+    @Param('phoneNumber') phoneNumber: string,
+  ) {
+    this.assertInternalApiKey(apiKey);
+    return this.opportunityService.getAllOpportunitiesByPhone(phoneNumber);
+  }
+
   /**
    * Crea oportunidad desde el flujo SV (mismo pipeline que `register` pero
    * sin requerir JWT). El `userId` se resuelve a un user bridge configurado.
@@ -650,7 +680,17 @@ export class OpportunityController {
   ) {
     this.assertInternalApiKey(apiKey);
     const bridgeUserId = await this.resolveBridgeUserId();
-    return this.opportunityService.update(id, body, bridgeUserId);
+    const result = await this.opportunityService.update(id, body, bridgeUserId);
+
+    if (body.cFacturas && (body.cFacturas.comprobante_soles || body.cFacturas.comprobante_dolares)) {
+      try {
+        await this.opportunityService.downloadFacturasFromURLs(id, body.cFacturas);
+      } catch (err) {
+        console.warn(`[updateFromSv] Error descargando facturas para ${id}:`, err?.message);
+      }
+    }
+
+    return result;
   }
   // ──────────────────── /Bridge SV → CRM ────────────────────
 

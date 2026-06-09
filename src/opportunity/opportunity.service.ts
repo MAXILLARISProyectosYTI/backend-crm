@@ -1851,7 +1851,7 @@ export class OpportunityService {
    * @param cFacturas Objeto con las URLs de las facturas
    * @returns Array con los IDs de los archivos guardados
    */
-  private async downloadFacturasFromURLs(
+  async downloadFacturasFromURLs(
     parentId: string,
     cFacturas: { comprobante_soles: string | null; comprobante_dolares: string | null },
   ): Promise<{ comprobante_soles?: number; comprobante_dolares?: number }> {
@@ -2578,6 +2578,43 @@ export class OpportunityService {
     }
 
     return opportunity;
+  }
+
+  async getOpportunityByDocument(documentNumber: string): Promise<Opportunity | null> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: [
+        { cPatientDocument: documentNumber, deleted: false },
+        { cCustomerDocument: documentNumber, deleted: false },
+      ],
+      relations: ['assignedUserId'],
+      order: { createdAt: 'DESC' },
+    });
+
+    return opportunity || null;
+  }
+
+  async getAllOpportunitiesByDocument(documentNumber: string): Promise<Opportunity[]> {
+    return this.opportunityRepository.find({
+      where: [
+        { cPatientDocument: documentNumber, deleted: false },
+        { cCustomerDocument: documentNumber, deleted: false },
+      ],
+      relations: ['assignedUserId'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async getAllOpportunitiesByPhone(phoneNumber: string): Promise<Opportunity[]> {
+    const digits = phoneNumber.replace(/\D/g, '').slice(-9);
+    if (!digits) return [];
+    return this.opportunityRepository.find({
+      where: {
+        cNumeroDeTelefono: ILike(`%${digits}%`),
+        deleted: false,
+      },
+      relations: ['assignedUserId'],
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async getOpportunityByClinicHistory(clinicHistory: string) {
