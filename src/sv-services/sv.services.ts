@@ -1301,11 +1301,25 @@ export class SvServices {
     userId: number,
     reason: string,
     tokenSv: string,
-  ): Promise<{ code: number; message: string }> {
+  ): Promise<{
+    code: number;
+    message: string;
+    notificationSent?: boolean;
+    notificationError?: string | null;
+    traceId?: string | null;
+    publicLink?: string;
+  }> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
-      const res = await axios.post<{ code: number; message: string }>(
+      const res = await axios.post<{
+        code: number;
+        message: string;
+        notificationSent?: boolean;
+        notificationError?: string | null;
+        traceId?: string | null;
+        publicLink?: string;
+      }>(
         `${base}/reservation/no-confirm-reschedule`,
         { reservationId, userId, reason },
         {

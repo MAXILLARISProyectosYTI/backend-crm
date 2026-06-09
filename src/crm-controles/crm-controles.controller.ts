@@ -291,7 +291,14 @@ export class CrmControlesController {
   @Post('no-confirm-reschedule')
   async noConfirmReschedule(
     @Body() body: { reservationId: number; userId: number; reason: string },
-  ): Promise<{ code: number; message: string }> {
+  ): Promise<{
+    code: number;
+    message: string;
+    notificationSent?: boolean;
+    notificationError?: string | null;
+    traceId?: string | null;
+    publicLink?: string;
+  }> {
     return this.crmControlesService.noConfirmReschedule(
       body.reservationId,
       body.userId,
