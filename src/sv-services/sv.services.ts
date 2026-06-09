@@ -104,10 +104,16 @@ export class SvServices {
     }
   }
 
-  async getPatientIsNew(phoneNumber: string, tokenSv: string): Promise<PatientIsNewCrmResponse> {
+  async getPatientIsNew(
+    phoneNumber: string,
+    tokenSv: string,
+    options: { blockAttendedControl?: boolean } = {},
+  ): Promise<PatientIsNewCrmResponse> {
     try {
+      const blockAttendedControl = options.blockAttendedControl !== false;
+      const query = blockAttendedControl ? '' : '?blockAttendedControl=false';
       const responseClinicHistory = await axios.get<PatientIsNewCrmResponse>(
-        `${this.URL_BACK_SV}/clinic-history/patient-is-new-crm/${phoneNumber}`,
+        `${this.URL_BACK_SV}/clinic-history/patient-is-new-crm/${phoneNumber}${query}`,
         {
           headers: {
             Authorization: `Bearer ${tokenSv}`
@@ -1778,6 +1784,175 @@ export class SvServices {
     } catch (error) {
       console.error('Error assignControllerExecutiveInSv', { id_clinic_history, id_controller_executive }, error);
       return false;
+    }
+  }
+
+  private svApiBase(): string {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    return this.URL_BACK_SV.replace(/\/$/, '');
+  }
+
+  /** Contrato del paciente (`clinic_history.id`) para incidencias / issues. */
+  async getActiveContractIdForPatient(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<number | null> {
+    const headers = { Authorization: `Bearer ${tokenSv}` };
+    const base = this.svApiBase();
+
+    try {
+      const url = `${base}/contract/patient-contracts/${clinicHistoryId}`;
+      const res = await axios.get<Array<{ id: number; state?: number }>>(url, {
+        headers,
+        timeout: 15000,
+      });
+      const contracts = Array.isArray(res.data) ? res.data : [];
+      if (contracts.length > 0) {
+        const sorted = [...contracts].sort((a, b) => b.id - a.id);
+        const active = sorted.filter((c) => c.state === 1);
+        const pick = active[0] ?? sorted[0];
+        if (pick?.id) return pick.id;
+      }
+    } catch (error) {
+      console.warn('patient-contracts fallback', clinicHistoryId, error);
+    }
+
+    try {
+      const latestUrl = `${base}/contract/latest-id-by-clinic-history/${clinicHistoryId}`;
+      const latest = await axios.get<{ contractId: number | null }>(latestUrl, {
+        headers,
+        timeout: 15000,
+      });
+      if (latest.data?.contractId != null) return Number(latest.data.contractId);
+    } catch (error) {
+      console.error('Error getLatestContractIdByClinicHistory', clinicHistoryId, error);
+    }
+
+    return null;
+  }
+
+  async getIssueAreas(tokenSv: string): Promise<Array<{ id: number; name: string }>> {
+    try {
+      const url = `${this.svApiBase()}/issues/areas`;
+      const res = await axios.get<Array<{ id: number; name: string }>>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getIssueAreas', error);
+      return [];
+    }
+  }
+
+  async getIssueTypes(tokenSv: string): Promise<Array<{ id: number; name: string }>> {
+    try {
+      const url = `${this.svApiBase()}/issues/types`;
+      const res = await axios.get<Array<{ id: number; name: string }>>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getIssueTypes', error);
+      return [];
+    }
+  }
+
+  async resolveIssueTypeId(tipo: string, tokenSv: string): Promise<number> {
+    const needle = (tipo ?? '').trim().toLowerCase();
+    const types = await this.getIssueTypes(tokenSv);
+    if (types.length > 0) {
+      const exact = types.find((t) => t.name.trim().toLowerCase() === needle);
+      if (exact) return exact.id;
+      const partial = types.find((t) => {
+        const n = t.name.trim().toLowerCase();
+        return n.includes(needle) || needle.includes(n);
+      });
+      if (partial) return partial.id;
+      return types[0].id;
+    }
+    return 1;
+  }
+
+  async getIssuePriorities(
+    tokenSv: string,
+  ): Promise<Array<{ id: number; name: string }>> {
+    try {
+      const url = `${this.svApiBase()}/issues/priorities`;
+      const res = await axios.get<Array<{ id: number; name: string }>>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 10000,
+      });
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      console.error('Error getIssuePriorities', error);
+      return [];
+    }
+  }
+
+  async resolveIssuePriorityId(prioridad: string, tokenSv: string): Promise<number> {
+    const needle = (prioridad ?? 'Media').trim().toLowerCase();
+    const priorities = await this.getIssuePriorities(tokenSv);
+    if (priorities.length > 0) {
+      const exact = priorities.find((p) => p.name.trim().toLowerCase() === needle);
+      if (exact) return exact.id;
+      const partial = priorities.find((p) => {
+        const n = p.name.trim().toLowerCase();
+        return n.includes(needle) || needle.includes(n);
+      });
+      if (partial) return partial.id;
+    }
+    if (needle === 'alta') return 2;
+    if (needle === 'baja') return 4;
+    return 3;
+  }
+
+  /**
+   * Mismo listado que Historia clínica → Incidencias (`listByIdForClient`).
+   */
+  async getCollectionInteractionsForClient(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const url = `${this.svApiBase()}/collection-interactions-record/listByIdForClient/${clinicHistoryId}`;
+    const res = await axios.get(url, {
+      headers: { Authorization: `Bearer ${tokenSv}` },
+      timeout: 20000,
+    });
+    return Array.isArray(res.data) ? res.data : [];
+  }
+
+  async createIssue(
+    tokenSv: string,
+    payload: {
+      patientId: number;
+      contractId: number;
+      affectation: number;
+      description: string;
+      typeId: number;
+      priorityId: number;
+      areas: number[];
+      userId?: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const url = `${this.svApiBase()}/issues/`;
+    try {
+      const res = await axios.post(url, payload, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout: 20000,
+      });
+      return res.data as Record<string, unknown>;
+    } catch (error: unknown) {
+      const ax = error as { response?: { status?: number; data?: unknown }; message?: string };
+      const detail =
+        typeof ax.response?.data === 'object' && ax.response?.data !== null
+          ? JSON.stringify(ax.response.data)
+          : ax.message ?? 'Error desconocido';
+      console.error('Error createIssue SV', payload.patientId, detail);
+      throw new BadRequestException(`SV /issues: ${detail}`);
     }
   }
 }

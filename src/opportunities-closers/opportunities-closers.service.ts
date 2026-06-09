@@ -1,10 +1,13 @@
-import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, Not } from 'typeorm';
+import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
+import { ContractPresave } from 'src/opportunity/contract-presave.entity';
+import { parsePresaveHasRegisteredPayments } from '../crm-cerradoras/utils/closer-commission.util';
+import { Client } from 'pg';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
 import { DateTime } from 'luxon';
-import { statesCRM } from './dto/enum-types.enum';
+import { statesCRM, StatesCRM } from './dto/enum-types.enum';
 import { SUB_CAMPAIGN_NAMES } from 'src/globals/ids';
 import { SvServices } from 'src/sv-services/sv.services';
 import { UserService } from 'src/user/user.service';
@@ -16,9 +19,20 @@ import { ActionHistoryService } from 'src/action-history/action-history.service'
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { OpportunitiesClosersCronsService } from './opportunity-closers-crons.service';
+import {
+  getDocusealProductionCutover,
+  resolveContractChannel,
+  type ContractChannel,
+  type ContractTypeFilter,
+} from '../crm-cerradoras/utils/contract-channel.util';
+import {
+  buildPacientesPanelWhere,
+  PACIENTE_PANEL_KEY_SQL,
+  type PacientesPanelFilters,
+} from '../crm-cerradoras/utils/pacientes-panel.query';
 
 @Injectable()
-export class OpportunitiesClosersService {
+export class OpportunitiesClosersService implements OnApplicationBootstrap {
   private readonly logger = new Logger(OpportunitiesClosersService.name);
   private readonly URL_DOWNLOAD_FILES = process.env.URL_DOWNLOAD_FILES;
   /** Base URL para manager_leads; nunca localhost. Por defecto https://crm.maxillaris.pe/ */
@@ -33,6 +47,8 @@ export class OpportunitiesClosersService {
   constructor(
     @InjectRepository(OpportunitiesClosers)
     private readonly opportunitiesClosersRepository: Repository<OpportunitiesClosers>,
+    @InjectRepository(ContractPresave)
+    private readonly contractPresaveRepository: Repository<ContractPresave>,
     private readonly svServices: SvServices,
     private readonly userService: UserService,
     private readonly filesService: FilesService,
@@ -41,7 +57,39 @@ export class OpportunitiesClosersService {
     private readonly opportunityService: OpportunityService,
     @Inject(forwardRef(() => OpportunitiesClosersCronsService))
     private readonly opportunitiesClosersCronsService: OpportunitiesClosersCronsService,
+    private readonly dataSource: DataSource,
   ) {}
+
+  async onApplicationBootstrap() {
+    try {
+      this.logger.log('Running sync for manual patient registrations...');
+      const missing = await this.dataSource.query(`
+        SELECT s.id, s.paciente_nombre, s.clinic_history_id, s.quotation_id, s.cerradora_username, u.id as user_id, s.created_at
+        FROM crm_cerradora_solicitudes s
+        LEFT JOIN "user" u ON s.cerradora_username = u.user_name
+        WHERE NOT EXISTS (
+          SELECT 1 FROM c_oportunidad_cerradora op
+          WHERE (op.cotizacion_id = CAST(s.quotation_id AS varchar) AND s.quotation_id IS NOT NULL)
+             OR (LOWER(op.name) = LOWER(s.paciente_nombre))
+        )
+      `);
+
+      this.logger.log(`Found ${missing.length} missing opportunity closers from manual registrations.`);
+      for (const row of missing) {
+        await this.createOpportunityCloser({
+          name: row.paciente_nombre,
+          status: 'PENDIENTE',
+          hCPatient: row.clinic_history_id ? String(row.clinic_history_id) : undefined,
+          cotizacionId: row.quotation_id ? String(row.quotation_id) : undefined,
+          assignedUserId: row.user_id || undefined,
+          createdAt: row.created_at ? new Date(row.created_at) : new Date(),
+        });
+      }
+      this.logger.log('Manual patient registration sync completed.');
+    } catch (err) {
+      this.logger.error(`Error during manual registration sync: ${err.message}`, err.stack);
+    }
+  }
 
   async createOpportunityCloser(payload: Partial<OpportunitiesClosers>) {
     const opportunity = this.opportunitiesClosersRepository.create({
@@ -58,15 +106,51 @@ export class OpportunitiesClosersService {
     limit: number = 10,
     search?: string,
     assignedToUserId?: string,
-  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null })[], total: number, page: number, totalPages: number }> {
+    dateFrom?: string,
+    dateTo?: string,
+    todayOnly?: boolean,
+    filterAssignedUserId?: string,
+    options?: { forPacientesPanel?: boolean; contractType?: ContractTypeFilter; ids?: string[] },
+  ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null; tipoTratamiento?: string | null; fechaCotizacion?: string | null; fechaEvaluacion?: Date | string | null; isPresaved?: boolean; hasContractPresave?: boolean; hasRegisteredPayment?: boolean; fechaLimiteCierre?: Date | null; firmaContrato?: 'pendiente' | 'firmado' | 'rechazado'; facturado?: boolean; solicitudesPendientes?: number; ultimaSolicitudId?: number | null; tipoContrato?: string | null; fechaContrato?: Date | null; monto?: number | null; hasDigitalContract?: boolean; contractChannel?: ContractChannel; comisionDemoraAprobada?: boolean })[], total: number, page: number, totalPages: number }> {
+    const forPacientesPanel = options?.forPacientesPanel === true;
+    const contractType = options?.contractType ?? 'todos';
+    const effectiveLimit = forPacientesPanel ? Math.min(limit, 5000) : limit;
+    const docusealCutover = getDocusealProductionCutover();
+
     const buildQuery = () => {
       const qb = this.opportunitiesClosersRepository
         .createQueryBuilder('op')
         .leftJoin('user', 'u', 'u.id = op.assignedUserId')
         .addSelect('u.userName', 'assigned_user_name')
-        .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
-        .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
+        .addSelect('op.has_digital_contract', 'has_digital_contract')
         .where('op.deleted = :deleted', { deleted: false });
+      qb
+        .leftJoin('opportunity', 'opp', 'opp.id = op.opportunity_id')
+        .addSelect('opp.is_presaved', 'is_presaved');
+      if (!forPacientesPanel) {
+        qb
+          .addSelect('opp.c_sub_campaign_id', 'c_sub_campaign_id')
+          .addSelect('opp.c_fecha_de_reservacion', 'c_fecha_de_reservacion');
+      }
+      if (options?.ids?.length) {
+        qb.andWhere('op.id IN (:...panelIds)', { panelIds: options.ids });
+      }
+      if (filterAssignedUserId) {
+        qb.andWhere('op.assignedUserId = :filterAssignedUserId', { filterAssignedUserId });
+      }
+      // Mis Pacientes: el contrato suele venir de SV (historia clínica), no de contractId en CRM.
+      // Ahí el filtro físico/digital se aplica después de enriquecer (contractChannel).
+      if (!forPacientesPanel && contractType !== 'todos') {
+        const hasContractSql =
+          "(op.contractId IS NOT NULL AND op.contractId <> '')";
+        if (contractType === 'digital') {
+          qb.andWhere(hasContractSql);
+          qb.andWhere('op.createdAt >= :docusealCutover', { docusealCutover });
+        } else if (contractType === 'fisico') {
+          qb.andWhere(hasContractSql);
+          qb.andWhere('op.createdAt < :docusealCutover', { docusealCutover });
+        }
+      }
       if (search?.trim()) {
         const words = search.trim().split(/\s+/).filter(Boolean);
         words.forEach((word, idx) => {
@@ -83,6 +167,32 @@ export class OpportunitiesClosersService {
             },
           );
         });
+      }
+      // Filtro "Hoy": cierre ganado marcado hoy (inicia plazo 24 h) o cuyo plazo vence hoy
+      if (todayOnly) {
+        const todayStart = DateTime.now().setZone('America/Lima').startOf('day').toJSDate();
+        const todayEnd = DateTime.now().setZone('America/Lima').endOf('day').toJSDate();
+        qb.andWhere('LOWER(TRIM(op.status)) IN (:...winStatuses)', {
+          winStatuses: ['ganado', 'cierre ganado', 'win'],
+        });
+        qb.andWhere('op.dateEnd IS NOT NULL');
+        qb.andWhere(
+          new Brackets((sub) => {
+            sub
+              .where('op.dateEnd BETWEEN :todayStart AND :todayEnd', { todayStart, todayEnd })
+              .orWhere("(op.dateEnd + INTERVAL '24 hours') BETWEEN :todayStart AND :todayEnd", {
+                todayStart,
+                todayEnd,
+              });
+          }),
+        );
+      } else {
+        if (dateFrom) {
+          qb.andWhere('op.createdAt >= :dateFrom', { dateFrom: new Date(`${dateFrom}T00:00:00`) });
+        }
+        if (dateTo) {
+          qb.andWhere('op.createdAt <= :dateTo', { dateTo: new Date(`${dateTo}T23:59:59`) });
+        }
       }
       return qb;
     };
@@ -144,15 +254,15 @@ export class OpportunitiesClosersService {
       }
     }
 
-    const effectivePage = total > 0 && (page - 1) * limit >= total ? 1 : page;
+    const effectivePage = total > 0 && (page - 1) * effectiveLimit >= total ? 1 : page;
     if (effectivePage !== page) {
       this.logger.log(`[findAll] Página ${page} quedaría vacía (total=${total}); se devuelve página 1 para mostrar los registros insertados`);
     }
     const queryBuilder = buildQuery();
     const result = await queryBuilder
       .orderBy('op.createdAt', 'DESC')
-      .skip((effectivePage - 1) * limit)
-      .take(limit)
+      .skip((effectivePage - 1) * effectiveLimit)
+      .take(effectiveLimit)
       .getRawAndEntities();
     entities = result.entities;
     raw = result.raw;
@@ -173,7 +283,7 @@ export class OpportunitiesClosersService {
       // Sin token no se consulta SV
     }
 
-    if (uniqueHistories.length > 0) {
+    if (uniqueHistories.length > 0 && !forPacientesPanel) {
       // Buscar tratamiento en CRM (fallback 1: por oportunidad vinculada)
       try {
         subCampaignByHistory = await this.opportunityService.getSubCampaignIdsByClinicHistories(uniqueHistories);
@@ -201,7 +311,7 @@ export class OpportunitiesClosersService {
 
     // Fallback 2 (definitivo): consultar SV por cotizacionId para todos los registros con cotizacionId
     // (para obtener tipo de tratamiento Y fecha de cotización)
-    if (tokenSv) {
+    if (tokenSv && !forPacientesPanel) {
       const quotationIds = entities
         .filter((e) => !!e.cotizacionId)
         .map((e) => Number(e.cotizacionId))
@@ -217,7 +327,101 @@ export class OpportunitiesClosersService {
       }
     }
 
-    const opportunities = entities.map((entity, index) => {
+    // --- QUERY SOLICITUDES & SV CONTRACT STATE FOR THE OPPORTUNITIES ON THE PAGE ---
+    let solicitudes: any[] = [];
+    let svContracts: any[] = [];
+
+    if (entities.length > 0) {
+      const quotationIds = entities.map(e => Number(e.cotizacionId)).filter(id => id && !isNaN(id));
+      const patientNames = entities.map(e => e.name).filter(Boolean);
+      const contractIds = entities.map(e => e.contractId).filter(id => id && /^\d+$/.test(id)).map(Number);
+      const histories = entities.map(e => e.hCPatient).filter(Boolean);
+
+      // Query crm_cerradora_solicitudes
+      if (quotationIds.length > 0 || patientNames.length > 0) {
+        try {
+          solicitudes = await this.dataSource.query(`
+            SELECT id, quotation_id as "quotationId", paciente_nombre as "pacienteNombre", clinic_history_id as "clinicHistoryId", firma_contrato as "firmaContrato", facturado, estado, monto, tipo_contrato as "tipoContrato", fecha_contrato as "fechaContrato", created_at as "createdAt"
+            FROM crm_cerradora_solicitudes
+            WHERE quotation_id = ANY($1::int[]) OR paciente_nombre = ANY($2::varchar[])
+            ORDER BY id DESC
+          `, [
+            quotationIds.length > 0 ? quotationIds : [-1],
+            patientNames.length > 0 ? patientNames : ['']
+          ]);
+        } catch (err) {
+          this.logger.error(`Error querying crm_cerradora_solicitudes: ${err.message}`, err.stack);
+        }
+      }
+
+      // Query SV contracts
+      if (contractIds.length > 0 || histories.length > 0) {
+        const svClient = new Client({
+          host: process.env.SV_DB_HOST || '161.132.211.235',
+          port: parseInt(process.env.SV_DB_PORT || '5501', 10),
+          user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
+          database: process.env.SV_DB_DATABASE || 'sv_dev',
+          password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
+        });
+
+        try {
+          await svClient.connect();
+          const svRes = await svClient.query(`
+            SELECT c.id as contract_id, c.idquotation as quotation_id, ch.history as clinic_history, c.signature, c.signaturefinger, c.amount, c.num, c.date
+            FROM contract c
+            INNER JOIN clinic_history ch ON c.idclinichistory = ch.id
+            WHERE (c.id = ANY($1::int[]) OR ch.history = ANY($2::varchar[])) AND c.state = 1
+          `, [
+            contractIds.length > 0 ? contractIds : [-1],
+            histories.length > 0 ? histories : ['']
+          ]);
+          svContracts = svRes.rows;
+        } catch (err) {
+          this.logger.error(`Error querying SV contracts: ${err.message}`, err.stack);
+        } finally {
+          try {
+            await svClient.end();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
+    const svContractsById = new Map<number, any>();
+    const svContractsByHistory = new Map<string, any>();
+    for (const row of svContracts) {
+      if (row.contract_id) svContractsById.set(row.contract_id, row);
+      if (row.clinic_history) svContractsByHistory.set(row.clinic_history, row);
+    }
+
+    const presaveByQuotationId = new Map<
+      number,
+      { hasPresave: boolean; hasRegisteredPayment: boolean }
+    >();
+    const pageQuotationIds = [
+      ...new Set(
+        entities
+          .map((e) => Number(e.cotizacionId))
+          .filter((id) => id && !isNaN(id)),
+      ),
+    ];
+    if (pageQuotationIds.length > 0) {
+      const presaves = await this.contractPresaveRepository.find({
+        where: { quotationId: In(pageQuotationIds) },
+        select: ['quotationId', 'registeredPayments'],
+      });
+      for (const p of presaves) {
+        presaveByQuotationId.set(p.quotationId, {
+          hasPresave: true,
+          hasRegisteredPayment: parsePresaveHasRegisteredPayments(
+            p.registeredPayments,
+          ),
+        });
+      }
+    }
+
+    let opportunities = entities.map((entity, index) => {
       const sedeAtencion = (entity.hCPatient && sedeByHistory.get(entity.hCPatient)) ?? defaultSede;
 
       // Fecha de cotización desde SV (siempre disponible si hay cotizacionId)
@@ -246,16 +450,128 @@ export class OpportunitiesClosersService {
         tipoTratamiento = SUB_CAMPAIGN_NAMES[id] ?? null;
       }
 
+      let fechaLimiteCierre: Date | null = null;
+      if (entity.dateEnd && (entity.status?.toLowerCase() === 'ganado' || entity.status?.toLowerCase() === 'cierre ganado' || entity.status?.toLowerCase() === 'win')) {
+        const d = new Date(entity.dateEnd);
+        d.setHours(d.getHours() + 24);
+        fechaLimiteCierre = d;
+      }
+
+      // --- CALCULATE SIGNATURE AND BILLING STATUS ---
+      let isSigned = false;
+      let contractId = entity.contractId;
+      let amount: number | null = null;
+      let tipoContrato: string | null = null;
+      let fechaContrato: Date | null = null;
+
+      // Find SV contract details
+      let svContract: any = null;
+      if (entity.hCPatient && svContractsByHistory.has(entity.hCPatient)) {
+        svContract = svContractsByHistory.get(entity.hCPatient);
+      } else if (entity.contractId && /^\d+$/.test(entity.contractId)) {
+        const cId = parseInt(entity.contractId, 10);
+        if (svContractsById.has(cId)) {
+          svContract = svContractsById.get(cId);
+        }
+      }
+
+      if (svContract) {
+        contractId = svContract.contract_id ? String(svContract.contract_id) : contractId;
+        isSigned = (svContract.signature && svContract.signature.trim() !== '') ||
+                   (svContract.signaturefinger && svContract.signaturefinger.trim() !== '');
+        amount = svContract.amount ? Number(svContract.amount) : null;
+        tipoContrato = svContract.num || null;
+        fechaContrato = svContract.date ? new Date(svContract.date) : null;
+      } else if (entity.contractId && /^\d+$/.test(entity.contractId)) {
+        const cId = parseInt(entity.contractId, 10);
+        const matched = svContractsById.get(cId);
+        if (matched) {
+          isSigned = (matched.signature && matched.signature.trim() !== '') ||
+                     (matched.signaturefinger && matched.signaturefinger.trim() !== '');
+        }
+      }
+
+      let firmaContrato: 'pendiente' | 'firmado' | 'rechazado' = isSigned ? 'firmado' : 'pendiente';
+      let facturado: boolean = (entity.facturaId || svContract) ? true : false;
+      let solicitudesPendientes = 0;
+      let ultimaSolicitudId: number | null = null;
+
+      // Filter and process solicitudes for this opportunity
+      const cotNum = entity.cotizacionId ? Number(entity.cotizacionId) : null;
+      const patientNameNormalized = (entity.name || '').toLowerCase().trim();
+
+      const matchedSolicitudes = solicitudes.filter(s => {
+        if (cotNum && s.quotationId === cotNum) return true;
+        if (patientNameNormalized && (s.pacienteNombre || '').toLowerCase().trim() === patientNameNormalized) return true;
+        return false;
+      });
+
+      // Sort matched solicitudes by id ascending to apply oldest to newest, so the newest overrides the values
+      matchedSolicitudes.sort((a, b) => a.id - b.id);
+
+      for (const s of matchedSolicitudes) {
+        firmaContrato = s.firmaContrato ?? firmaContrato;
+        facturado = s.facturado ?? facturado;
+        amount = s.monto ? Number(s.monto) : amount;
+        tipoContrato = s.tipoContrato ?? tipoContrato;
+        fechaContrato = s.fechaContrato ? new Date(s.fechaContrato) : fechaContrato;
+        if (s.estado === 'pendiente') {
+          solicitudesPendientes += 1;
+        }
+        if (!ultimaSolicitudId || s.id > ultimaSolicitudId) {
+          ultimaSolicitudId = s.id;
+        }
+      }
+
+      const hasDigitalFlag =
+        entity.hasDigitalContract === true ||
+        raw[index]?.has_digital_contract === true ||
+        raw[index]?.has_digital_contract === 1;
+      const { channel, hasDigitalContract } = resolveContractChannel({
+        createdAt: entity.createdAt,
+        contractDate: fechaContrato,
+        hasDigitalContractFlag: hasDigitalFlag,
+        contractId: contractId ?? entity.contractId,
+        hasSvContract: !!svContract,
+      });
+
+      const cotIdNum = entity.cotizacionId ? Number(entity.cotizacionId) : NaN;
+      const presaveMeta =
+        !isNaN(cotIdNum) && presaveByQuotationId.has(cotIdNum)
+          ? presaveByQuotationId.get(cotIdNum)!
+          : { hasPresave: false, hasRegisteredPayment: false };
+
       return {
         ...entity,
+        contractId: contractId ?? entity.contractId,
         assignedUserName: raw[index]?.assigned_user_name || null,
         sedeAtencion,
         tipoTratamiento,
         fechaCotizacion,
+        fechaEvaluacion: raw[index]?.c_fecha_de_reservacion || null,
+        isPresaved: raw[index]?.is_presaved === true || raw[index]?.is_presaved === 1 || false,
+        hasContractPresave: presaveMeta.hasPresave,
+        hasRegisteredPayment: presaveMeta.hasRegisteredPayment,
+        fechaLimiteCierre,
+        firmaContrato,
+        facturado,
+        solicitudesPendientes,
+        ultimaSolicitudId,
+        monto: amount,
+        tipoContrato,
+        fechaContrato,
+        hasDigitalContract,
+        contractChannel: channel,
+        comisionDemoraAprobada: entity.comisionDemoraAprobada === true,
       };
     });
 
-    const totalPages = Math.ceil(total / limit);
+    if (contractType !== 'todos') {
+      opportunities = opportunities.filter((o) => o.contractChannel === contractType);
+      total = opportunities.length;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(total / effectiveLimit));
     const response = { opportunities, total, page: effectivePage, totalPages };
     this.logger.log(`[findAll] Resultado final: total=${total}, page=${effectivePage}, totalPages=${totalPages}, opportunities.length=${opportunities.length}, ids=${opportunities.slice(0, 5).map((o) => o.id).join(', ')}${opportunities.length > 5 ? '...' : ''}`);
     return response;
@@ -283,7 +599,19 @@ export class OpportunitiesClosersService {
   
       const files = await this.filesService.findByParentId(opportunity.id);
   
-      return { ...opportunity, userAssigned: userAssigned?.userName || null, teams: teams || [], actionHistory: actionHistory || null, files: files || null };
+      let fechaEvaluacion: Date | null = null;
+      if (opportunity.opportunityId) {
+        try {
+          const opp = await this.opportunityService.findOne(opportunity.opportunityId);
+          if (opp && opp.cFechaDeReservacion) {
+            fechaEvaluacion = opp.cFechaDeReservacion;
+          }
+        } catch (err) {
+          this.logger.warn(`Error al recuperar fecha de evaluación para la oportunidad ${opportunity.opportunityId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return { ...opportunity, userAssigned: userAssigned?.userName || null, teams: teams || [], actionHistory: actionHistory || null, files: files || null, fechaEvaluacion };
     }
 
   async getOneWithEntity(id: string): Promise<OpportunitiesClosers> {
@@ -304,6 +632,53 @@ export class OpportunitiesClosersService {
     userId?: string
   ): Promise<OpportunitiesClosers> {
     const opportunity = await this.getOneWithEntity(id);
+    const oldStatus = opportunity.status;
+    const newStatus = updateOpCloserDto.status;
+
+    if (newStatus !== undefined && newStatus !== oldStatus) {
+      // 1. Audit log
+      const statusLabels: Record<string, string> = {
+        [statesCRM.PENDIENTE]: 'Pendiente',
+        [statesCRM.EN_PROGRESO]: 'En progreso',
+        [statesCRM.GANADO]: 'Cierre ganado',
+        [statesCRM.PERDIDO]: 'Cierre perdido',
+      };
+      const oldLabel = statusLabels[oldStatus || ''] || oldStatus || 'Desconocido';
+      const newLabel = statusLabels[newStatus] || newStatus;
+      
+      try {
+        await this.actionHistoryService.addRecord({
+          targetId: id,
+          target_type: ENUM_TARGET_TYPE.OPPORTUNITY_CLOSER,
+          userId: userId || opportunity.assignedUserId || 'system',
+          message: `Estado cambiado de "${oldLabel}" a "${newLabel}"`,
+        });
+      } catch (err) {
+        this.logger.warn(`Error al registrar en ActionHistory: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 2. Clear reasonLost/subReasonLost if leaving lost state
+      if (newStatus !== statesCRM.PERDIDO) {
+        opportunity.reasonLost = '';
+        opportunity.subReasonLost = '';
+      }
+
+      // 3. Update SV queue
+      try {
+        await this.updateQueueAssignmentClosers(id, {
+          status_asignamento: newStatus as StatesCRM,
+        });
+      } catch (err) {
+        this.logger.warn(`Error al actualizar cola SV: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 4. Establecer fecha de cierre al pasar a estado ganado
+      if (newStatus === statesCRM.GANADO && oldStatus !== statesCRM.GANADO) {
+        opportunity.dateEnd = new Date();
+        opportunity.dateEndDate = new Date();
+        this.logger.log(`[update] Oportunidad ${id} cambia a ganado. Se establece dateEnd al momento de la acción.`);
+      }
+    }
 
     // Actualizar solo los campos que están presentes en el DTO (no undefined)
     Object.keys(updateOpCloserDto).forEach(key => {
@@ -544,6 +919,60 @@ export class OpportunitiesClosersService {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     return buffer;
+  }
+
+  /** Totales reales para Mis Pacientes (pacientes únicos vs filas de cotización). */
+  async getPacientesPanelStats(
+    filters: PacientesPanelFilters,
+  ): Promise<{ totalPacientes: number; totalOportunidades: number }> {
+    const { whereSql, params } = buildPacientesPanelWhere(filters);
+    const [row] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(DISTINCT ${PACIENTE_PANEL_KEY_SQL})::int AS pacientes,
+        COUNT(*)::int AS oportunidades
+      FROM c_oportunidad_cerradora op
+      LEFT JOIN opportunity opp ON opp.id = op.opportunity_id
+      WHERE ${whereSql}
+      `,
+      params,
+    );
+    return {
+      totalPacientes: Number(row?.pacientes ?? 0),
+      totalOportunidades: Number(row?.oportunidades ?? 0),
+    };
+  }
+
+  /** Una oportunidad representativa por paciente (misma regla que dedupe en memoria). */
+  async getPacientesPanelRepresentativeIds(
+    filters: PacientesPanelFilters,
+    page: number,
+    limit: number,
+  ): Promise<string[]> {
+    const { whereSql, params } = buildPacientesPanelWhere(filters);
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
+    const rows = await this.dataSource.query(
+      `
+      SELECT sub.id
+      FROM (
+        SELECT DISTINCT ON (${PACIENTE_PANEL_KEY_SQL})
+          op.id,
+          op.created_at
+        FROM c_oportunidad_cerradora op
+        LEFT JOIN opportunity opp ON opp.id = op.opportunity_id
+        WHERE ${whereSql}
+        ORDER BY ${PACIENTE_PANEL_KEY_SQL},
+          (CASE WHEN COALESCE(opp.is_presaved, false) OR NULLIF(TRIM(op.factura_id), '') IS NOT NULL THEN 0 ELSE 1 END),
+          (CASE WHEN COALESCE(op.comision_demora_aprobada, false) THEN 0 ELSE 1 END),
+          op.created_at DESC
+      ) sub
+      ORDER BY sub.created_at DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      `,
+      [...params, limit, (page - 1) * limit],
+    );
+    return rows.map((r: { id: string }) => r.id);
   }
 
   async existsOpportunityCloserByQuotationId(quotationId: string) {

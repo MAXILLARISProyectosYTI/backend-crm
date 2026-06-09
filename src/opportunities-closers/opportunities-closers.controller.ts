@@ -6,6 +6,7 @@ import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import type { DetalleCotizacionDto } from './dto/detail-quotations.dto';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { OpportunitiesClosersCronsService } from './opportunity-closers-crons.service';
+import { UpdateOpCloserDto } from './dto/update-op-closer.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunities-closers')
@@ -22,12 +23,23 @@ export class OpportunitiesClosersController {
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '10',
     @Query('search') search?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('todayOnly') todayOnly?: string,
     @Req() req?: Request & { user?: { userId: string } },
   ): Promise<{ opportunities: (OpportunitiesClosers & { assignedUserName?: string; sedeAtencion?: string | null })[], total: number, page: number, totalPages: number }> {
     const pageNumber = parseInt(page, 10);
     const limitNumber = parseInt(limit, 10);
     const assignedToUserId = req?.user?.userId;
-    return await this.opportunitiesClosersService.findAll(pageNumber, limitNumber, search, assignedToUserId);
+    return await this.opportunitiesClosersService.findAll(
+      pageNumber,
+      limitNumber,
+      search,
+      assignedToUserId,
+      dateFrom,
+      dateTo,
+      todayOnly === 'true',
+    );
   }
 
   @Post('upload-quotation')
@@ -95,5 +107,14 @@ export class OpportunitiesClosersController {
       quotationId,
       campusAtencionId: first.cCampusAtencionId ?? undefined,
     });
+  }
+
+  @Patch(':id')
+  async update(
+    @Param('id') id: string,
+    @Body() body: UpdateOpCloserDto,
+    @Req() req: Request & { user?: { userId: string } },
+  ) {
+    return this.opportunitiesClosersService.update(id, body, req?.user?.userId);
   }
 }

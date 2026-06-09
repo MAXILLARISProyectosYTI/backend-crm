@@ -1,4 +1,5 @@
 import { DataSource } from 'typeorm';
+import { readdirSync } from 'fs';
 import { join } from 'path';
 
 // .env se carga con node -r dotenv/config en el script npm
@@ -8,15 +9,27 @@ const username = process.env.DB_USERNAME || 'postgres';
 const password = typeof process.env.DB_PASSWORD === 'string' ? process.env.DB_PASSWORD : '';
 const database = process.env.DB_DATABASE || 'crm_maxillaris';
 
+const migrationsDir = join(process.cwd(), 'migraciones');
+
+/** Carga automática de migraciones TypeORM: archivos `TIMESTAMP-Nombre.ts` en /migraciones */
+function loadMigrationFiles(): string[] {
+  return readdirSync(migrationsDir)
+    .filter((file) => /^\d+-.+\.ts$/.test(file))
+    .sort()
+    .map((file) => join(migrationsDir, file));
+}
+
+const migrationFiles = loadMigrationFiles();
+
 console.log('[migration] Conexión BBDD (desde .env):', {
   host,
   port,
   username,
   database,
   passwordLoaded: password.length > 0 ? `*** (${password.length} caracteres)` : 'NO',
+  migrationsCount: migrationFiles.length,
+  pendingFiles: migrationFiles.map((f) => f.split('/').pop()),
 });
-
-const migrationsDir = join(process.cwd(), 'migraciones');
 
 export default new DataSource({
   type: 'postgres',
@@ -25,17 +38,6 @@ export default new DataSource({
   username,
   password,
   database,
-  migrations: [
-    join(migrationsDir, '1738684800000-ConsolidateMigraciones.ts'),
-    join(migrationsDir, '1738684900000-OpportunityPresaveFilesContractPresave.ts'),
-    join(migrationsDir, '1738685000000-OpportunityServiceOrderAndFacturacionSubEstado.ts'),
-    join(migrationsDir, '1738685100000-CampusCoordinates.ts'),
-    join(migrationsDir, '1743500000000-CreateKpiGerencialTables.ts'),
-    join(migrationsDir, '1744742400000-MigrateLeadsArequipa.ts'),
-    join(migrationsDir, '1746720000000-OpportunityDerivation.ts'),
-    join(migrationsDir, '1746820000000-OpportunityReferralCreationFlag.ts'),
-    join(migrationsDir, '1747526400000-AddSourceToDerivation.ts'),
-    join(migrationsDir, '1748390400000-AddCurrentPaymentFormDataToContractPresave.ts'),
-  ],
+  migrations: migrationFiles,
   migrationsTableName: 'migrations',
 });

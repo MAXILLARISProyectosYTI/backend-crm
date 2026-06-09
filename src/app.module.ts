@@ -29,6 +29,7 @@ import { NotificacionesModule } from './notificaciones/notificaciones.module';
 import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 import { PatientSegmentationModule } from './patient-segmentation/patient-segmentation.module';
 import { OpportunityDerivationModule } from './opportunity-derivation/opportunity-derivation.module';
+import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { OpportunityDerivationModule } from './opportunity-derivation/opportunit
     FilteredUsersModule,
     PatientSegmentationModule,
     OpportunityDerivationModule,
+    CrmCerradoresModule,
   ],
   controllers: [AppController],
   providers: [AppService],

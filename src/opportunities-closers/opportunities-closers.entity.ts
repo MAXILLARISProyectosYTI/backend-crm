@@ -191,6 +191,23 @@ export class OpportunitiesClosers {
   })
   contractId?: string;
 
+  @Column({
+    type: 'boolean',
+    nullable: true,
+    default: false,
+    name: 'has_digital_contract',
+  })
+  hasDigitalContract?: boolean;
+
+  /** Demora de comisión aprobada en Solicitudes (admin CRM). */
+  @Column({
+    type: 'boolean',
+    nullable: false,
+    default: false,
+    name: 'comision_demora_aprobada',
+  })
+  comisionDemoraAprobada?: boolean;
+
   @Column({ 
     type: 'varchar', 
     length: 17, 
@@ -199,4 +216,3 @@ export class OpportunitiesClosers {
   })
   opportunityId?: string;
 }
-
