@@ -170,39 +170,50 @@ export class IncidenciasService implements OnModuleInit {
     });
   }
 
+  /** Espejo local con texto completo para enriquecer respuestas de SV (HC). */
+  async findLocalMirrorByPaciente(pacienteId: number): Promise<
+    Array<{
+      svIssueId: number | null;
+      titulo: string;
+      descripcion: string;
+      tipo: string;
+      creadaPor: string | null;
+    }>
+  > {
+    await this.ensureSchema();
+    const local = await this.findByPaciente(pacienteId);
+    return local.map((inc) => ({
+      svIssueId: inc.svIssueId ?? null,
+      titulo: inc.titulo,
+      descripcion: inc.descripcion,
+      tipo: inc.tipo,
+      creadaPor: inc.creadaPor ?? null,
+    }));
+  }
+
   async findForPatient(pacienteId: number): Promise<IncidenciaRemotaDto[]> {
     await this.ensureSchema();
     const fromSv = await this.listFromSvForPatient(pacienteId);
     const local = await this.findByPaciente(pacienteId);
-    const localBySvId = new Map(
-      local
-        .filter((inc) => inc.svIssueId != null)
-        .map((inc) => [inc.svIssueId as number, inc]),
+
+    const localWithSv = local.filter((inc) => inc.svIssueId != null);
+    const localWithoutSv = local.filter((inc) => inc.svIssueId == null);
+    const coveredHeadIds = new Set(
+      localWithSv.map((inc) => Number(inc.svIssueId)),
     );
 
-    const fromSvEnriched = fromSv.map((item) => {
-      const mirror = localBySvId.get(item.id);
-      if (!mirror) return item;
-      const preferLocal =
-        mirror.descripcion.length > (item.descripcion?.length ?? 0);
-      if (!preferLocal) return item;
-      return {
-        ...item,
-        titulo: mirror.titulo || item.titulo,
-        descripcion: mirror.descripcion,
-        creadaPor: mirror.creadaPor || item.creadaPor,
-      };
+    const fromSvFiltered = fromSv.filter((item) => {
+      const headId = item.svIssueId != null ? Number(item.svIssueId) : null;
+      if (headId != null && coveredHeadIds.has(headId)) return false;
+      return true;
     });
 
-    const legacyLocal = local
-      .filter((inc) => inc.svIssueId == null)
-      .map((inc) => this.localToRemota(inc));
-    if (fromSvEnriched.length === 0) return legacyLocal;
-    const svIds = new Set(fromSvEnriched.map((i) => i.id));
-    const extraLocal = local
-      .filter((inc) => inc.svIssueId != null && !svIds.has(inc.svIssueId))
-      .map((inc) => this.localToRemota(inc));
-    return [...fromSvEnriched, ...extraLocal, ...legacyLocal];
+    const localRemotas = [
+      ...localWithSv.map((inc) => this.localToRemota(inc)),
+      ...localWithoutSv.map((inc) => this.localToRemota(inc)),
+    ];
+
+    return [...localRemotas, ...fromSvFiltered];
   }
 
   /**
@@ -459,6 +470,22 @@ export class IncidenciasService implements OnModuleInit {
     return Array.isArray(bodies) && bodies.length > 0;
   }
 
+  private parseSvDescription(text: string): {
+    tipo: string;
+    titulo: string;
+    cuerpo: string;
+  } {
+    const raw = (text ?? '').trim();
+    const match = raw.match(/^\[([^\]]+)\]\s*(.+)$/s);
+    if (!match) return { tipo: '', titulo: '', cuerpo: raw };
+    const tipo = match[1].trim();
+    const rest = match[2].trim();
+    const split = rest.split(/\n\n|\n/);
+    const titulo = split[0]?.trim() ?? '';
+    const cuerpo = split.slice(1).join('\n\n').trim();
+    return { tipo, titulo, cuerpo: cuerpo || titulo };
+  }
+
   private mapCollectionRowToRemota(
     row: Record<string, unknown>,
     pacienteId: number,
@@ -471,14 +498,17 @@ export class IncidenciasService implements OnModuleInit {
     const prioId = body?.priorityId != null ? Number(body.priorityId) : null;
     const observationText = String(row.observation ?? '');
     const bodyText = String(body?.descripcion ?? '');
-    const descripcion =
+    const mergedText =
       observationText.length >= bodyText.length ? observationText : bodyText || observationText;
+    const parsed = this.parseSvDescription(mergedText);
+    const issueHeadId =
+      row.issueHeadId != null ? Number(row.issueHeadId) : null;
 
     return {
       id: body?.id != null ? Number(body.id) : Number(row.id),
-      titulo: String(body?.subject ?? row.detail ?? 'Incidencia'),
-      descripcion,
-      tipo: 'Incidencia',
+      titulo: parsed.titulo || String(body?.subject ?? row.detail ?? 'Incidencia'),
+      descripcion: parsed.cuerpo || mergedText,
+      tipo: parsed.tipo || 'Incidencia',
       prioridad:
         (prioId != null ? SV_PRIORITY_LABEL[prioId] : null) ?? 'Media',
       estado: SV_STATUS_LABEL[status] ?? 'Abierta',
@@ -489,6 +519,7 @@ export class IncidenciasService implements OnModuleInit {
       fechaCreacion: String(
         body?.createdDate ?? row.date ?? new Date().toISOString(),
       ),
+      svIssueId: issueHeadId,
     };
   }
 
