@@ -45,8 +45,8 @@ const SV_STATUS_LABEL: Record<string, string> = {
   p: 'En revisión',
   d: 'Cerrada',
 };
-/** SV guarda `description` en `issue_body.descripcion` (VARCHAR 100). Textos largos → 500. */
-const SV_ISSUE_DESCRIPTION_MAX = 100;
+/** SV: `collection_interactions_record.observation` admite ~500; `issue_body.descripcion` ~100. */
+const SV_ISSUE_OBSERVATION_MAX = 500;
 
 const AREA_NAME_FALLBACK: Record<string, number> = {
   cobranza: 1,
@@ -174,15 +174,35 @@ export class IncidenciasService implements OnModuleInit {
     await this.ensureSchema();
     const fromSv = await this.listFromSvForPatient(pacienteId);
     const local = await this.findByPaciente(pacienteId);
+    const localBySvId = new Map(
+      local
+        .filter((inc) => inc.svIssueId != null)
+        .map((inc) => [inc.svIssueId as number, inc]),
+    );
+
+    const fromSvEnriched = fromSv.map((item) => {
+      const mirror = localBySvId.get(item.id);
+      if (!mirror) return item;
+      const preferLocal =
+        mirror.descripcion.length > (item.descripcion?.length ?? 0);
+      if (!preferLocal) return item;
+      return {
+        ...item,
+        titulo: mirror.titulo || item.titulo,
+        descripcion: mirror.descripcion,
+        creadaPor: mirror.creadaPor || item.creadaPor,
+      };
+    });
+
     const legacyLocal = local
       .filter((inc) => inc.svIssueId == null)
       .map((inc) => this.localToRemota(inc));
-    if (fromSv.length === 0) return legacyLocal;
-    const svIds = new Set(fromSv.map((i) => i.id));
+    if (fromSvEnriched.length === 0) return legacyLocal;
+    const svIds = new Set(fromSvEnriched.map((i) => i.id));
     const extraLocal = local
       .filter((inc) => inc.svIssueId != null && !svIds.has(inc.svIssueId))
       .map((inc) => this.localToRemota(inc));
-    return [...fromSv, ...extraLocal, ...legacyLocal];
+    return [...fromSvEnriched, ...extraLocal, ...legacyLocal];
   }
 
   /**
@@ -317,17 +337,17 @@ export class IncidenciasService implements OnModuleInit {
     return remota;
   }
 
-  /** Texto compatible con `issue_body.descripcion` (máx. 100 caracteres en SV). */
+  /** Texto completo para observation (500); el body en SV se trunca aparte. */
   private buildSvIssueDescription(dto: CreateIncidenciaDto): string {
     const full = `[${dto.tipo}] ${dto.titulo}\n\n${dto.descripcion}`;
-    if (full.length <= SV_ISSUE_DESCRIPTION_MAX) return full;
+    if (full.length <= SV_ISSUE_OBSERVATION_MAX) return full;
 
     const header = `[${dto.tipo}] ${dto.titulo}`;
-    if (header.length >= SV_ISSUE_DESCRIPTION_MAX) {
-      return `${header.slice(0, SV_ISSUE_DESCRIPTION_MAX - 3)}...`;
+    if (header.length >= SV_ISSUE_OBSERVATION_MAX) {
+      return `${header.slice(0, SV_ISSUE_OBSERVATION_MAX - 3)}...`;
     }
 
-    const room = SV_ISSUE_DESCRIPTION_MAX - header.length - 2;
+    const room = SV_ISSUE_OBSERVATION_MAX - header.length - 2;
     const body =
       dto.descripcion.length <= room
         ? dto.descripcion
@@ -449,11 +469,15 @@ export class IncidenciasService implements OnModuleInit {
     const body = bodies[0];
     const status = String(body?.status ?? 'c');
     const prioId = body?.priorityId != null ? Number(body.priorityId) : null;
+    const observationText = String(row.observation ?? '');
+    const bodyText = String(body?.descripcion ?? '');
+    const descripcion =
+      observationText.length >= bodyText.length ? observationText : bodyText || observationText;
 
     return {
       id: body?.id != null ? Number(body.id) : Number(row.id),
       titulo: String(body?.subject ?? row.detail ?? 'Incidencia'),
-      descripcion: String(body?.descripcion ?? row.observation ?? ''),
+      descripcion,
       tipo: 'Incidencia',
       prioridad:
         (prioId != null ? SV_PRIORITY_LABEL[prioId] : null) ?? 'Media',
