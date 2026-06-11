@@ -11,10 +11,11 @@ import { TEAMS_IDS, ROLES_IDS } from 'src/globals/ids';
 
 const CONTROLES_QUEUE_KEY = 'CONTROLES';
 
-/** Mapeo roleId → campusId para segmentación por sede. */
+/** Mapeo roleId → campusId para segmentación por sede (usa IDs reales de campus en SV). */
 const ROLE_TO_CAMPUS: Record<string, number> = {
   [ROLES_IDS.CONTROLES_LIMA]: 1,
-  [ROLES_IDS.CONTROLES_AREQUIPA]: 2,
+  [ROLES_IDS.CONTROLES_AREQUIPA]: 15,
+  [ROLES_IDS.CONTROLES_TRUJILLO]: 16,
 };
 
 @Injectable()
@@ -142,8 +143,9 @@ export class CrmControlesAssignmentService {
    * Construye Map<campusId, User[]> usando roles de sede.
    * - CONTROLES (genérico)   → en TODOS los buckets de campus (todas las sedes)
    * - CONTROLES_LIMA         → solo bucket campus 1
-   * - CONTROLES_AREQUIPA     → solo bucket campus 2
-   * - Ambos roles de campus  → en ambos buckets
+   * - CONTROLES_AREQUIPA     → solo bucket campus 15
+   * - CONTROLES_TRUJILLO     → solo bucket campus 16
+   * - Combinación de roles   → en todos los buckets correspondientes
    * - Sin ningún rol de controles → no recibe pacientes segmentados
    */
   private async buildCampusSegmentation(allExecutivos: User[]): Promise<Map<number, User[]>> {
@@ -181,7 +183,8 @@ export class CrmControlesAssignmentService {
 
     if (allCampusIds.size === 0) {
       allCampusIds.add(1);
-      allCampusIds.add(2);
+      allCampusIds.add(15);
+      allCampusIds.add(16);
     }
 
     for (const campusId of allCampusIds) {

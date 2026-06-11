@@ -8,6 +8,7 @@ const TEAM_NAME = 'Equipo ejecutivos controles';
 const CAMPUS_ROLES: { roleId: string; roleName: string }[] = [
   { roleId: ROLES_IDS.CONTROLES_LIMA, roleName: 'Controles Lima' },
   { roleId: ROLES_IDS.CONTROLES_AREQUIPA, roleName: 'Controles Arequipa' },
+  { roleId: ROLES_IDS.CONTROLES_TRUJILLO, roleName: 'Controles Trujillo' },
 ];
 
 @Injectable()

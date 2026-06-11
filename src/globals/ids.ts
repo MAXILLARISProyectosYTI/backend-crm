@@ -9,6 +9,7 @@ export const ROLES_IDS = {
   CONTROLES: '19d6e050866ecbd5a',
   CONTROLES_LIMA: '19d6e050866ecbd5b',
   CONTROLES_AREQUIPA: '19d6e050866ecbd5c',
+  CONTROLES_TRUJILLO: '19d6e050866ecbd5d',
 } as const;
 
 /** Solo con uno de estos roles (y resto de filtros), match-sv-username responde true. */
@@ -32,6 +33,7 @@ export const TEAMS_IDS = {
   TEAM_VERONICA: '68b755a5ae3790763',
   TEAM_MICHELL: '68b7559436bfde575',
   TEAM_AREQUIPA: '68b755a5ae3790654',
+  TEAM_TRUJILLO: '68b755a5ae3790765',
   EQ_EJECUTIVOS_CONTROLES: '19d6e050866995692',
 }
 
