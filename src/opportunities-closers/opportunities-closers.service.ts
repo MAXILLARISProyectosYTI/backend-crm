@@ -2,7 +2,7 @@ import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRe
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
-import { parsePresaveHasRegisteredPayments } from '../crm-cerradoras/utils/closer-commission.util';
+import { parsePresaveHasRegisteredPayments, isCloserTerminalStatus } from '../crm-cerradoras/utils/closer-commission.util';
 import { Client } from 'pg';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
@@ -634,6 +634,9 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     const opportunity = await this.getOneWithEntity(id);
     const oldStatus = opportunity.status;
     const newStatus = updateOpCloserDto.status;
+    const isCurrentlyTerminal = isCloserTerminalStatus(oldStatus);
+    const willBeTerminal =
+      newStatus !== undefined ? isCloserTerminalStatus(newStatus) : isCurrentlyTerminal;
 
     if (newStatus !== undefined && newStatus !== oldStatus) {
       // 1. Audit log
@@ -678,10 +681,24 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         opportunity.dateEndDate = new Date();
         this.logger.log(`[update] Oportunidad ${id} cambia a ganado. Se establece dateEnd al momento de la acción.`);
       }
+
+      // 5. Fijar usuario asignado al cerrar (ganado o perdido) para comisiones
+      if (
+        (newStatus === statesCRM.GANADO || newStatus === statesCRM.PERDIDO) &&
+        userId
+      ) {
+        opportunity.assignedUserId = userId;
+        this.logger.log(
+          `[update] Oportunidad ${id} cierre ${newStatus}: assignedUserId fijado a ${userId}`,
+        );
+      }
     }
 
     // Actualizar solo los campos que están presentes en el DTO (no undefined)
     Object.keys(updateOpCloserDto).forEach(key => {
+      if (key === 'assignedUserId' && (isCurrentlyTerminal || willBeTerminal)) {
+        return;
+      }
       const value = updateOpCloserDto[key as keyof UpdateOpCloserDto];
       if (value !== undefined) {
         // Convertir strings de fecha a Date si es necesario
@@ -1004,6 +1021,13 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
 
   async assignToCurrentUser(id: string, userId: string): Promise<OpportunitiesClosers> {
     const opportunity = await this.getOneWithEntity(id);
+
+    if (isCloserTerminalStatus(opportunity.status)) {
+      this.logger.log(
+        `[assignToCurrentUser] Oportunidad ${id} en estado terminal (${opportunity.status}); assignedUserId no se modifica.`,
+      );
+      return opportunity;
+    }
 
     opportunity.assignedUserId = userId;
     opportunity.modifiedById = userId;

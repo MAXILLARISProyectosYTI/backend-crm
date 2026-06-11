@@ -1720,12 +1720,20 @@ export class SvServices {
 
   async getFacturacionControlesFromSv(
     tokenSv: string,
+    since?: string,
+    until?: string,
+    campusId?: number,
   ): Promise<Record<string, unknown>[]> {
     if (!this.URL_BACK_SV) {
       throw new BadRequestException('URL_BACK_SV no configurada');
     }
     const base = this.URL_BACK_SV.replace(/\/$/, '');
-    const url = `${base}/union_doctor_patient_attention/facturacion-controles-ofm`;
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (until) params.set('until', until);
+    if (campusId != null) params.set('campusId', String(campusId));
+    const qs = params.toString();
+    const url = `${base}/union_doctor_patient_attention/facturacion-controles-ofm${qs ? `?${qs}` : ''}`;
     const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
     try {
       const response = await axios.get<unknown>(url, {
@@ -1739,6 +1747,66 @@ export class SvServices {
       console.error('Error getFacturacionControlesFromSv', url, error);
       throw new BadRequestException(
         `Error al obtener facturación controles desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  async getFacturacionOiFromSv(
+    tokenSv: string,
+    since: string,
+    until: string,
+    campusId?: number,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const params = new URLSearchParams({ since, until });
+    if (campusId != null) params.set('campusId', String(campusId));
+    const url = `${base}/union_doctor_patient_attention/facturacion-oi?${params.toString()}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getFacturacionOiFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener facturación OI desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  async getEvaluacionesOiFromSv(
+    tokenSv: string,
+    since: string,
+    until: string,
+    campusId?: number,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const params = new URLSearchParams({ since, until });
+    if (campusId != null) params.set('campusId', String(campusId));
+    const url = `${base}/union_doctor_patient_attention/evaluaciones-oi?${params.toString()}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getEvaluacionesOiFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener evaluaciones OI desde SV — url: ${url}`,
       );
     }
   }
