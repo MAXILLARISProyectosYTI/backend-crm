@@ -1,7 +1,18 @@
 /** Cierre ganado en CRM cerradoras. */
 export function isCloserWinStatus(status?: string | null): boolean {
-  const s = (status ?? '').toLowerCase();
+  const s = (status ?? '').toLowerCase().trim();
   return s === 'ganado' || s === 'cierre ganado' || s === 'win';
+}
+
+/** Cierre perdido en CRM cerradoras. */
+export function isCloserLostStatus(status?: string | null): boolean {
+  const s = (status ?? '').toLowerCase().trim();
+  return s === 'perdido' || s === 'cierre perdido' || s === 'lost';
+}
+
+/** Cierre terminal: ganado o perdido (no debe reasignarse el usuario). */
+export function isCloserTerminalStatus(status?: string | null): boolean {
+  return isCloserWinStatus(status) || isCloserLostStatus(status);
 }
 
 /** Evidencia de que la cerradora gestionó el caso (anula el plazo de 24 h). */
@@ -62,5 +73,49 @@ export function parsePresaveHasRegisteredPayments(
     return Array.isArray(parsed) && parsed.length > 0;
   } catch {
     return false;
+  }
+}
+
+/** Primer abono registrado en contract_presave (Paso 2 del contrato). */
+export function parsePresaveFirstPaymentDate(
+  registeredPayments?: string | null,
+): string | null {
+  if (!registeredPayments?.trim()) return null;
+  try {
+    const parsed = JSON.parse(registeredPayments);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    let earliest: string | null = null;
+    for (const payment of parsed) {
+      const raw = payment?.fechaAbono ?? payment?.fecha_abono
+        ?? payment?.fechaPago ?? payment?.fecha_pago;
+      if (!raw) continue;
+      const day = String(raw).slice(0, 10);
+      if (!earliest || day < earliest) earliest = day;
+    }
+    return earliest;
+  } catch {
+    return null;
+  }
+}
+
+/** Último abono registrado en contract_presave (regla comisiones cerradoras). */
+export function parsePresaveLastPaymentDate(
+  registeredPayments?: string | null,
+): string | null {
+  if (!registeredPayments?.trim()) return null;
+  try {
+    const parsed = JSON.parse(registeredPayments);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    let latest: string | null = null;
+    for (const payment of parsed) {
+      const raw = payment?.fechaAbono ?? payment?.fecha_abono
+        ?? payment?.fechaPago ?? payment?.fecha_pago;
+      if (!raw) continue;
+      const day = String(raw).slice(0, 10);
+      if (!latest || day > latest) latest = day;
+    }
+    return latest;
+  } catch {
+    return null;
   }
 }

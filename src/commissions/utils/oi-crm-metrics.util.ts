@@ -1,0 +1,28 @@
+import { CAMPAIGNS_IDS } from '../../globals/ids';
+
+export interface OiCrmUserMetrics {
+  facturadoConIgv: number;
+  evaluaciones: number;
+}
+
+export const OI_CRM_CAMPAIGN_ID = CAMPAIGNS_IDS.OI;
+export const OI_WON_STAGE = 'Cierre ganado';
+
+/** Agrega filas SQL en mapa userId → métricas. */
+export function mergeOiCrmMetricsRow(
+  map: Map<string, OiCrmUserMetrics>,
+  userId: string,
+  patch: Partial<OiCrmUserMetrics>,
+): void {
+  const key = userId.trim();
+  if (!key) return;
+  const prev = map.get(key) ?? { facturadoConIgv: 0, evaluaciones: 0 };
+  map.set(key, {
+    facturadoConIgv: patch.facturadoConIgv != null
+      ? prev.facturadoConIgv + patch.facturadoConIgv
+      : prev.facturadoConIgv,
+    evaluaciones: patch.evaluaciones != null
+      ? prev.evaluaciones + patch.evaluaciones
+      : prev.evaluaciones,
+  });
+}

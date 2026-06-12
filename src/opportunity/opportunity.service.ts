@@ -81,6 +81,17 @@ export class OpportunityService {
     'PACIENTE_EXISTE_MENOS_6_MESES',
   ];
 
+  /**
+   * Valida que un código de historia clínica sea un código real (ej. LMX126-009229)
+   * y no un ID numérico de BD que se haya filtrado por error.
+   * Un código HC siempre contiene al menos una letra; un string puramente numérico
+   * es un ID de fila y debe rechazarse para evitar contaminar la oportunidad.
+   */
+  private static isValidHcCode(hc: string | null | undefined): boolean {
+    if (!hc?.trim()) return false;
+    return /[a-zA-Z]/.test(hc.trim());
+  }
+
 
   /**
    * Crea una nueva oportunidad (registro de lead).
@@ -278,8 +289,9 @@ export class OpportunityService {
       // la HC del paciente, persistirla directamente en la oportunidad. Esto
       // garantiza que el redirect manager encuentre al paciente por HC sin
       // depender de la inferencia por teléfono (que falla en HCs antiguas).
-      if (createOpportunityDto.clinicHistoryCode?.trim()) {
-        payloadOpportunity.cClinicHistory = createOpportunityDto.clinicHistoryCode.trim();
+      // Guard: solo aceptar si es un código real (con letras), nunca un ID numérico puro.
+      if (OpportunityService.isValidHcCode(createOpportunityDto.clinicHistoryCode)) {
+        payloadOpportunity.cClinicHistory = createOpportunityDto.clinicHistoryCode!.trim();
       }
 
       const opportunity = this.opportunityRepository.create(payloadOpportunity);
@@ -320,7 +332,10 @@ export class OpportunityService {
         payloadClinicHistory.patientId = patient.id;
 
         const rawPayload: UpdateOpportunityDto = {
-          cClinicHistory: patient.history,
+          // Solo guardar la HC si es un código real (contiene letras, ej. LMX126-009229).
+          // Si patient.history es numérico puro (ID de BD filtrado por bug en SV), omitirlo
+          // para evitar que el flujo del NO cargue al paciente equivocado después.
+          ...(OpportunityService.isValidHcCode(patient.history) && { cClinicHistory: patient.history }),
           cCustomerDocumentType: clientData?.document_type ?? 'DNI',
           cCustomerDocument: clientData?.document_number ?? patient.documentNumber,
           cPatientsname: patient.name,
@@ -942,7 +957,7 @@ export class OpportunityService {
       if (patient && (isPacienteExistente || !dataSv.data.is_new)) {
         payloadClinicHistory.patientId = patient.id;
         const rawPayload: UpdateOpportunityDto = {
-          cClinicHistory: patient.history,
+          ...(OpportunityService.isValidHcCode(patient.history) && { cClinicHistory: patient.history }),
           cCustomerDocumentType: clientData?.document_type ?? 'DNI',
           cCustomerDocument: clientData?.document_number ?? patient.documentNumber,
           cPatientsname: patient.name,

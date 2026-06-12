@@ -11,12 +11,13 @@ const CONTROLES_ROLE_IDS = [
   ROLES_IDS.CONTROLES,
   ROLES_IDS.CONTROLES_LIMA,
   ROLES_IDS.CONTROLES_AREQUIPA,
+  ROLES_IDS.CONTROLES_TRUJILLO,
 ];
 
 /**
  * Permite acceso a usuarios CRM con type === 'admin'
  * O usuarios regulares que tengan cualquier rol de controles
- * (genérico, Lima o Arequipa).
+ * (genérico, Lima, Arequipa o Trujillo).
  * Requiere JwtAuthGuard previo (req.user.userId).
  */
 @Injectable()

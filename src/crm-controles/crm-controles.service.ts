@@ -337,10 +337,19 @@ export class CrmControlesService implements OnModuleInit {
   async syncFacturacionFromSv(): Promise<void> {
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const rows = await this.svServices.getFacturacionControlesFromSv(tokenSv);
+      const until = new Date();
+      const since = new Date(until);
+      since.setMonth(since.getMonth() - 18);
+      const sinceStr = since.toISOString().slice(0, 10);
+      const untilStr = until.toISOString().slice(0, 10);
+      const rows = await this.svServices.getFacturacionControlesFromSv(
+        tokenSv,
+        sinceStr,
+        untilStr,
+      );
       this.facturacion = Array.isArray(rows) ? rows : [];
       this.facturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
-      this.logger.log(`CRM Controles facturación: ${this.facturacion.length} registros`);
+      this.logger.log(`CRM Controles facturación: ${this.facturacion.length} registros (${sinceStr} → ${untilStr})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.facturacionMeta = { ...this.facturacionMeta, lastError: msg };

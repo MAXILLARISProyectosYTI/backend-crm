@@ -30,6 +30,7 @@ import { FilteredUsersModule } from './filtered-users/filtered-users.module';
 import { PatientSegmentationModule } from './patient-segmentation/patient-segmentation.module';
 import { OpportunityDerivationModule } from './opportunity-derivation/opportunity-derivation.module';
 import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
+import { CommissionsModule } from './commissions/commissions.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
     PatientSegmentationModule,
     OpportunityDerivationModule,
     CrmCerradoresModule,
+    CommissionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
