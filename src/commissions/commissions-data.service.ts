@@ -15,12 +15,9 @@ import { calculateControles, type ControlesEjecutivoInput, type ControlesPeriodI
 import { calculateOi, OI_PORCENTAJE_COMISION_TTOS, type OiExecutivoInput, type OiPeriodInput } from './engines/oi.engine';
 import { calculateCierreTto, type ContractSvRow, type CierreTtoSedeConfig } from './engines/cierre-tto.engine';
 import {
-  buildCrmCommissionDates,
-  closerInCommissionMonth,
   indexLatestByQuotation,
   mapTratamientoFromCrm,
   parseModalidadFromCrmFields,
-  resolveCrmContractId,
   type CerradorasCrmPresaveRow,
   type CerradorasCrmSolicitudRow,
 } from '../crm-cerradoras/utils/cerradoras-crm-contract.util';
@@ -30,7 +27,7 @@ const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
 const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 4;
+const CIERRE_TTO_SYNC_VERSION = 6;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Plantilla de ejecutivas Controles cuando no hay mes anterior configurado. */
@@ -252,6 +249,18 @@ export class CommissionsDataService {
     WHERE cd.state = 1
     GROUP BY cd.idcontract
   `;
+
+  /** Tarifas OI en facturación SV (misma regla que UnionDoctorPatientAttention). */
+  private readonly oiFacturacionTariffSql = `(
+    t.name ILIKE '%Ortodoncia%'
+    OR t.name ILIKE '%MARPE%'
+    OR t.name ILIKE '%Alpha%'
+    OR t.name ILIKE '%Cuota Mensual%'
+    OR t.name ILIKE '%Aparato%'
+    OR t.name ILIKE '%Retenedor%'
+    OR t.name ILIKE '%Odontologia Integral%'
+    OR t.name ILIKE '%Control%'
+  ) AND t.name NOT ILIKE '%Evalu%'`;
 
   async clearCierreTtoCalculatedData(periodId: number): Promise<void> {
     const records = await this.recordRepo.find({ where: { period: { id: periodId } } });
@@ -537,7 +546,10 @@ export class CommissionsDataService {
     const existing = await this.periodRepo.findOne({
       where: { year, month, area: 'OI', campusId: IsNull() },
     });
-    if (existing) return existing;
+    if (existing) {
+      await this.ensureOiEjecutivosConfigured(existing);
+      return existing;
+    }
 
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear = month === 1 ? year - 1 : year;
@@ -573,6 +585,44 @@ export class CommissionsDataService {
       }
     }
     return period;
+  }
+
+  /** Garantiza ejecutivas OI en el período (backfill si quedó vacío). */
+  private async ensureOiEjecutivosConfigured(period: CommissionPeriod): Promise<void> {
+    const existing = await this.recordRepo.count({ where: { period: { id: period.id } } });
+    if (existing > 0) return;
+
+    const prevMonth = period.month === 1 ? 12 : period.month - 1;
+    const prevYear = period.month === 1 ? period.year - 1 : period.year;
+    const prev = await this.periodRepo.findOne({
+      where: { year: prevYear, month: prevMonth, area: 'OI', campusId: IsNull() },
+    });
+
+    if (prev) {
+      const prevRecords = await this.recordRepo.find({ where: { period: { id: prev.id } } });
+      for (const rec of prevRecords) {
+        await this.recordRepo.save(this.recordRepo.create({
+          period,
+          userId: rec.userId,
+          userName: rec.userName,
+          campusId: rec.campusId,
+          campusNombre: rec.campusNombre,
+          factorEspecial: rec.factorEspecial ?? 1,
+          estado: 'PENDIENTE',
+        }));
+      }
+      if (prevRecords.length > 0) return;
+    }
+
+    await this.recordRepo.save(this.recordRepo.create({
+      period,
+      userId: 'christian.melendez',
+      userName: 'Christian Melendez',
+      campusId: 1,
+      campusNombre: this.commissionCampusNombre(1),
+      factorEspecial: 1,
+      estado: 'PENDIENTE',
+    }));
   }
 
   /**
@@ -747,33 +797,302 @@ export class CommissionsDataService {
     stats: { contractsTotal: number; contractsCrm: number; contractsSv: number };
   }> {
     const { start, end } = this.monthRange(year, month);
-    const { contracts: fromCrm, pendingFallback } = await this.fetchCerradorasContractsFromCrm(start, end);
-    const fromSv = pendingFallback.length > 0
-      ? await this.fetchCerradorasContractsSvFallback(start, end, pendingFallback)
-      : [];
-
-    const byContractId = new Map<number, ContractSvRow>();
-    for (const row of fromCrm) {
-      byContractId.set(row.contractId, row);
-    }
-    for (const row of fromSv) {
-      if (!byContractId.has(row.contractId)) {
-        byContractId.set(row.contractId, row);
-      }
-    }
-
-    const merged = [...byContractId.values()];
+    const { contracts, invoiceRows, winsMatched } = await this.buildCerradorasContractsFromInvoices(start, end);
     this.logger.log(
-      `Cerradoras sync ${year}-${month}: CRM=${fromCrm.length}, SV fallback=${fromSv.length}, total=${merged.length}`,
+      `Cerradoras sync ${year}-${month}: pagos facturados SV=${invoiceRows}, cierres CRM=${winsMatched}, comisionables=${contracts.length}`,
     );
     return {
-      contracts: merged,
+      contracts,
       stats: {
-        contractsTotal: merged.length,
-        contractsCrm: fromCrm.length,
-        contractsSv: fromSv.length,
+        contractsTotal: contracts.length,
+        contractsCrm: winsMatched,
+        contractsSv: invoiceRows,
       },
     };
+  }
+
+  /** Índice de oportunidades cerradoras ganadas en CRM (por cotización y contrato SV). */
+  private async loadCerradorasWinCrmIndex(): Promise<{
+    byQuotation: Map<number, {
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+    }>;
+    byContract: Map<number, {
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+    }>;
+  }> {
+    const rows: Array<{
+      cotizacion_id: string | null;
+      contract_id: string | null;
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+    }> = await this.dataSource.query(
+      `
+      SELECT oc.cotizacion_id, oc.contract_id,
+             COALESCE(opp.c_campus_atencion_id, opp.c_campus_id, 1) AS campus_id,
+             opp.c_sub_campaign_id AS sub_campaign_id,
+             oc.date_end::text AS date_end
+      FROM c_oportunidad_cerradora oc
+      LEFT JOIN opportunity opp ON opp.id = oc.opportunity_id
+      WHERE COALESCE(oc.deleted, false) = false
+        AND LOWER(TRIM(COALESCE(oc.status, ''))) = ANY($1::text[])
+      `,
+      [WIN_STATUSES],
+    );
+
+    const byQuotation = new Map<number, {
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+    }>();
+    const byContract = new Map<number, {
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+    }>();
+
+    for (const row of rows) {
+      const meta = {
+        campus_id: row.campus_id != null ? Number(row.campus_id) : null,
+        sub_campaign_id: row.sub_campaign_id,
+        date_end: row.date_end,
+      };
+      const qId = parseInt(String(row.cotizacion_id ?? ''), 10);
+      if (!Number.isNaN(qId)) byQuotation.set(qId, meta);
+      const cId = parseInt(String(row.contract_id ?? ''), 10);
+      if (!Number.isNaN(cId) && cId > 0) byContract.set(cId, meta);
+    }
+    return { byQuotation, byContract };
+  }
+
+  private async loadCerradorasPresaveData(quotationIds: number[]): Promise<{
+    presaveByQuotation: Map<number, CerradorasCrmPresaveRow>;
+    solicitudByQuotation: Map<number, CerradorasCrmSolicitudRow>;
+  }> {
+    if (quotationIds.length === 0) {
+      return { presaveByQuotation: new Map(), solicitudByQuotation: new Map() };
+    }
+    const [presaves, solicitudes] = await Promise.all([
+      this.dataSource.query(
+        `
+        SELECT quotation_id, contract_type, payments_count, payment_method,
+               registered_payments, created_at::text AS created_at
+        FROM contract_presave
+        WHERE quotation_id = ANY($1::int[])
+        `,
+        [quotationIds],
+      ) as Promise<CerradorasCrmPresaveRow[]>,
+      this.dataSource.query(
+        `
+        SELECT DISTINCT ON (quotation_id)
+          quotation_id, tipo_contrato, fecha_contrato::text AS fecha_contrato
+        FROM crm_cerradora_solicitudes
+        WHERE quotation_id = ANY($1::int[])
+        ORDER BY quotation_id, id DESC
+        `,
+        [quotationIds],
+      ) as Promise<CerradorasCrmSolicitudRow[]>,
+    ]);
+    return {
+      presaveByQuotation: indexLatestByQuotation(presaves),
+      solicitudByQuotation: indexLatestByQuotation(solicitudes),
+    };
+  }
+
+  /**
+   * Pagos del mes en SV: invoice_result_body + invoice_result_head + OS + contract_detail.
+   * El facturador es billing_user_id (boleta/factura); fallback user_created de la OS.
+   */
+  private async queryInvoicedContractPayments(
+    start: string,
+    end: string,
+  ): Promise<Array<{
+    contract_id: number;
+    quotation_id: number;
+    contract_date: string;
+    contract_num: string;
+    campus_id: number;
+    billing_username: string;
+    payment_date: string;
+    moldes_date: string | null;
+    first_payment_date: string | null;
+  }>> {
+    const svClient = this.createSvDbClient();
+    try {
+      await svClient.connect();
+      const res = await svClient.query(
+        `
+        WITH invoiced_payments AS (
+          SELECT
+            c.id AS contract_id,
+            c.idquotation AS quotation_id,
+            c.date::text AS contract_date,
+            COALESCE(c.num, '') AS contract_num,
+            ch.campus AS campus_id,
+            LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS billing_username,
+            COALESCE(irb.payment_date, irh.invoice_date::date)::text AS payment_date,
+            cd.description AS quota_description,
+            CASE
+              WHEN cd.description ILIKE '%moldes%' THEN 0
+              WHEN cd.description ILIKE '%inicial%' THEN 1
+              ELSE 2
+            END AS quota_priority,
+            pay.moldes_date::text AS moldes_date,
+            pay.first_payment_date::text AS first_payment_date
+          FROM invoice_result_body irb
+          INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+            AND irh.status_invoice = 1
+            AND COALESCE(irh.credit_memo_state, false) = false
+          INNER JOIN service_order so ON so.id = irh.id_service_order
+          INNER JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+          INNER JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+          INNER JOIN contract c ON c.id = cd.idcontract AND c.state = 1
+          INNER JOIN clinic_history ch ON ch.id = c.idclinichistory
+          LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+          LEFT JOIN users u_so ON u_so.id = so.user_created
+          LEFT JOIN (${this.contractPaySubquery}) pay ON pay.idcontract = c.id
+          WHERE (
+            (irb.payment_date IS NOT NULL
+              AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+            OR (irb.payment_date IS NULL
+              AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+          )
+        )
+        SELECT DISTINCT ON (contract_id)
+          contract_id,
+          quotation_id,
+          contract_date,
+          contract_num,
+          campus_id,
+          billing_username,
+          payment_date,
+          moldes_date,
+          first_payment_date
+        FROM invoiced_payments
+        WHERE billing_username <> ''
+        ORDER BY contract_id, quota_priority, payment_date ASC
+        `,
+        [start, end],
+      );
+      return res.rows.map((row) => ({
+        contract_id: Number(row.contract_id),
+        quotation_id: Number(row.quotation_id),
+        contract_date: String(row.contract_date ?? ''),
+        contract_num: String(row.contract_num ?? ''),
+        campus_id: Number(row.campus_id ?? 1),
+        billing_username: String(row.billing_username ?? '').trim().toLowerCase(),
+        payment_date: String(row.payment_date ?? '').slice(0, 10),
+        moldes_date: row.moldes_date ? String(row.moldes_date).slice(0, 10) : null,
+        first_payment_date: row.first_payment_date ? String(row.first_payment_date).slice(0, 10) : null,
+      }));
+    } catch (err) {
+      this.logger.warn(
+        `Pagos facturados SV ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
+      );
+      return [];
+    } finally {
+      try { await svClient.end(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Arma comisiones cerradoras desde facturación SV (invoice + OS).
+   * Solo cuenta si: pago facturado en el mes + cierre ganado CRM + facturador ∈ equipo Cerradoras.
+   */
+  private async buildCerradorasContractsFromInvoices(
+    start: string,
+    end: string,
+  ): Promise<{ contracts: ContractSvRow[]; invoiceRows: number; winsMatched: number }> {
+    const [catalog, usernameToCrmId, crmIndex, svRows] = await Promise.all([
+      this.listCerradorasEjecutivos(),
+      this.buildCrmUsernameToUserIdMap(),
+      this.loadCerradorasWinCrmIndex(),
+      this.queryInvoicedContractPayments(start, end),
+    ]);
+
+    const cerradoraIds = new Set(catalog.map((c) => c.userId));
+    const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
+
+    const quotationIds = [...new Set(svRows.map((r) => r.quotation_id).filter((id) => id > 0))];
+    const { presaveByQuotation, solicitudByQuotation } = await this.loadCerradorasPresaveData(quotationIds);
+
+    const contracts: ContractSvRow[] = [];
+    const seenContractIds = new Set<number>();
+    let winsMatched = 0;
+    let skippedNotCerradora = 0;
+    let skippedNoWin = 0;
+
+    for (const row of svRows) {
+      if (seenContractIds.has(row.contract_id)) continue;
+
+      const crm = crmIndex.byQuotation.get(row.quotation_id)
+        ?? crmIndex.byContract.get(row.contract_id);
+      if (!crm) {
+        skippedNoWin += 1;
+        continue;
+      }
+      winsMatched += 1;
+
+      const crmUserId = usernameToCrmId.get(row.billing_username);
+      if (!crmUserId || !cerradoraIds.has(crmUserId)) {
+        skippedNotCerradora += 1;
+        this.logger.debug(
+          `Contrato ${row.contract_id}: facturador "${row.billing_username}" no es cerradora — omitido`,
+        );
+        continue;
+      }
+
+      const presave = presaveByQuotation.get(row.quotation_id);
+      const solicitud = solicitudByQuotation.get(row.quotation_id);
+      const subCampaignName = crm.sub_campaign_id
+        ? SUB_CAMPAIGN_NAMES[crm.sub_campaign_id] ?? null
+        : null;
+
+      const modalidadParsed = parseModalidadFromCrmFields({
+        tipoContrato: solicitud?.tipo_contrato,
+        contractType: presave?.contract_type,
+        paymentsCount: presave?.payments_count,
+        paymentMethod: presave?.payment_method,
+      }) ?? this.parseModalidad(row.contract_num);
+
+      const campusId = this.mapCommissionCampusId(crm.campus_id ?? row.campus_id);
+      const cat = catalogByUserId.get(crmUserId)!;
+      const contractDate = row.contract_date?.slice(0, 10)
+        ?? solicitud?.fecha_contrato?.slice(0, 10)
+        ?? crm.date_end?.slice(0, 10)
+        ?? row.payment_date;
+      const firstPaymentDate = row.payment_date
+        ?? row.moldes_date
+        ?? row.first_payment_date
+        ?? contractDate;
+
+      seenContractIds.add(row.contract_id);
+      contracts.push({
+        contractId: row.contract_id,
+        quotationId: row.quotation_id,
+        tratamiento: mapTratamientoFromCrm({
+          subCampaignName,
+          contractType: presave?.contract_type,
+        }),
+        modalidad: modalidadParsed.modalidad,
+        cuotaNum: modalidadParsed.cuotaNum,
+        ejecutivo: crmUserId,
+        ejecutivoNombre: cat.userName ?? cat.userLogin ?? crmUserId,
+        campusId,
+        campusNombre: this.commissionCampusNombre(campusId),
+        contractDate,
+        firstPaymentDate,
+      });
+    }
+
+    this.logger.log(
+      `Cerradoras desde invoice SV: ${contracts.length} comisionables, ${skippedNoWin} sin cierre CRM, ${skippedNotCerradora} facturador no cerradora`,
+    );
+    return { contracts, invoiceRows: svRows.length, winsMatched };
   }
 
   /** Configuración de apoyo entre sedes (activa). */
@@ -846,7 +1165,25 @@ export class CommissionsDataService {
     return { homeCampusByUser, apoyoFactorByUserCampus };
   }
 
-  /** Mapea username SV → userId CRM (c_usersv / user_name). */
+  /** Mapea username / c_usersv → userId CRM (todos los usuarios activos). */
+  private async buildCrmUsernameToUserIdMap(): Promise<Map<string, string>> {
+    const rows: Array<{ id: string; user_name: string | null; c_usersv: string | null }> =
+      await this.dataSource.query(
+        `SELECT id, user_name, c_usersv FROM "user" WHERE COALESCE(deleted, false) = false`,
+      );
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      const crmId = String(row.id);
+      for (const key of [row.user_name, row.c_usersv, row.id]) {
+        if (key && String(key).trim()) {
+          map.set(String(key).trim().toLowerCase(), crmId);
+        }
+      }
+    }
+    return map;
+  }
+
+  /** Mapea username SV → userId CRM (c_usersv / user_name) — subset de usuarios. */
   private async buildSvUsernameToCrmUserIdMap(userIds: string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();
     const rows: Array<{ id: string; user_name: string | null; c_usersv: string | null }> =
@@ -1040,315 +1377,6 @@ export class CommissionsDataService {
     }
   }
 
-  private async fetchCerradorasContractsFromCrm(start: string, end: string): Promise<{
-    contracts: ContractSvRow[];
-    pendingFallback: Array<{
-      assigned_user_id: string;
-      user_name: string | null;
-      cotizacion_id: string | null;
-      contract_id: string | null;
-      h_c_patient: string | null;
-      date_end: string | null;
-      campus_id: number | null;
-      sub_campaign_name: string | null;
-    }>;
-  }> {
-    const crmRows: Array<{
-      assigned_user_id: string;
-      user_name: string | null;
-      cotizacion_id: string | null;
-      contract_id: string | null;
-      h_c_patient: string | null;
-      date_end: string | null;
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-    }> = await this.dataSource.query(
-      `
-      SELECT oc.assigned_user_id, u.user_name, oc.cotizacion_id, oc.contract_id,
-             oc.h_c_patient, oc.date_end::text AS date_end,
-             COALESCE(opp.c_campus_atencion_id, opp.c_campus_id, 1) AS campus_id,
-             opp.c_sub_campaign_id AS sub_campaign_id
-      FROM c_oportunidad_cerradora oc
-      LEFT JOIN "user" u ON u.id = oc.assigned_user_id
-      LEFT JOIN opportunity opp ON opp.id = oc.opportunity_id
-      WHERE COALESCE(oc.deleted, false) = false
-        AND LOWER(TRIM(COALESCE(oc.status, ''))) = ANY($1::text[])
-      `,
-      [WIN_STATUSES],
-    );
-
-    if (crmRows.length === 0) return { contracts: [], pendingFallback: [] };
-
-    const quotationIds = [...new Set(
-      crmRows
-        .map((r) => parseInt(String(r.cotizacion_id ?? ''), 10))
-        .filter((id) => !Number.isNaN(id)),
-    )];
-
-    let presaves: CerradorasCrmPresaveRow[] = [];
-    let solicitudes: CerradorasCrmSolicitudRow[] = [];
-    if (quotationIds.length > 0) {
-      presaves = await this.dataSource.query(
-        `
-        SELECT quotation_id, contract_type, payments_count, payment_method,
-               registered_payments, created_at::text AS created_at
-        FROM contract_presave
-        WHERE quotation_id = ANY($1::int[])
-        `,
-        [quotationIds],
-      );
-      solicitudes = await this.dataSource.query(
-        `
-        SELECT DISTINCT ON (quotation_id)
-          quotation_id, tipo_contrato, fecha_contrato::text AS fecha_contrato
-        FROM crm_cerradora_solicitudes
-        WHERE quotation_id = ANY($1::int[])
-        ORDER BY quotation_id, id DESC
-        `,
-        [quotationIds],
-      );
-    }
-
-    const presaveByQuotation = indexLatestByQuotation(presaves);
-    const solicitudByQuotation = indexLatestByQuotation(solicitudes);
-
-    const contracts: ContractSvRow[] = [];
-    const pendingFallback: Array<{
-      assigned_user_id: string;
-      user_name: string | null;
-      cotizacion_id: string | null;
-      contract_id: string | null;
-      h_c_patient: string | null;
-      date_end: string | null;
-      campus_id: number | null;
-      sub_campaign_name: string | null;
-    }> = [];
-    const seenContractIds = new Set<number>();
-
-    for (const crm of crmRows) {
-      const qId = parseInt(String(crm.cotizacion_id ?? ''), 10);
-      if (Number.isNaN(qId)) {
-        pendingFallback.push({
-          ...crm,
-          sub_campaign_name: crm.sub_campaign_id ? SUB_CAMPAIGN_NAMES[crm.sub_campaign_id] ?? null : null,
-        });
-        continue;
-      }
-
-      const presave = presaveByQuotation.get(qId);
-      const solicitud = solicitudByQuotation.get(qId);
-      const subCampaignName = crm.sub_campaign_id ? SUB_CAMPAIGN_NAMES[crm.sub_campaign_id] ?? null : null;
-
-      const { contractDate, firstPaymentDate, monthDates } = buildCrmCommissionDates({
-        dateEnd: crm.date_end,
-        fechaContrato: solicitud?.fecha_contrato,
-        presaveCreatedAt: presave?.created_at,
-        registeredPayments: presave?.registered_payments,
-      });
-
-      if (!closerInCommissionMonth(start, end, monthDates)) {
-        continue;
-      }
-
-      const modalidadParsed = parseModalidadFromCrmFields({
-        tipoContrato: solicitud?.tipo_contrato,
-        contractType: presave?.contract_type,
-        paymentsCount: presave?.payments_count,
-        paymentMethod: presave?.payment_method,
-      });
-
-      if (!modalidadParsed) {
-        pendingFallback.push({
-          assigned_user_id: crm.assigned_user_id,
-          user_name: crm.user_name,
-          cotizacion_id: crm.cotizacion_id,
-          contract_id: crm.contract_id,
-          h_c_patient: crm.h_c_patient,
-          date_end: crm.date_end,
-          campus_id: crm.campus_id,
-          sub_campaign_name: subCampaignName,
-        });
-        continue;
-      }
-
-      const contractId = resolveCrmContractId(crm.contract_id, qId);
-      if (seenContractIds.has(contractId)) continue;
-      seenContractIds.add(contractId);
-
-      const campusId = this.mapCommissionCampusId(crm.campus_id);
-      const tratamiento = mapTratamientoFromCrm({
-        subCampaignName,
-        contractType: presave?.contract_type,
-      });
-
-      contracts.push({
-        contractId,
-        quotationId: qId,
-        tratamiento,
-        modalidad: modalidadParsed.modalidad,
-        cuotaNum: modalidadParsed.cuotaNum,
-        ejecutivo: crm.assigned_user_id,
-        ejecutivoNombre: crm.user_name,
-        campusId,
-        campusNombre: this.commissionCampusNombre(campusId),
-        contractDate,
-        firstPaymentDate,
-      });
-    }
-
-    this.logger.log(
-      `Cerradoras CRM ${start}..${end}: ${contracts.length} comisionables, ${pendingFallback.length} pendientes SV fallback`,
-    );
-    return { contracts, pendingFallback };
-  }
-
-  /**
-   * Fallback legacy: solo cierres ganados en CRM que no pudieron resolverse con presave/solicitudes.
-   * El usuario asignado siempre es el del CRM.
-   */
-  private async fetchCerradorasContractsSvFallback(
-    start: string,
-    end: string,
-    pending: Array<{
-      assigned_user_id: string;
-      user_name: string | null;
-      cotizacion_id: string | null;
-      contract_id: string | null;
-      h_c_patient: string | null;
-      date_end: string | null;
-      campus_id: number | null;
-      sub_campaign_name: string | null;
-    }>,
-  ): Promise<ContractSvRow[]> {
-    if (pending.length === 0) return [];
-
-    const contractIds = [...new Set(
-      pending
-        .map((r) => parseInt(String(r.contract_id ?? ''), 10))
-        .filter((id) => !Number.isNaN(id)),
-    )];
-    const histories = [...new Set(pending.map((r) => r.h_c_patient).filter(Boolean))] as string[];
-    const quotationIds = [...new Set(
-      pending
-        .map((r) => parseInt(String(r.cotizacion_id ?? ''), 10))
-        .filter((id) => !Number.isNaN(id)),
-    )];
-
-    if (contractIds.length === 0 && histories.length === 0 && quotationIds.length === 0) {
-      return [];
-    }
-
-    type SvContractRow = {
-      contract_id: number;
-      idquotation: number;
-      date: string;
-      num: string;
-      clinic_history: string | null;
-      moldes_date: string | null;
-      first_payment_date: string | null;
-    };
-
-    const svClient = this.createSvDbClient();
-    let svRows: SvContractRow[] = [];
-
-    try {
-      await svClient.connect();
-      const svRes = await svClient.query(
-        `
-        SELECT c.id AS contract_id, c.idquotation, c.date::text, c.num,
-               ch.history AS clinic_history,
-               pay.moldes_date::text AS moldes_date,
-               pay.first_payment_date::text AS first_payment_date
-        FROM contract c
-        INNER JOIN clinic_history ch ON c.idclinichistory = ch.id
-        LEFT JOIN (${this.contractPaySubquery}) pay ON pay.idcontract = c.id
-        WHERE c.state = 1
-          AND (
-            (CARDINALITY($1::int[]) > 0 AND c.id = ANY($1::int[]))
-            OR (CARDINALITY($2::varchar[]) > 0 AND ch.history = ANY($2::varchar[]))
-            OR (CARDINALITY($3::int[]) > 0 AND c.idquotation = ANY($3::int[]))
-          )
-        ORDER BY c.id DESC
-        `,
-        [contractIds, histories, quotationIds],
-      );
-      svRows = svRes.rows;
-    } catch (err) {
-      this.logger.warn(`Sync cerradoras SV fallback: ${err instanceof Error ? err.message : err}`);
-      return [];
-    } finally {
-      try { await svClient.end(); } catch { /* ignore */ }
-    }
-
-    if (svRows.length === 0) return [];
-
-    const svByContractId = new Map<number, SvContractRow>();
-    const svByHistory = new Map<string, SvContractRow>();
-    const svByQuotation = new Map<number, SvContractRow>();
-    for (const row of svRows) {
-      if (!svByContractId.has(row.contract_id)) svByContractId.set(row.contract_id, row);
-      if (row.clinic_history && !svByHistory.has(row.clinic_history)) {
-        svByHistory.set(row.clinic_history, row);
-      }
-      if (row.idquotation && !svByQuotation.has(row.idquotation)) {
-        svByQuotation.set(row.idquotation, row);
-      }
-    }
-
-    const contracts: ContractSvRow[] = [];
-    const seenContractIds = new Set<number>();
-
-    for (const crm of pending) {
-      const qId = parseInt(String(crm.cotizacion_id ?? ''), 10);
-      const cIdFromCrm = parseInt(String(crm.contract_id ?? ''), 10);
-
-      let sv: SvContractRow | undefined;
-      if (!Number.isNaN(cIdFromCrm)) sv = svByContractId.get(cIdFromCrm);
-      if (!sv && crm.h_c_patient) sv = svByHistory.get(crm.h_c_patient);
-      if (!sv && !Number.isNaN(qId)) sv = svByQuotation.get(qId);
-      if (!sv) continue;
-
-      if (seenContractIds.has(sv.contract_id)) continue;
-
-      if (!this.contractInCommissionMonth(
-        start,
-        end,
-        sv.date,
-        sv.moldes_date,
-        sv.first_payment_date,
-        [crm.date_end],
-      )) {
-        continue;
-      }
-
-      seenContractIds.add(sv.contract_id);
-
-      const { modalidad, cuotaNum } = this.parseModalidad(sv.num);
-      const tratamiento = mapTratamientoFromCrm({
-        subCampaignName: crm.sub_campaign_name,
-        contractType: null,
-      });
-      const campusId = this.mapCommissionCampusId(crm.campus_id);
-      const firstPayment = sv.moldes_date ?? sv.first_payment_date ?? sv.date;
-
-      contracts.push({
-        contractId: sv.contract_id,
-        quotationId: !Number.isNaN(qId) ? qId : sv.idquotation,
-        tratamiento,
-        modalidad,
-        cuotaNum,
-        ejecutivo: crm.assigned_user_id,
-        ejecutivoNombre: crm.user_name,
-        campusId,
-        campusNombre: this.commissionCampusNombre(campusId),
-        contractDate: sv.date,
-        firstPaymentDate: firstPayment,
-      });
-    }
-
-    return contracts;
-  }
-
   async syncAndCalculateCierreTto(periodId: number): Promise<CommissionDashboard> {
     const period = await this.periodRepo.findOne({ where: { id: periodId } });
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
@@ -1360,6 +1388,8 @@ export class CommissionsDataService {
     const rateByCode = await this.getPeriodRatesMap(periodId);
     const sedeConfig = await this.buildCierreTtoSedeConfig();
     const { contracts, stats } = await this.fetchCerradorasContractsForMonth(period.year, period.month);
+    const catalog = await this.listCerradorasEjecutivos();
+    const cerradoraIds = new Set(catalog.map((c) => c.userId));
     await calculateCierreTto(
       period,
       contracts,
@@ -1370,7 +1400,9 @@ export class CommissionsDataService {
       rateByCode,
       undefined,
       sedeConfig,
+      cerradoraIds,
     );
+    await this.ensureCierreTtoTeamRecords(period);
     try {
       await this.applyCerradorasOiCommission(period);
     } catch (err) {
@@ -1534,8 +1566,138 @@ export class CommissionsDataService {
     return map;
   }
 
+  /** Facturación OI del mes desde invoice_result_* + OS (SV DB directo). */
+  private async queryOiFacturacionFromSvDb(
+    start: string,
+    end: string,
+    campusId?: number | null,
+  ): Promise<Array<{ facturador_username: string; amount_pen: number }>> {
+    const svClient = this.createSvDbClient();
+    const params: unknown[] = [start, end];
+    let campusFilter = '';
+    if (campusId != null) {
+      params.push(campusId);
+      campusFilter = ` AND ch.campus = $${params.length}`;
+    }
+
+    try {
+      await svClient.connect();
+      const res = await svClient.query(
+        `
+        SELECT
+          LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS facturador_username,
+          CASE
+            WHEN UPPER(COALESCE(c2.code, 'PEN')) IN ('USD', '$', 'US', 'DOL')
+              THEN irb.amount * COALESCE(er_irb.value, er_day.value, 1)
+            ELSE irb.amount
+          END AS amount_pen
+        FROM invoice_result_body irb
+        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+          AND irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
+        INNER JOIN service_order so ON so.id = irh.id_service_order
+        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+        INNER JOIN tariff t ON t.id = irb.tariff_id
+        LEFT JOIN coin c2 ON c2.id = irb.id_currency
+        LEFT JOIN exchange_rate er_irb ON er_irb.id = irb.exchange_rate_id
+        LEFT JOIN LATERAL (
+          SELECT er.value
+          FROM exchange_rate er
+          WHERE er.state = 1
+            AND er.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+          ORDER BY er.date DESC
+          LIMIT 1
+        ) er_day ON TRUE
+        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+        LEFT JOIN users u_so ON u_so.id = so.user_created
+        WHERE ${this.oiFacturacionTariffSql.replace(/\bt\./g, 't.')}
+          AND (
+            (irb.payment_date IS NOT NULL
+              AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+            OR (irb.payment_date IS NULL
+              AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+          )
+          ${campusFilter}
+        `,
+        params,
+      );
+      return res.rows
+        .map((row) => ({
+          facturador_username: String(row.facturador_username ?? '').trim().toLowerCase(),
+          amount_pen: Number(row.amount_pen ?? 0),
+        }))
+        .filter((row) => row.facturador_username && row.amount_pen > 0);
+    } catch (err) {
+      this.logger.warn(
+        `OI facturación SV DB ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
+      );
+      return [];
+    } finally {
+      try { await svClient.end(); } catch { /* ignore */ }
+    }
+  }
+
+  /** Evaluaciones OI del mes (reservas Evalu SV). */
+  private async queryOiEvaluacionesFromSvDb(
+    start: string,
+    end: string,
+    campusId?: number | null,
+  ): Promise<Array<{ ejecutivo_oi: string; evaluaciones: number }>> {
+    const svClient = this.createSvDbClient();
+    const params: unknown[] = [start, end];
+    let campusFilter = '';
+    if (campusId != null) {
+      params.push(campusId);
+      campusFilter = ` AND ch.campus = $${params.length}`;
+    }
+
+    try {
+      await svClient.connect();
+      const res = await svClient.query(
+        `
+        WITH ejecutivo AS (
+          SELECT DISTINCT ON (udp2.id_clinic_history)
+            udp2.id_clinic_history,
+            u2.username AS ejecutivo_oi
+          FROM union_doctor_patient udp2
+          INNER JOIN users u2 ON u2.id = udp2.id_sales_executive
+          WHERE udp2.id_status_borrado = 2
+          ORDER BY udp2.id_clinic_history, udp2.id DESC
+        )
+        SELECT
+          LOWER(TRIM(COALESCE(ej.ejecutivo_oi, 'sin_asignar'))) AS ejecutivo_oi,
+          COUNT(*)::int AS evaluaciones
+        FROM reservation r
+        INNER JOIN clinic_history ch ON ch.id = r.patient_id
+        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+        WHERE r.state <> 0
+          AND r.tariff_id IN (
+            SELECT t2.id FROM tariff t2 WHERE t2.name ILIKE '%Evalu%'
+          )
+          AND r.date >= $1::date
+          AND r.date <= $2::date
+          ${campusFilter}
+        GROUP BY ej.ejecutivo_oi
+        `,
+        params,
+      );
+      return res.rows.map((row) => ({
+        ejecutivo_oi: String(row.ejecutivo_oi ?? '').trim().toLowerCase(),
+        evaluaciones: Number(row.evaluaciones ?? 0),
+      }));
+    } catch (err) {
+      this.logger.warn(
+        `OI evaluaciones SV DB ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
+      );
+      return [];
+    } finally {
+      try { await svClient.end(); } catch { /* ignore */ }
+    }
+  }
+
   /**
-   * Agrega facturado (invoice_result SV) y evaluaciones (reservas Evalu SV) por username ejecutivo.
+   * Agrega facturado (invoice SV) y evaluaciones por userId CRM.
+   * Facturación: quien emitió boleta/factura (billing_user_id); evaluaciones: ejecutivo OI del paciente.
    */
   private async fetchOiMetricsFromSv(
     year: number,
@@ -1545,38 +1707,44 @@ export class CommissionsDataService {
     const { start, end } = this.monthRange(year, month);
     const map = new Map<string, { facturadoConIgv: number; evaluaciones: number }>();
 
-    try {
-      const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const campus = campusId ?? undefined;
-      const [factRows, evaRows] = await Promise.all([
-        this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campus),
-        this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campus),
-      ]);
-
-      for (const row of factRows) {
-        const exec = String(row.ejecutivo_oi ?? 'sin_asignar').trim().toLowerCase();
-        const amount = Number(row.amount ?? 0);
-        const prev = map.get(exec) ?? { facturadoConIgv: 0, evaluaciones: 0 };
-        prev.facturadoConIgv += amount;
-        map.set(exec, prev);
+    const usernameToCrmId = await this.buildCrmUsernameToUserIdMap();
+    const addToMap = (
+      username: string,
+      updater: (prev: { facturadoConIgv: number; evaluaciones: number }) => void,
+    ) => {
+      const u = username.trim().toLowerCase();
+      if (!u || u === 'sin_asignar') return;
+      const crmId = usernameToCrmId.get(u);
+      const keys = new Set<string>([u]);
+      if (crmId) keys.add(crmId);
+      const existing = map.get(u) ?? (crmId ? map.get(crmId) : undefined);
+      const prev = existing ?? { facturadoConIgv: 0, evaluaciones: 0 };
+      updater(prev);
+      for (const key of keys) {
+        map.set(key, prev);
       }
+    };
 
-      for (const row of evaRows) {
-        const exec = String(row.ejecutivo_oi ?? 'sin_asignar').trim().toLowerCase();
-        const cnt = Number(row.evaluaciones ?? 0);
-        const prev = map.get(exec) ?? { facturadoConIgv: 0, evaluaciones: 0 };
-        prev.evaluaciones += cnt;
-        map.set(exec, prev);
-      }
+    const [factRows, evaRows] = await Promise.all([
+      this.queryOiFacturacionFromSvDb(start, end, campusId),
+      this.queryOiEvaluacionesFromSvDb(start, end, campusId),
+    ]);
 
-      this.logger.log(
-        `OI SV ${year}-${month}: ${map.size} ejecutivos con datos (facturas: ${factRows.length}, eval grupos: ${evaRows.length})`,
-      );
-    } catch (err) {
-      this.logger.warn(
-        `OI SV ${year}-${month} falló (${start}→${end}): ${err instanceof Error ? err.message : err}`,
-      );
+    for (const row of factRows) {
+      addToMap(row.facturador_username, (prev) => {
+        prev.facturadoConIgv += row.amount_pen;
+      });
     }
+
+    for (const row of evaRows) {
+      addToMap(row.ejecutivo_oi, (prev) => {
+        prev.evaluaciones += row.evaluaciones;
+      });
+    }
+
+    this.logger.log(
+      `OI SV DB ${year}-${month}: ${map.size} ejecutivos, ${factRows.length} líneas factura, ${evaRows.length} grupos eval`,
+    );
     return map;
   }
 
@@ -1587,6 +1755,8 @@ export class CommissionsDataService {
     const period = await this.periodRepo.findOne({ where: { id: periodId } });
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
     if (period.area !== 'OI') throw new Error('El período no es de área OI');
+
+    await this.ensureOiEjecutivosConfigured(period);
 
     const configRecords = await this.recordRepo.find({
       where: { period: { id: periodId } },
@@ -1602,8 +1772,11 @@ export class CommissionsDataService {
     const svKeyMap = await this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId));
 
     const resolveMetrics = (rec: CommissionRecord) => {
-      const svKey = svKeyMap.get(rec.userId) ?? rec.userId.trim().toLowerCase();
-      return svMetrics.get(svKey) ?? svMetrics.get(rec.userId.trim().toLowerCase());
+      const uid = rec.userId.trim();
+      const svKey = svKeyMap.get(rec.userId) ?? uid.toLowerCase();
+      return svMetrics.get(uid)
+        ?? svMetrics.get(uid.toLowerCase())
+        ?? svMetrics.get(svKey);
     };
 
     const ejecutivosInput: OiExecutivoInput[] = configRecords.map((rec) => {
@@ -1634,8 +1807,8 @@ export class CommissionsDataService {
 
     period.notas = JSON.stringify({
       syncedAt: new Date().toISOString(),
-      source: 'sv',
-      ejecutivosConDatos: svMetrics.size,
+      source: 'sv-invoice-db',
+      facturacionLineas: svMetrics.size,
     });
     await this.periodRepo.save(period);
 

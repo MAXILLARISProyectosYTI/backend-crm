@@ -129,6 +129,7 @@ export async function calculateCierreTto(
   rateByCode: Map<string, number> = new Map(),
   bonusConfig?: CierreTtoBonusConfig,
   sedeConfig?: CierreTtoSedeConfig,
+  allowedUserIds?: Set<string>,
 ): Promise<CierreTtoResult[]> {
   const types = await typeRepo.find({ where: { area: 'CIERRE_TTO', active: true } });
   const typeByCode = new Map(types.map((t) => [t.code, t]));
@@ -155,6 +156,10 @@ export async function calculateCierreTto(
 
   for (const [key, rows] of byExecutive) {
     const [userId, campusIdStr] = key.split('__');
+    if (allowedUserIds && !allowedUserIds.has(userId)) {
+      logger.warn(`Contrato(s) omitidos: userId ${userId} no está en catálogo cerradoras`);
+      continue;
+    }
     const campusId = parseInt(campusIdStr, 10);
     const campusNombre = rows[0].campusNombre;
     const userName = rows[0].ejecutivoNombre ?? userId;

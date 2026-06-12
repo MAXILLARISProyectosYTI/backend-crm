@@ -47,6 +47,20 @@ export class CreateContractPresaveDto {
   @IsNumber()
   contractDurationMonths?: number;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  contractDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  fixedPaymentDate?: string;
+
+  @IsOptional()
+  @IsNumber()
+  contractAmount?: number;
+
   // ========================================
   // DESCUENTOS
   // ========================================
