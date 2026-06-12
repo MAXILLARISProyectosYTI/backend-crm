@@ -45,6 +45,15 @@ export class ContractPresave {
   @Column({ name: "contract_duration_months", type: "int", nullable: true })
   contractDurationMonths: number;
 
+  @Column({ name: "contract_date", type: "varchar", length: 10, nullable: true })
+  contractDate: string;
+
+  @Column({ name: "fixed_payment_date", type: "varchar", length: 10, nullable: true })
+  fixedPaymentDate: string;
+
+  @Column({ name: "contract_amount", type: "decimal", precision: 12, scale: 2, nullable: true })
+  contractAmount: number;
+
   // ========================================
   // DESCUENTOS
   // ========================================
