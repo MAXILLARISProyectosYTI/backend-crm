@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { Client } from 'pg';
 import { DataSource, FindOptionsWhere, IsNull, Repository } from 'typeorm';
 import { CommissionPeriod } from './commission-period.entity';
 import { CommissionRecord } from './commission-record.entity';
@@ -212,16 +211,6 @@ export class CommissionsDataService {
     await this.periodRepo.save(period);
   }
 
-  private createSvDbClient(): Client {
-    return new Client({
-      host: process.env.SV_DB_HOST || '161.132.211.235',
-      port: parseInt(process.env.SV_DB_PORT || '5501', 10),
-      user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
-      database: process.env.SV_DB_DATABASE || 'sv_dev',
-      password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
-    });
-  }
-
   /** Un cierre entra al mes si moldes, primer abono, fecha de contrato u otras fechas caen en el rango. */
   private contractInCommissionMonth(
     start: string,
@@ -239,28 +228,6 @@ export class CommissionsDataService {
     ].filter(Boolean) as string[];
     return days.some((d) => d >= start && d <= end);
   }
-
-  private readonly contractPaySubquery = `
-    SELECT cd.idcontract,
-      MIN(CASE WHEN cd.description ILIKE '%moldes%' THEN cd.date END) AS moldes_date,
-      MIN(cd.date) AS first_payment_date,
-      MAX(cd.date) AS last_payment_date
-    FROM contract_detail cd
-    WHERE cd.state = 1
-    GROUP BY cd.idcontract
-  `;
-
-  /** Tarifas OI en facturación SV (misma regla que UnionDoctorPatientAttention). */
-  private readonly oiFacturacionTariffSql = `(
-    t.name ILIKE '%Ortodoncia%'
-    OR t.name ILIKE '%MARPE%'
-    OR t.name ILIKE '%Alpha%'
-    OR t.name ILIKE '%Cuota Mensual%'
-    OR t.name ILIKE '%Aparato%'
-    OR t.name ILIKE '%Retenedor%'
-    OR t.name ILIKE '%Odontologia Integral%'
-    OR t.name ILIKE '%Control%'
-  ) AND t.name NOT ILIKE '%Evalu%'`;
 
   async clearCierreTtoCalculatedData(periodId: number): Promise<void> {
     const records = await this.recordRepo.find({ where: { period: { id: periodId } } });
@@ -904,102 +871,6 @@ export class CommissionsDataService {
   }
 
   /**
-   * Pagos del mes en SV: invoice_result_body + invoice_result_head + OS + contract_detail.
-   * El facturador es billing_user_id (boleta/factura); fallback user_created de la OS.
-   */
-  private async queryInvoicedContractPayments(
-    start: string,
-    end: string,
-  ): Promise<Array<{
-    contract_id: number;
-    quotation_id: number;
-    contract_date: string;
-    contract_num: string;
-    campus_id: number;
-    billing_username: string;
-    payment_date: string;
-    moldes_date: string | null;
-    first_payment_date: string | null;
-  }>> {
-    const svClient = this.createSvDbClient();
-    try {
-      await svClient.connect();
-      const res = await svClient.query(
-        `
-        WITH invoiced_payments AS (
-          SELECT
-            c.id AS contract_id,
-            c.idquotation AS quotation_id,
-            c.date::text AS contract_date,
-            COALESCE(c.num, '') AS contract_num,
-            ch.campus AS campus_id,
-            LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS billing_username,
-            COALESCE(irb.payment_date, irh.invoice_date::date)::text AS payment_date,
-            cd.description AS quota_description,
-            CASE
-              WHEN cd.description ILIKE '%moldes%' THEN 0
-              WHEN cd.description ILIKE '%inicial%' THEN 1
-              ELSE 2
-            END AS quota_priority,
-            pay.moldes_date::text AS moldes_date,
-            pay.first_payment_date::text AS first_payment_date
-          FROM invoice_result_body irb
-          INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-            AND irh.status_invoice = 1
-            AND COALESCE(irh.credit_memo_state, false) = false
-          INNER JOIN service_order so ON so.id = irh.id_service_order
-          INNER JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
-          INNER JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
-          INNER JOIN contract c ON c.id = cd.idcontract AND c.state = 1
-          INNER JOIN clinic_history ch ON ch.id = c.idclinichistory
-          LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-          LEFT JOIN users u_so ON u_so.id = so.user_created
-          LEFT JOIN (${this.contractPaySubquery}) pay ON pay.idcontract = c.id
-          WHERE (
-            (irb.payment_date IS NOT NULL
-              AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-            OR (irb.payment_date IS NULL
-              AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-          )
-        )
-        SELECT DISTINCT ON (contract_id)
-          contract_id,
-          quotation_id,
-          contract_date,
-          contract_num,
-          campus_id,
-          billing_username,
-          payment_date,
-          moldes_date,
-          first_payment_date
-        FROM invoiced_payments
-        WHERE billing_username <> ''
-        ORDER BY contract_id, quota_priority, payment_date ASC
-        `,
-        [start, end],
-      );
-      return res.rows.map((row) => ({
-        contract_id: Number(row.contract_id),
-        quotation_id: Number(row.quotation_id),
-        contract_date: String(row.contract_date ?? ''),
-        contract_num: String(row.contract_num ?? ''),
-        campus_id: Number(row.campus_id ?? 1),
-        billing_username: String(row.billing_username ?? '').trim().toLowerCase(),
-        payment_date: String(row.payment_date ?? '').slice(0, 10),
-        moldes_date: row.moldes_date ? String(row.moldes_date).slice(0, 10) : null,
-        first_payment_date: row.first_payment_date ? String(row.first_payment_date).slice(0, 10) : null,
-      }));
-    } catch (err) {
-      this.logger.warn(
-        `Pagos facturados SV ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
-      );
-      return [];
-    } finally {
-      try { await svClient.end(); } catch { /* ignore */ }
-    }
-  }
-
-  /**
    * Arma comisiones cerradoras desde facturación SV (invoice + OS).
    * Solo cuenta si: pago facturado en el mes + cierre ganado CRM + facturador ∈ equipo Cerradoras.
    */
@@ -1007,11 +878,12 @@ export class CommissionsDataService {
     start: string,
     end: string,
   ): Promise<{ contracts: ContractSvRow[]; invoiceRows: number; winsMatched: number }> {
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
     const [catalog, usernameToCrmId, crmIndex, svRows] = await Promise.all([
       this.listCerradorasEjecutivos(),
       this.buildCrmUsernameToUserIdMap(),
       this.loadCerradorasWinCrmIndex(),
-      this.queryInvoicedContractPayments(start, end),
+      this.svServices.getCerradorasContractsFromSv(tokenSv, start, end),
     ]);
 
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
@@ -1566,138 +1438,11 @@ export class CommissionsDataService {
     return map;
   }
 
-  /** Facturación OI del mes desde invoice_result_* + OS (SV DB directo). */
-  private async queryOiFacturacionFromSvDb(
-    start: string,
-    end: string,
-    campusId?: number | null,
-  ): Promise<Array<{ facturador_username: string; amount_pen: number }>> {
-    const svClient = this.createSvDbClient();
-    const params: unknown[] = [start, end];
-    let campusFilter = '';
-    if (campusId != null) {
-      params.push(campusId);
-      campusFilter = ` AND ch.campus = $${params.length}`;
-    }
-
-    try {
-      await svClient.connect();
-      const res = await svClient.query(
-        `
-        SELECT
-          LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS facturador_username,
-          CASE
-            WHEN UPPER(COALESCE(c2.code, 'PEN')) IN ('USD', '$', 'US', 'DOL')
-              THEN irb.amount * COALESCE(er_irb.value, er_day.value, 1)
-            ELSE irb.amount
-          END AS amount_pen
-        FROM invoice_result_body irb
-        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-          AND irh.status_invoice = 1
-          AND COALESCE(irh.credit_memo_state, false) = false
-        INNER JOIN service_order so ON so.id = irh.id_service_order
-        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-        INNER JOIN tariff t ON t.id = irb.tariff_id
-        LEFT JOIN coin c2 ON c2.id = irb.id_currency
-        LEFT JOIN exchange_rate er_irb ON er_irb.id = irb.exchange_rate_id
-        LEFT JOIN LATERAL (
-          SELECT er.value
-          FROM exchange_rate er
-          WHERE er.state = 1
-            AND er.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
-          ORDER BY er.date DESC
-          LIMIT 1
-        ) er_day ON TRUE
-        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        LEFT JOIN users u_so ON u_so.id = so.user_created
-        WHERE ${this.oiFacturacionTariffSql.replace(/\bt\./g, 't.')}
-          AND (
-            (irb.payment_date IS NOT NULL
-              AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-            OR (irb.payment_date IS NULL
-              AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-          )
-          ${campusFilter}
-        `,
-        params,
-      );
-      return res.rows
-        .map((row) => ({
-          facturador_username: String(row.facturador_username ?? '').trim().toLowerCase(),
-          amount_pen: Number(row.amount_pen ?? 0),
-        }))
-        .filter((row) => row.facturador_username && row.amount_pen > 0);
-    } catch (err) {
-      this.logger.warn(
-        `OI facturación SV DB ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
-      );
-      return [];
-    } finally {
-      try { await svClient.end(); } catch { /* ignore */ }
-    }
-  }
-
-  /** Evaluaciones OI del mes (reservas Evalu SV). */
-  private async queryOiEvaluacionesFromSvDb(
-    start: string,
-    end: string,
-    campusId?: number | null,
-  ): Promise<Array<{ ejecutivo_oi: string; evaluaciones: number }>> {
-    const svClient = this.createSvDbClient();
-    const params: unknown[] = [start, end];
-    let campusFilter = '';
-    if (campusId != null) {
-      params.push(campusId);
-      campusFilter = ` AND ch.campus = $${params.length}`;
-    }
-
-    try {
-      await svClient.connect();
-      const res = await svClient.query(
-        `
-        WITH ejecutivo AS (
-          SELECT DISTINCT ON (udp2.id_clinic_history)
-            udp2.id_clinic_history,
-            u2.username AS ejecutivo_oi
-          FROM union_doctor_patient udp2
-          INNER JOIN users u2 ON u2.id = udp2.id_sales_executive
-          WHERE udp2.id_status_borrado = 2
-          ORDER BY udp2.id_clinic_history, udp2.id DESC
-        )
-        SELECT
-          LOWER(TRIM(COALESCE(ej.ejecutivo_oi, 'sin_asignar'))) AS ejecutivo_oi,
-          COUNT(*)::int AS evaluaciones
-        FROM reservation r
-        INNER JOIN clinic_history ch ON ch.id = r.patient_id
-        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-        WHERE r.state <> 0
-          AND r.tariff_id IN (
-            SELECT t2.id FROM tariff t2 WHERE t2.name ILIKE '%Evalu%'
-          )
-          AND r.date >= $1::date
-          AND r.date <= $2::date
-          ${campusFilter}
-        GROUP BY ej.ejecutivo_oi
-        `,
-        params,
-      );
-      return res.rows.map((row) => ({
-        ejecutivo_oi: String(row.ejecutivo_oi ?? '').trim().toLowerCase(),
-        evaluaciones: Number(row.evaluaciones ?? 0),
-      }));
-    } catch (err) {
-      this.logger.warn(
-        `OI evaluaciones SV DB ${start}→${end} falló: ${err instanceof Error ? err.message : err}`,
-      );
-      return [];
-    } finally {
-      try { await svClient.end(); } catch { /* ignore */ }
-    }
-  }
-
   /**
    * Agrega facturado (invoice SV) y evaluaciones por userId CRM.
-   * Facturación: quien emitió boleta/factura (billing_user_id); evaluaciones: ejecutivo OI del paciente.
+   * Usa los endpoints HTTP del SV (facturacion-oi y evaluaciones-oi).
+   * Facturación: billing_user_id de la boleta/factura → facturador_username.
+   * Evaluaciones: ejecutivo OI asignado al paciente.
    */
   private async fetchOiMetricsFromSv(
     year: number,
@@ -1707,7 +1452,9 @@ export class CommissionsDataService {
     const { start, end } = this.monthRange(year, month);
     const map = new Map<string, { facturadoConIgv: number; evaluaciones: number }>();
 
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
     const usernameToCrmId = await this.buildCrmUsernameToUserIdMap();
+
     const addToMap = (
       username: string,
       updater: (prev: { facturadoConIgv: number; evaluaciones: number }) => void,
@@ -1725,25 +1472,27 @@ export class CommissionsDataService {
       }
     };
 
-    const [factRows, evaRows] = await Promise.all([
-      this.queryOiFacturacionFromSvDb(start, end, campusId),
-      this.queryOiEvaluacionesFromSvDb(start, end, campusId),
+    const [factRawRows, evaRawRows] = await Promise.all([
+      this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined),
+      this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined),
     ]);
 
-    for (const row of factRows) {
-      addToMap(row.facturador_username, (prev) => {
-        prev.facturadoConIgv += row.amount_pen;
-      });
+    for (const row of factRawRows) {
+      const facturador = String(row.facturador_username ?? row.ejecutivo_oi ?? '').trim().toLowerCase();
+      const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
+      if (!facturador || amountPen <= 0) continue;
+      addToMap(facturador, (prev) => { prev.facturadoConIgv += amountPen; });
     }
 
-    for (const row of evaRows) {
-      addToMap(row.ejecutivo_oi, (prev) => {
-        prev.evaluaciones += row.evaluaciones;
-      });
+    for (const row of evaRawRows) {
+      const ejecutivo = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
+      const evals = Number(row.evaluaciones ?? 1);
+      if (!ejecutivo) continue;
+      addToMap(ejecutivo, (prev) => { prev.evaluaciones += evals; });
     }
 
     this.logger.log(
-      `OI SV DB ${year}-${month}: ${map.size} ejecutivos, ${factRows.length} líneas factura, ${evaRows.length} grupos eval`,
+      `OI SV HTTP ${year}-${month}: ${map.size} ejecutivos, ${factRawRows.length} líneas factura, ${evaRawRows.length} grupos eval`,
     );
     return map;
   }
