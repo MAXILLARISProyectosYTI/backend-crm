@@ -10,6 +10,7 @@ import type {
   CrmControlesPatientRow,
   CrmControlesPacientesResponse,
 } from './crm-controles.types';
+import { queryOiFacturacionFromSvDb } from '../commissions/utils/oi-sv-invoice.util';
 
 @Injectable()
 export class CrmControlesService implements OnModuleInit {
@@ -376,17 +377,35 @@ export class CrmControlesService implements OnModuleInit {
   }
 
   async syncOiFacturacionFromSv(): Promise<void> {
+    const until = new Date();
+    const since = new Date(until);
+    since.setMonth(since.getMonth() - 18);
+    const sinceStr = since.toISOString().slice(0, 10);
+    const untilStr = until.toISOString().slice(0, 10);
+
+    try {
+      const rows = await queryOiFacturacionFromSvDb(sinceStr, untilStr);
+      this.oiFacturacion = rows;
+      this.oiFacturacionMeta = {
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        source: 'sv-invoice-db',
+      };
+      this.logger.log(
+        `CRM OI facturación (SV-DB): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`,
+      );
+      return;
+    } catch (dbErr) {
+      const dbMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+      this.logger.warn(`CRM OI: BD SV falló (${dbMsg}), intento HTTP`);
+    }
+
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const until = new Date();
-      const since = new Date(until);
-      since.setMonth(since.getMonth() - 18);
-      const sinceStr = since.toISOString().slice(0, 10);
-      const untilStr = until.toISOString().slice(0, 10);
       const rows = await this.svServices.getFacturacionOiFromSv(tokenSv, sinceStr, untilStr);
       this.oiFacturacion = Array.isArray(rows) ? rows : [];
-      this.oiFacturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
-      this.logger.log(`CRM OI facturación: ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`);
+      this.oiFacturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv-http' };
+      this.logger.log(`CRM OI facturación (HTTP): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.oiFacturacionMeta = { ...this.oiFacturacionMeta, lastError: msg };
