@@ -18,6 +18,7 @@ import { CampaignModule } from 'src/campaign/campaign.module';
 import { OpportunityPresave } from './opportunity-presave.entity';
 import { OpportunityPresaveService } from './opportunity-presave.service';
 import { ContractPresave } from './contract-presave.entity';
+import { ContractPresaveAudit } from './contract-presave-audit.entity';
 import { ContractPresaveService } from './contract-presave.service';
 import { AssignmentQueueStateModule } from '../assignment-queue-state/assignment-queue-state.module';
 import { CampusCoordinatesModule } from '../campus-coordinates/campus-coordinates.module';
@@ -26,7 +27,7 @@ import { User } from '../user/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave, OpportunityServiceOrder, OpportunityDerivation, User]),
+    TypeOrmModule.forFeature([Opportunity, OpportunityPresave, ContractPresave, ContractPresaveAudit, OpportunityServiceOrder, OpportunityDerivation, User]),
     AssignmentQueueStateModule,
     CampusCoordinatesModule,
     ContactModule,

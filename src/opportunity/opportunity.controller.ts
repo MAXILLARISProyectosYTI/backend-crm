@@ -252,6 +252,33 @@ export class OpportunityController {
   }
 
   @Public()
+  @Get('contract-presave/:quotationId/audit')
+  async getContractPresaveAudit(
+    @Param('quotationId') quotationId: string,
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const parsedLimit = limit ? parseInt(limit, 10) : 50;
+      const rows = await this.contractPresaveService.findAuditByQuotationId(
+        parseInt(quotationId, 10),
+        Number.isFinite(parsedLimit) ? parsedLimit : 50,
+      );
+      return {
+        success: true,
+        message: 'Historial de auditoría del presave',
+        data: rows,
+      };
+    } catch (error) {
+      console.error('❌ Error al obtener audit contract presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al obtener auditoría: ' + error.message,
+        data: [],
+      };
+    }
+  }
+
+  @Public()
   @Delete('contract-presave/:quotationId')
   async deleteContractPresave(@Param('quotationId') quotationId: string) {
     try {

@@ -54,6 +54,16 @@ export class CrmControlesCronService {
     }
   }
 
+  /** Sincroniza facturación OI cada 15 min */
+  @Cron(process.env.CRM_OI_FACTURACION_CRON ?? '0 */15 * * * *')
+  async handlePollOiFacturacion(): Promise<void> {
+    try {
+      await this.crmControlesService.syncOiFacturacionFromSv();
+    } catch {
+      // error ya logueado en service
+    }
+  }
+
   /**
    * Congelado diario — guarda snapshot de KPIs en la tabla kpi_snapshot.
    * Ejecuta a las 23:55 (hora del servidor).

@@ -286,24 +286,38 @@ export class CommissionsService {
 
   async getDashboardByPeriodId(periodId: number) {
     const period = await this.getPeriodById(periodId);
-    if (period.area === 'CONTROLES') {
-      return this.dataService.getControlesDashboard(periodId);
+    try {
+      if (period.area === 'CONTROLES') {
+        return await this.dataService.getControlesDashboard(periodId);
+      }
+      if (period.area === 'OI') {
+        return await this.dataService.getOiDashboard(periodId);
+      }
+      if (period.area === 'CIERRE_TTO') {
+        return await this.dataService.getCierreTtoDashboard(periodId);
+      }
+      return await this.dataService.buildDashboard(periodId);
+    } catch (err) {
+      this.logger.error(
+        `getDashboardByPeriodId ${periodId} (${period.area}): ${err instanceof Error ? err.message : err}`,
+      );
+      return this.dataService.buildDashboard(periodId);
     }
-    if (period.area === 'OI') {
-      return this.dataService.getOiDashboard(periodId);
-    }
-    if (period.area === 'CIERRE_TTO') {
-      return this.dataService.getCierreTtoDashboard(periodId);
-    }
-    return this.dataService.buildDashboard(periodId);
   }
 
   listCerradorasEjecutivos() {
     return this.dataService.listCerradorasEjecutivos();
   }
 
-  listSedeApoyo(periodId?: number) {
-    return this.dataService.listSedeApoyo(periodId);
+  async listSedeApoyo(periodId?: number) {
+    try {
+      return await this.dataService.listSedeApoyo(periodId);
+    } catch (err) {
+      this.logger.error(
+        `listSedeApoyo periodId=${periodId ?? 'all'}: ${err instanceof Error ? err.message : err}`,
+      );
+      return [];
+    }
   }
 
   upsertSedeApoyo(items: UpsertSedeApoyoDto['items'], periodId?: number) {
