@@ -32,6 +32,10 @@ import {
   mergeOiCrmMetricsRow,
   type OiCrmUserMetrics,
 } from './utils/oi-crm-metrics.util';
+import {
+  queryOiEvaluacionesFromSvDb,
+  queryOiFacturacionFromSvDb,
+} from './utils/oi-sv-invoice.util';
 
 const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
 const OI_TEAM_ID = TEAMS_IDS.EJ_COMERCIAL_OI;
@@ -1808,19 +1812,56 @@ export class CommissionsDataService {
       }
     };
 
-    // — Intento 1: SV HTTP directo —
     let factRawRows: Record<string, unknown>[] = [];
     let evaRawRows: Record<string, unknown>[] = [];
     let svError: string | null = null;
+
+    const filterByCampus = (rows: Record<string, unknown>[]) => {
+      if (campusId == null) return rows;
+      return rows.filter((row) =>
+        this.matchesFilterCampus(Number(row.campus_id), campusId),
+      );
+    };
+
+    // — Intento 1: BD SV directa (invoice_result_body) —
+    try {
+      let dbFact = await queryOiFacturacionFromSvDb(start, end);
+      let dbEval = await queryOiEvaluacionesFromSvDb(start, end);
+      const rawFactCount = dbFact.length;
+      dbFact = filterByCampus(dbFact);
+      dbEval = filterByCampus(dbEval);
+      if (dbFact.length > 0 || dbEval.length > 0) {
+        processFactRows(dbFact);
+        processEvalRows(dbEval);
+        this.logger.log(
+          `OI SV-DB ${year}-${month}: ${map.size} ejecutivas, ${dbFact.length}/${rawFactCount} facturas, ${dbEval.length} grupos eval`,
+        );
+        void this.crmControlesService.syncOiFacturacionFromSv().catch((e) =>
+          this.logger.warn(`Re-sync cache OI tras SV-DB: ${e instanceof Error ? e.message : e}`),
+        );
+        return { map, source: 'sv-invoice-db', svError: null };
+      }
+      if (rawFactCount > 0) {
+        this.logger.warn(
+          `OI SV-DB ${year}-${month}: ${rawFactCount} filas en SV pero 0 tras filtro campus=${campusId ?? 'all'}`,
+        );
+      }
+    } catch (dbErr) {
+      svError = dbErr instanceof Error ? dbErr.message : String(dbErr);
+      this.logger.warn(`OI SV-DB ${year}-${month} falló: ${svError}`);
+    }
+
+    // — Intento 2: SV HTTP —
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      [factRawRows, evaRawRows] = await Promise.all([
-        this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined),
-        this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined),
-      ]);
+      let httpFact = await this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined);
+      let httpEval = await this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined);
+      factRawRows = Array.isArray(httpFact) ? httpFact : [];
+      evaRawRows = Array.isArray(httpEval) ? httpEval : [];
     } catch (err) {
-      svError = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`OI SV HTTP ${year}-${month} falló: ${svError}`);
+      const httpErr = err instanceof Error ? err.message : String(err);
+      svError = svError ? `${svError}; HTTP: ${httpErr}` : httpErr;
+      this.logger.warn(`OI SV HTTP ${year}-${month} falló: ${httpErr}`);
     }
 
     if (factRawRows.length > 0 || evaRawRows.length > 0) {
@@ -1829,14 +1870,13 @@ export class CommissionsDataService {
       this.logger.log(
         `OI SV HTTP ${year}-${month}: ${map.size} ejecutivas, ${factRawRows.length} facturas, ${evaRawRows.length} grupos eval`,
       );
-      // Dispara re-sync del cache en background
       void this.crmControlesService.syncOiFacturacionFromSv().catch((e) =>
         this.logger.warn(`Re-sync cache OI tras HTTP: ${e instanceof Error ? e.message : e}`),
       );
       return { map, source: 'sv-http', svError: null };
     }
 
-    // — Intento 2: cache local (últimos 18 meses) —
+    // — Intento 3: cache local (últimos 18 meses) —
     try {
       await this.crmControlesService.syncOiFacturacionFromSv();
     } catch (syncErr) {
@@ -1928,22 +1968,23 @@ export class CommissionsDataService {
       period.notas = JSON.stringify({
         syncedAt: new Date().toISOString(),
         source: oiMetricsSource,
-        facturacionEjecutivas: svMetrics.size,
+        factRowsCount: svMetrics.size,
         facturadoTotal,
         svError: svError ?? undefined,
       });
       await this.periodRepo.save(period);
 
       this.logger.log(
-        `OI sync ${period.year}-${period.month}: facturado S/ ${facturadoTotal.toFixed(2)}, ${svMetrics.size} claves SV+CRM, fuente=${oiMetricsSource}`,
+        `OI sync ${period.year}-${period.month}: facturado S/ ${facturadoTotal.toFixed(2)}, ${svMetrics.size} claves SV, fuente=${oiMetricsSource}`,
       );
 
-      return this.buildDashboard(periodId, new Date().toISOString());
+      const dash = await this.buildDashboard(periodId, new Date().toISOString());
+      return { ...dash, dataSource: oiMetricsSource, svError: svError ?? null };
     } catch (err) {
-      this.logger.error(
-        `syncAndCalculateOi ${periodId}: ${err instanceof Error ? err.message : err}`,
-      );
-      return this.buildDashboard(periodId);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`syncAndCalculateOi ${periodId}: ${msg}`);
+      const dash = await this.buildDashboard(periodId);
+      return { ...dash, svError: msg };
     }
   }
 

@@ -4,7 +4,7 @@ export type CrmControlesPatientRow = Record<string, unknown>;
 export interface CrmControlesCacheMeta {
   lastSyncAt: string | null;
   lastError: string | null;
-  source: 'sv';
+  source: 'sv' | 'sv-invoice-db' | 'sv-http';
 }
 
 export interface CrmControlesPacientesResponse {

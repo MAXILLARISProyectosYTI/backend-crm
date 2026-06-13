@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { IsNull, Repository, type FindOptionsWhere } from 'typeorm';
+import { Repository } from 'typeorm';
 import { CommissionPeriod } from '../commission-period.entity';
 import { CommissionRecord } from '../commission-record.entity';
 
@@ -96,21 +96,21 @@ export async function calculateOi(
       `OI [${eje.userName}]: facturado=${facturado} | min=${minimoFacturadoConIgv} | objetivo=${montoObjetivoConIgv} | dif=${diferencial} | pct=${pct * 100}% | ttos=${comisionTtos} | evas=${comisionEvaluaciones} | bono=${bonoGrupal}`,
     );
 
-    const recordWhere: FindOptionsWhere<CommissionRecord> = {
-      period: { id: period.id },
-      userId: eje.userId,
-      campusId: eje.campusId != null ? eje.campusId : IsNull(),
-    };
-    const existing = await recordRepo.findOne({
-      where: recordWhere,
+    const recordMatches = await recordRepo.find({
+      where: { period: { id: period.id }, userId: eje.userId },
       relations: ['period'],
+      order: { id: 'ASC' },
     });
-    const record = existing ?? recordRepo.create({
+    const record = recordMatches[0] ?? recordRepo.create({
       period,
       userId: eje.userId,
       campusId: eje.campusId ?? null,
       factorEspecial: 1,
     });
+    // Evita duplicados por campus_id distinto en el mismo período
+    for (const dup of recordMatches.slice(1)) {
+      await recordRepo.delete(dup.id);
+    }
 
     record.userName = eje.userName;
     record.campusNombre = eje.campusNombre;
