@@ -279,6 +279,10 @@ export class CommissionsService {
     return this.dataService.syncAndCalculateControles(periodId, true);
   }
 
+  syncOiPeriod(periodId: number) {
+    return this.dataService.syncAndCalculateOi(periodId);
+  }
+
   async getDashboardByPeriodId(periodId: number) {
     const period = await this.getPeriodById(periodId);
     if (period.area === 'CONTROLES') {
