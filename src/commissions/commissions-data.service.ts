@@ -14,19 +14,27 @@ import { calculateControles, type ControlesEjecutivoInput, type ControlesPeriodI
 import { calculateOi, OI_PORCENTAJE_COMISION_TTOS, type OiExecutivoInput, type OiPeriodInput } from './engines/oi.engine';
 import { calculateCierreTto, type ContractSvRow, type CierreTtoSedeConfig } from './engines/cierre-tto.engine';
 import {
+  buildCrmCommissionDates,
   indexLatestByQuotation,
   mapTratamientoFromCrm,
   parseModalidadFromCrmFields,
+  resolveCrmContractId,
   type CerradorasCrmPresaveRow,
   type CerradorasCrmSolicitudRow,
 } from '../crm-cerradoras/utils/cerradoras-crm-contract.util';
+import {
+  hasCloserGestionEvidence,
+  isCloserWinStatus,
+  parsePresaveHasRegisteredPayments,
+} from '../crm-cerradoras/utils/closer-commission.util';
 import { SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
 
 const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
+const OI_TEAM_ID = TEAMS_IDS.EJ_COMERCIAL_OI;
 const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 6;
+const CIERRE_TTO_SYNC_VERSION = 9;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Plantilla de ejecutivas Controles cuando no hay mes anterior configurado. */
@@ -54,8 +62,6 @@ const CONTROLES_DEFAULT_META: Record<number, { metaMontoSinIgv: number; dbTotal:
   15: { metaMontoSinIgv: 15254.24, dbTotal: 210 },
   16: { metaMontoSinIgv: 0, dbTotal: 0 },
 };
-
-const WIN_STATUSES = ['win', 'ganado', 'cierre ganado'];
 
 export interface CerradorasEjecutivoCatalogItem {
   userId: string;
@@ -581,15 +587,71 @@ export class CommissionsDataService {
       if (prevRecords.length > 0) return;
     }
 
+    const oiTeam = await this.listOiEjecutivos();
+    if (oiTeam.length > 0) {
+      for (const eje of oiTeam) {
+        await this.recordRepo.save(this.recordRepo.create({
+          period,
+          userId: eje.userId,
+          userName: eje.userName,
+          campusId: 1,
+          campusNombre: this.commissionCampusNombre(1),
+          factorEspecial: 1,
+          estado: 'PENDIENTE',
+        }));
+      }
+      return;
+    }
+
+    const fallbackId = await this.resolveCrmUserId('christian.melendez');
     await this.recordRepo.save(this.recordRepo.create({
       period,
-      userId: 'christian.melendez',
+      userId: fallbackId,
       userName: 'Christian Melendez',
       campusId: 1,
       campusNombre: this.commissionCampusNombre(1),
       factorEspecial: 1,
       estado: 'PENDIENTE',
     }));
+  }
+
+  /** Miembros del equipo Ejecutivas OI (CRM). */
+  async listOiEjecutivos(): Promise<Array<{ userId: string; userName: string; userLogin: string | null }>> {
+    const rows: Array<{
+      user_id: string;
+      display_name: string | null;
+      user_login: string | null;
+    }> = await this.dataSource.query(
+      `
+      SELECT u.id AS user_id,
+        COALESCE(
+          NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+          u.user_name
+        ) AS display_name,
+        u.user_name AS user_login
+      FROM "user" u
+      INNER JOIN team_user tu ON tu.user_id = u.id
+        AND tu.team_id = $1
+        AND COALESCE(tu.deleted, false) = false
+      WHERE COALESCE(u.deleted, false) = false
+        AND COALESCE(u.is_active, true) = true
+      ORDER BY display_name ASC NULLS LAST, u.user_name ASC
+      `,
+      [OI_TEAM_ID],
+    );
+    return rows.map((r) => ({
+      userId: r.user_id,
+      userName: r.display_name ?? r.user_login ?? r.user_id,
+      userLogin: r.user_login,
+    }));
+  }
+
+  /** Resuelve login SV / username → id CRM canónico. */
+  private async resolveCrmUserId(raw: string): Promise<string> {
+    const key = raw.trim();
+    if (!key) return key;
+    const map = await this.buildCrmUsernameToUserIdMap();
+    return map.get(key.toLowerCase()) ?? key;
   }
 
   /**
@@ -764,76 +826,19 @@ export class CommissionsDataService {
     stats: { contractsTotal: number; contractsCrm: number; contractsSv: number };
   }> {
     const { start, end } = this.monthRange(year, month);
-    const { contracts, invoiceRows, winsMatched } = await this.buildCerradorasContractsFromInvoices(start, end);
+    const crmResult = await this.buildCerradorasContractsFromCrm(start, end);
+
     this.logger.log(
-      `Cerradoras sync ${year}-${month}: pagos facturados SV=${invoiceRows}, cierres CRM=${winsMatched}, comisionables=${contracts.length}`,
+      `Cerradoras sync ${year}-${month} (solo CRM): cierres=${crmResult.crmWins}, comisionables=${crmResult.contracts.length}`,
     );
     return {
-      contracts,
+      contracts: crmResult.contracts,
       stats: {
-        contractsTotal: contracts.length,
-        contractsCrm: winsMatched,
-        contractsSv: invoiceRows,
+        contractsTotal: crmResult.contracts.length,
+        contractsCrm: crmResult.crmWins,
+        contractsSv: 0,
       },
     };
-  }
-
-  /** Índice de oportunidades cerradoras ganadas en CRM (por cotización y contrato SV). */
-  private async loadCerradorasWinCrmIndex(): Promise<{
-    byQuotation: Map<number, {
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-      date_end: string | null;
-    }>;
-    byContract: Map<number, {
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-      date_end: string | null;
-    }>;
-  }> {
-    const rows: Array<{
-      cotizacion_id: string | null;
-      contract_id: string | null;
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-      date_end: string | null;
-    }> = await this.dataSource.query(
-      `
-      SELECT oc.cotizacion_id, oc.contract_id,
-             COALESCE(opp.c_campus_atencion_id, opp.c_campus_id, 1) AS campus_id,
-             opp.c_sub_campaign_id AS sub_campaign_id,
-             oc.date_end::text AS date_end
-      FROM c_oportunidad_cerradora oc
-      LEFT JOIN opportunity opp ON opp.id = oc.opportunity_id
-      WHERE COALESCE(oc.deleted, false) = false
-        AND LOWER(TRIM(COALESCE(oc.status, ''))) = ANY($1::text[])
-      `,
-      [WIN_STATUSES],
-    );
-
-    const byQuotation = new Map<number, {
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-      date_end: string | null;
-    }>();
-    const byContract = new Map<number, {
-      campus_id: number | null;
-      sub_campaign_id: string | null;
-      date_end: string | null;
-    }>();
-
-    for (const row of rows) {
-      const meta = {
-        campus_id: row.campus_id != null ? Number(row.campus_id) : null,
-        sub_campaign_id: row.sub_campaign_id,
-        date_end: row.date_end,
-      };
-      const qId = parseInt(String(row.cotizacion_id ?? ''), 10);
-      if (!Number.isNaN(qId)) byQuotation.set(qId, meta);
-      const cId = parseInt(String(row.contract_id ?? ''), 10);
-      if (!Number.isNaN(cId) && cId > 0) byContract.set(cId, meta);
-    }
-    return { byQuotation, byContract };
   }
 
   private async loadCerradorasPresaveData(quotationIds: number[]): Promise<{
@@ -856,7 +861,8 @@ export class CommissionsDataService {
       this.dataSource.query(
         `
         SELECT DISTINCT ON (quotation_id)
-          quotation_id, tipo_contrato, fecha_contrato::text AS fecha_contrato
+          quotation_id, tipo_contrato, fecha_contrato::text AS fecha_contrato,
+          firma_contrato, facturado
         FROM crm_cerradora_solicitudes
         WHERE quotation_id = ANY($1::int[])
         ORDER BY quotation_id, id DESC
@@ -870,82 +876,141 @@ export class CommissionsDataService {
     };
   }
 
+  /** Resuelve la cerradora asignada en CRM (equipo Cerradoras). */
+  private resolveCerradoraUserId(
+    assignedUserId: string | null | undefined,
+    usernameToCrmId: Map<string, string>,
+    cerradoraIds: Set<string>,
+  ): string | null {
+    const assigned = assignedUserId?.trim();
+    if (!assigned) return null;
+    const assignedCrmId = usernameToCrmId.get(assigned.toLowerCase()) ?? assigned;
+    return cerradoraIds.has(assignedCrmId) ? assignedCrmId : null;
+  }
+
   /**
-   * Arma comisiones cerradoras desde facturación SV (invoice + OS).
-   * Solo cuenta si: pago facturado en el mes + cierre ganado CRM + facturador ∈ equipo Cerradoras.
+   * Comisiones cerradoras 100% desde CRM:
+   * c_oportunidad_cerradora + contract_presave + crm_cerradora_solicitudes.
    */
-  private async buildCerradorasContractsFromInvoices(
+  private async buildCerradorasContractsFromCrm(
     start: string,
     end: string,
-  ): Promise<{ contracts: ContractSvRow[]; invoiceRows: number; winsMatched: number }> {
-    const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    const [catalog, usernameToCrmId, crmIndex, svRows] = await Promise.all([
+  ): Promise<{ contracts: ContractSvRow[]; crmWins: number }> {
+    const [catalog, usernameToCrmId] = await Promise.all([
       this.listCerradorasEjecutivos(),
       this.buildCrmUsernameToUserIdMap(),
-      this.loadCerradorasWinCrmIndex(),
-      this.svServices.getCerradorasContractsFromSv(tokenSv, start, end),
     ]);
-
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
 
-    const quotationIds = [...new Set(svRows.map((r) => r.quotation_id).filter((id) => id > 0))];
+    const oppRows: Array<{
+      cotizacion_id: string | null;
+      contract_id: string | null;
+      assigned_user_id: string | null;
+      status: string | null;
+      campus_id: number | null;
+      sub_campaign_id: string | null;
+      date_end: string | null;
+      factura_id: string | null;
+      comision_demora_aprobada: boolean;
+    }> = await this.dataSource.query(
+      `
+      SELECT oc.cotizacion_id, oc.contract_id, oc.assigned_user_id, oc.status,
+             oc.date_end::text AS date_end, oc.factura_id,
+             COALESCE(oc.comision_demora_aprobada, false) AS comision_demora_aprobada,
+             COALESCE(opp.c_campus_atencion_id, opp.c_campus_id, 1) AS campus_id,
+             opp.c_sub_campaign_id AS sub_campaign_id
+      FROM c_oportunidad_cerradora oc
+      LEFT JOIN opportunity opp ON opp.id = oc.opportunity_id
+      WHERE COALESCE(oc.deleted, false) = false
+        AND oc.assigned_user_id IS NOT NULL
+        AND TRIM(oc.assigned_user_id) <> ''
+      `,
+    );
+
+    const quotationIds = oppRows
+      .map((r) => parseInt(String(r.cotizacion_id ?? ''), 10))
+      .filter((id) => !Number.isNaN(id) && id > 0);
     const { presaveByQuotation, solicitudByQuotation } = await this.loadCerradorasPresaveData(quotationIds);
 
     const contracts: ContractSvRow[] = [];
     const seenContractIds = new Set<number>();
-    let winsMatched = 0;
-    let skippedNotCerradora = 0;
-    let skippedNoWin = 0;
+    let crmWins = 0;
 
-    for (const row of svRows) {
-      if (seenContractIds.has(row.contract_id)) continue;
+    for (const row of oppRows) {
+      const quotationId = parseInt(String(row.cotizacion_id ?? ''), 10);
+      if (Number.isNaN(quotationId) || quotationId <= 0) continue;
 
-      const crm = crmIndex.byQuotation.get(row.quotation_id)
-        ?? crmIndex.byContract.get(row.contract_id);
-      if (!crm) {
-        skippedNoWin += 1;
-        continue;
+      const crmUserId = this.resolveCerradoraUserId(row.assigned_user_id, usernameToCrmId, cerradoraIds);
+      if (!crmUserId) continue;
+
+      const presave = presaveByQuotation.get(quotationId);
+      const solicitud = solicitudByQuotation.get(quotationId);
+      const hasPresave = !!presave;
+      const hasRegisteredPayment = parsePresaveHasRegisteredPayments(presave?.registered_payments);
+      const solicitudFacturado = solicitud?.facturado === true;
+      const firmaContrato = (solicitud?.firma_contrato ?? null) as 'pendiente' | 'firmado' | 'rechazado' | null;
+
+      const gestionEvidence = hasCloserGestionEvidence({
+        isPresaved: hasPresave,
+        hasContractPresave: hasPresave,
+        firmaContrato,
+        facturado: solicitudFacturado,
+        facturaId: row.factura_id,
+        hasRegisteredPayment,
+      });
+
+      if (!gestionEvidence && !row.comision_demora_aprobada) continue;
+
+      if (
+        isCloserWinStatus(row.status)
+        && !row.comision_demora_aprobada
+        && !gestionEvidence
+      ) {
+        if (!row.date_end) continue;
+        const winDate = new Date(row.date_end);
+        if (Number.isNaN(winDate.getTime())) continue;
+        const diffHours = (Date.now() - winDate.getTime()) / (1000 * 60 * 60);
+        if (diffHours > 24) continue;
       }
-      winsMatched += 1;
 
-      const crmUserId = usernameToCrmId.get(row.billing_username);
-      if (!crmUserId || !cerradoraIds.has(crmUserId)) {
-        skippedNotCerradora += 1;
-        this.logger.debug(
-          `Contrato ${row.contract_id}: facturador "${row.billing_username}" no es cerradora — omitido`,
-        );
-        continue;
-      }
+      const dates = buildCrmCommissionDates({
+        dateEnd: row.date_end,
+        fechaContrato: solicitud?.fecha_contrato,
+        presaveCreatedAt: presave?.created_at,
+        registeredPayments: presave?.registered_payments,
+      });
 
-      const presave = presaveByQuotation.get(row.quotation_id);
-      const solicitud = solicitudByQuotation.get(row.quotation_id);
-      const subCampaignName = crm.sub_campaign_id
-        ? SUB_CAMPAIGN_NAMES[crm.sub_campaign_id] ?? null
+      if (!this.contractInCommissionMonth(
+        start,
+        end,
+        dates.contractDate,
+        null,
+        dates.firstPaymentDate,
+        dates.monthDates,
+      )) continue;
+
+      const contractId = resolveCrmContractId(row.contract_id, quotationId);
+      if (seenContractIds.has(contractId)) continue;
+      seenContractIds.add(contractId);
+      crmWins += 1;
+
+      const subCampaignName = row.sub_campaign_id
+        ? SUB_CAMPAIGN_NAMES[row.sub_campaign_id] ?? null
         : null;
-
       const modalidadParsed = parseModalidadFromCrmFields({
         tipoContrato: solicitud?.tipo_contrato,
         contractType: presave?.contract_type,
         paymentsCount: presave?.payments_count,
         paymentMethod: presave?.payment_method,
-      }) ?? this.parseModalidad(row.contract_num);
+      }) ?? { modalidad: 'CONTADO' as const, cuotaNum: 1 };
 
-      const campusId = this.mapCommissionCampusId(crm.campus_id ?? row.campus_id);
+      const campusId = this.mapCommissionCampusId(row.campus_id ?? 1);
       const cat = catalogByUserId.get(crmUserId)!;
-      const contractDate = row.contract_date?.slice(0, 10)
-        ?? solicitud?.fecha_contrato?.slice(0, 10)
-        ?? crm.date_end?.slice(0, 10)
-        ?? row.payment_date;
-      const firstPaymentDate = row.payment_date
-        ?? row.moldes_date
-        ?? row.first_payment_date
-        ?? contractDate;
 
-      seenContractIds.add(row.contract_id);
       contracts.push({
-        contractId: row.contract_id,
-        quotationId: row.quotation_id,
+        contractId,
+        quotationId,
         tratamiento: mapTratamientoFromCrm({
           subCampaignName,
           contractType: presave?.contract_type,
@@ -956,15 +1021,13 @@ export class CommissionsDataService {
         ejecutivoNombre: cat.userName ?? cat.userLogin ?? crmUserId,
         campusId,
         campusNombre: this.commissionCampusNombre(campusId),
-        contractDate,
-        firstPaymentDate,
+        contractDate: dates.contractDate,
+        firstPaymentDate: dates.firstPaymentDate,
       });
     }
 
-    this.logger.log(
-      `Cerradoras desde invoice SV: ${contracts.length} comisionables, ${skippedNoWin} sin cierre CRM, ${skippedNotCerradora} facturador no cerradora`,
-    );
-    return { contracts, invoiceRows: svRows.length, winsMatched };
+    this.logger.log(`Cerradoras CRM ${start}→${end}: ${crmWins} cierres en mes, ${contracts.length} contratos`);
+    return { contracts, crmWins };
   }
 
   /** Configuración de apoyo entre sedes (activa). */
@@ -1073,65 +1136,6 @@ export class CommissionsDataService {
       }
     }
     return map;
-  }
-
-  /**
-   * Comisión OI cerradoras: % del importe facturado OI (fecha de abono), en soles.
-   */
-  private async applyCerradorasOiCommission(period: CommissionPeriod): Promise<void> {
-    const pct = Number(period.porcentajeComisionOi ?? CERRADORAS_OI_PORCENTAJE_DEFAULT);
-    if (pct <= 0) return;
-
-    const catalog = await this.listCerradorasEjecutivos();
-    const cerradoraIds = new Set(catalog.map((c) => c.userId));
-    const svUserMap = await this.buildSvUsernameToCrmUserIdMap([...cerradoraIds]);
-
-    const { start, end } = this.monthRange(period.year, period.month);
-    const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    const factRows = await this.svServices.getFacturacionOiFromSv(tokenSv, start, end);
-
-    const agg = new Map<string, { montoOi: number; comisionOi: number }>();
-
-    for (const row of factRows) {
-      const facturador = String(
-        row.facturador_username ?? row.ejecutivo_oi ?? '',
-      ).trim().toLowerCase();
-      if (!facturador) continue;
-
-      const userId = svUserMap.get(facturador);
-      if (!userId || !cerradoraIds.has(userId)) continue;
-
-      const campusId = this.mapCommissionCampusId(Number(row.campus_id ?? 1));
-      const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
-      if (amountPen <= 0) continue;
-
-      const key = `${userId}__${campusId}`;
-      const prev = agg.get(key) ?? { montoOi: 0, comisionOi: 0 };
-      prev.montoOi += amountPen;
-      prev.comisionOi += amountPen * pct;
-      agg.set(key, prev);
-    }
-
-    for (const [key, vals] of agg) {
-      const [userId, campusIdStr] = key.split('__');
-      const campusId = parseInt(campusIdStr, 10);
-      const record = await this.recordRepo.findOne({
-        where: { period: { id: period.id }, userId, campusId },
-        relations: ['period'],
-      });
-      if (!record) continue;
-
-      record.montoFacturadoOiConIgv = Math.round(vals.montoOi * 100) / 100;
-      record.comisionOi = Math.round(vals.comisionOi * 100) / 100;
-      record.comisionTotal = Math.round(
-        (Number(record.comisionTtos ?? 0) + Number(record.comisionBono ?? 0) + record.comisionOi) * 100,
-      ) / 100;
-      await this.recordRepo.save(record);
-    }
-
-    this.logger.log(
-      `Cerradoras OI ${period.year}-${period.month}: ${agg.size} registros con comisión OI (${pct * 100}%)`,
-    );
   }
 
   /** Catálogo: miembros vigentes del equipo CERRADORAS (Usuarios → Equipo Cerradoras). */
@@ -1275,13 +1279,6 @@ export class CommissionsDataService {
       cerradoraIds,
     );
     await this.ensureCierreTtoTeamRecords(period);
-    try {
-      await this.applyCerradorasOiCommission(period);
-    } catch (err) {
-      this.logger.warn(
-        `Comisión OI cerradoras ${period.year}-${period.month} falló: ${err instanceof Error ? err.message : err}`,
-      );
-    }
     await this.savePeriodSyncMeta(period, stats);
 
     return this.buildDashboard(periodId, new Date().toISOString(), undefined, undefined, stats);
@@ -1298,18 +1295,19 @@ export class CommissionsDataService {
     factorEspecial?: number;
   }>): Promise<void> {
     for (const eje of ejecutivos) {
+      const resolvedUserId = await this.resolveCrmUserId(eje.userId);
       const campusId = eje.campusId ?? period.campusId ?? undefined;
       const existing = await this.recordRepo.findOne({
         where: {
           period: { id: period.id },
-          userId: eje.userId,
+          userId: resolvedUserId,
           ...(campusId != null ? { campusId } : {}),
         },
         relations: ['period'],
       });
       const record = existing ?? this.recordRepo.create({
         period,
-        userId: eje.userId,
+        userId: resolvedUserId,
         campusId: campusId ?? null,
         factorEspecial: eje.factorEspecial ?? 1,
       });
@@ -1422,27 +1420,34 @@ export class CommissionsDataService {
     return this.buildDashboard(periodId, lastSyncAt, grupalSinIgv);
   }
 
-  /** Mapea userId CRM → clave SV (c_usersv o user_name). */
+  /** Mapea userId CRM → clave SV (c_usersv o user_name). Acepta login como userId. */
   private async buildCrmUserSvKeyMap(userIds: string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();
     const rows: Array<{ id: string; user_name: string | null; c_usersv: string | null }> =
       await this.dataSource.query(
-        `SELECT id, user_name, c_usersv FROM "user" WHERE id = ANY($1::text[])`,
+        `SELECT id, user_name, c_usersv FROM "user"
+         WHERE id = ANY($1::text[])
+            OR LOWER(user_name) = ANY(SELECT LOWER unnest($1::text[]))
+            OR LOWER(c_usersv) = ANY(SELECT LOWER unnest($1::text[]))`,
         [userIds],
       );
     const map = new Map<string, string>();
     for (const row of rows) {
       const key = String(row.c_usersv ?? row.user_name ?? row.id).trim().toLowerCase();
       map.set(String(row.id), key);
+      if (row.user_name) map.set(row.user_name.trim().toLowerCase(), key);
+      if (row.c_usersv) map.set(row.c_usersv.trim().toLowerCase(), key);
+    }
+    for (const uid of userIds) {
+      if (!map.has(uid)) map.set(uid, uid.trim().toLowerCase());
     }
     return map;
   }
 
   /**
    * Agrega facturado (invoice SV) y evaluaciones por userId CRM.
-   * Usa los endpoints HTTP del SV (facturacion-oi y evaluaciones-oi).
-   * Facturación: billing_user_id de la boleta/factura → facturador_username.
-   * Evaluaciones: ejecutivo OI asignado al paciente.
+   * Facturación: ejecutiva OI del paciente (union_doctor_patient); fallback facturador SV.
+   * Evaluaciones: ejecutiva OI asignada al paciente.
    */
   private async fetchOiMetricsFromSv(
     year: number,
@@ -1478,23 +1483,52 @@ export class CommissionsDataService {
     ]);
 
     for (const row of factRawRows) {
-      const facturador = String(row.facturador_username ?? row.ejecutivo_oi ?? '').trim().toLowerCase();
+      const ejecutivoOi = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
+      const facturador = String(row.facturador_username ?? '').trim().toLowerCase();
+      const attrib = (ejecutivoOi && ejecutivoOi !== 'sin_asignar')
+        ? ejecutivoOi
+        : facturador;
       const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
-      if (!facturador || amountPen <= 0) continue;
-      addToMap(facturador, (prev) => { prev.facturadoConIgv += amountPen; });
+      if (!attrib || amountPen <= 0) continue;
+      addToMap(attrib, (prev) => { prev.facturadoConIgv += amountPen; });
     }
 
     for (const row of evaRawRows) {
       const ejecutivo = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
       const evals = Number(row.evaluaciones ?? 1);
-      if (!ejecutivo) continue;
+      if (!ejecutivo || ejecutivo === 'sin_asignar') continue;
       addToMap(ejecutivo, (prev) => { prev.evaluaciones += evals; });
     }
 
     this.logger.log(
-      `OI SV HTTP ${year}-${month}: ${map.size} ejecutivos, ${factRawRows.length} líneas factura, ${evaRawRows.length} grupos eval`,
+      `OI SV HTTP ${year}-${month}: ${map.size} claves, ${factRawRows.length} líneas factura, ${evaRawRows.length} grupos eval`,
     );
     return map;
+  }
+
+  /** Busca métricas SV para un record OI probando userId, login SV y c_usersv. */
+  private resolveOiMetricsForRecord(
+    rec: CommissionRecord,
+    svMetrics: Map<string, { facturadoConIgv: number; evaluaciones: number }>,
+    svKeyMap: Map<string, string>,
+    usernameToCrmId: Map<string, string>,
+  ): { facturadoConIgv: number; evaluaciones: number } | undefined {
+    const uid = rec.userId.trim();
+    const candidates = new Set<string>([
+      uid,
+      uid.toLowerCase(),
+      svKeyMap.get(uid) ?? '',
+      svKeyMap.get(uid.toLowerCase()) ?? '',
+    ]);
+    const crmFromLogin = usernameToCrmId.get(uid.toLowerCase());
+    if (crmFromLogin) candidates.add(crmFromLogin);
+
+    for (const key of candidates) {
+      if (!key) continue;
+      const hit = svMetrics.get(key) ?? svMetrics.get(key.toLowerCase());
+      if (hit) return hit;
+    }
+    return undefined;
   }
 
   /**
@@ -1518,18 +1552,13 @@ export class CommissionsDataService {
     }
 
     const svMetrics = await this.fetchOiMetricsFromSv(period.year, period.month, period.campusId);
-    const svKeyMap = await this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId));
-
-    const resolveMetrics = (rec: CommissionRecord) => {
-      const uid = rec.userId.trim();
-      const svKey = svKeyMap.get(rec.userId) ?? uid.toLowerCase();
-      return svMetrics.get(uid)
-        ?? svMetrics.get(uid.toLowerCase())
-        ?? svMetrics.get(svKey);
-    };
+    const [svKeyMap, usernameToCrmId] = await Promise.all([
+      this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId)),
+      this.buildCrmUsernameToUserIdMap(),
+    ]);
 
     const ejecutivosInput: OiExecutivoInput[] = configRecords.map((rec) => {
-      const metrics = resolveMetrics(rec);
+      const metrics = this.resolveOiMetricsForRecord(rec, svMetrics, svKeyMap, usernameToCrmId);
       return {
         userId: rec.userId,
         userName: rec.userName ?? rec.userId,
@@ -1556,8 +1585,9 @@ export class CommissionsDataService {
 
     period.notas = JSON.stringify({
       syncedAt: new Date().toISOString(),
-      source: 'sv-invoice-db',
+      source: 'sv-invoice-http',
       facturacionLineas: svMetrics.size,
+      facturadoTotal: ejecutivosInput.reduce((s, e) => s + e.montoFacturadoConIgv, 0),
     });
     await this.periodRepo.save(period);
 

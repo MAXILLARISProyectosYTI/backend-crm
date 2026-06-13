@@ -16,6 +16,8 @@ export interface CerradorasCrmSolicitudRow {
   quotation_id: number;
   tipo_contrato: string | null;
   fecha_contrato: string | null;
+  firma_contrato?: string | null;
+  facturado?: boolean | null;
 }
 
 export function parseModalidadFromCrmFields(input: {

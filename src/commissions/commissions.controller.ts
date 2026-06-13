@@ -167,6 +167,11 @@ export class CommissionsController {
     return this.service.syncControlesPeriod(id);
   }
 
+  @Post('periods/:id/sync/oi')
+  syncOi(@Param('id', ParseIntPipe) id: number) {
+    return this.service.syncOiPeriod(id);
+  }
+
   @Get('summary')
   getSummaryByAreaAndMonth(
     @Query('area') area: string,
