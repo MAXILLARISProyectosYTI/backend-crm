@@ -50,6 +50,14 @@ export class CrmControlesService implements OnModuleInit {
     source: 'sv',
   };
 
+  // ── Cache facturación OI ──────────────────────────────────────────────────
+  private oiFacturacion: Record<string, unknown>[] = [];
+  private oiFacturacionMeta: CrmControlesCacheMeta = {
+    lastSyncAt: null,
+    lastError: null,
+    source: 'sv',
+  };
+
   constructor(
     private readonly svServices: SvServices,
     @InjectRepository(User) private readonly userRepository: Repository<User>,
@@ -71,6 +79,9 @@ export class CrmControlesService implements OnModuleInit {
       );
       void this.syncReprogramacionesFromSv().catch((e) =>
         this.logger.warn(`Sync inicial Reprogramaciones: ${e instanceof Error ? e.message : e}`),
+      );
+      void this.syncOiFacturacionFromSv().catch((e) =>
+        this.logger.warn(`Sync inicial Facturación OI: ${e instanceof Error ? e.message : e}`),
       );
     }, delay);
   }
@@ -354,6 +365,32 @@ export class CrmControlesService implements OnModuleInit {
       const msg = err instanceof Error ? err.message : String(err);
       this.facturacionMeta = { ...this.facturacionMeta, lastError: msg };
       this.logger.error(`CRM Controles: error sync facturación — ${msg}`);
+      throw err;
+    }
+  }
+
+  // ── Facturación OI ───────────────────────────────────────────────────────
+
+  getOiFacturacionSnapshot(): { data: Record<string, unknown>[]; meta: CrmControlesCacheMeta } {
+    return { data: this.oiFacturacion, meta: { ...this.oiFacturacionMeta } };
+  }
+
+  async syncOiFacturacionFromSv(): Promise<void> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const until = new Date();
+      const since = new Date(until);
+      since.setMonth(since.getMonth() - 18);
+      const sinceStr = since.toISOString().slice(0, 10);
+      const untilStr = until.toISOString().slice(0, 10);
+      const rows = await this.svServices.getFacturacionOiFromSv(tokenSv, sinceStr, untilStr);
+      this.oiFacturacion = Array.isArray(rows) ? rows : [];
+      this.oiFacturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
+      this.logger.log(`CRM OI facturación: ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.oiFacturacionMeta = { ...this.oiFacturacionMeta, lastError: msg };
+      this.logger.error(`CRM OI: error sync facturación — ${msg}`);
       throw err;
     }
   }

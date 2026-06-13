@@ -113,5 +113,17 @@ export class CreateContractPresaveDto {
   @IsOptional()
   @IsString()
   currentPaymentFormData?: string;
+
+  /** Origen del guardado: manual | silent | auto_apply | delete */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  saveSource?: string;
+
+  /** Usuario cerrador (token/url) que disparó el guardado */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  savedByUserId?: string;
 }
 

@@ -8,7 +8,7 @@ export interface OiExecutivoInput {
   userName: string;
   campusId: number | null;
   campusNombre: string;
-  /** Monto facturado con IGV del período (contratos OI, sin evaluaciones) */
+  /** Monto facturado con IGV del período: evaluaciones OI + plan de tratamiento (SV invoice) */
   montoFacturadoConIgv: number;
   /** Cantidad de evaluaciones OI realizadas en el período */
   cantidadEvaluaciones: number;
