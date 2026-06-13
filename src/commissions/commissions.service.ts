@@ -9,6 +9,7 @@ import { CommissionClosureTag } from './commission-closure-tag.entity';
 import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpsertRecordDto } from './dto/upsert-record.dto';
 import { UpsertPeriodRatesDto } from './dto/upsert-period-rates.dto';
+import { UpdatePeriodDto } from './dto/update-period.dto';
 import type { UpsertSedeApoyoDto } from './dto/upsert-sede-apoyo.dto';
 import { TagClosureDto } from './dto/tag-closure.dto';
 import { calculateCierreTto, type ContractSvRow } from './engines/cierre-tto.engine';
@@ -301,15 +302,23 @@ export class CommissionsService {
     return this.dataService.listCerradorasEjecutivos();
   }
 
-  listSedeApoyo() {
-    return this.dataService.listSedeApoyo();
+  listSedeApoyo(periodId?: number) {
+    return this.dataService.listSedeApoyo(periodId);
   }
 
-  upsertSedeApoyo(items: UpsertSedeApoyoDto['items']) {
-    return this.dataService.upsertSedeApoyo(items);
+  upsertSedeApoyo(items: UpsertSedeApoyoDto['items'], periodId?: number) {
+    return this.dataService.upsertSedeApoyo(items, periodId);
   }
 
   deleteSedeApoyo(id: number) {
     return this.dataService.deleteSedeApoyo(id);
+  }
+
+  updatePeriod(id: number, dto: UpdatePeriodDto) {
+    return this.dataService.updatePeriodMeta(id, dto);
+  }
+
+  deletePeriod(id: number) {
+    return this.dataService.deletePeriod(id);
   }
 }
