@@ -1,14 +1,9 @@
-import { CAMPAIGNS_IDS } from '../../globals/ids';
-
 export interface OiCrmUserMetrics {
   facturadoConIgv: number;
   evaluaciones: number;
 }
 
-export const OI_CRM_CAMPAIGN_ID = CAMPAIGNS_IDS.OI;
-export const OI_WON_STAGE = 'Cierre ganado';
-
-/** Agrega filas SQL en mapa userId → métricas. */
+/** Agrega filas SV en mapa login → métricas. */
 export function mergeOiCrmMetricsRow(
   map: Map<string, OiCrmUserMetrics>,
   userId: string,

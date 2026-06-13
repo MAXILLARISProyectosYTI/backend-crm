@@ -28,6 +28,10 @@ import {
   parsePresaveHasRegisteredPayments,
 } from '../crm-cerradoras/utils/closer-commission.util';
 import { SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
+import {
+  mergeOiCrmMetricsRow,
+  type OiCrmUserMetrics,
+} from './utils/oi-crm-metrics.util';
 
 const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
 const OI_TEAM_ID = TEAMS_IDS.EJ_COMERCIAL_OI;
@@ -510,6 +514,7 @@ export class CommissionsDataService {
     const saved = await this.periodRepo.save(period);
     if (area === 'CIERRE_TTO') {
       await this.copyPeriodRatesFromPrevious(saved);
+      await this.copySedeApoyoFromPrevious(saved);
     }
     return saved;
   }
@@ -560,67 +565,61 @@ export class CommissionsDataService {
     return period;
   }
 
-  /** Garantiza ejecutivas OI en el período (backfill si quedó vacío). */
+  /** Garantiza ejecutivas OI en el período (equipo OI + login SV). */
   private async ensureOiEjecutivosConfigured(period: CommissionPeriod): Promise<void> {
-    const existing = await this.recordRepo.count({ where: { period: { id: period.id } } });
-    if (existing > 0) return;
+    await this.normalizePeriodRecordSvKeys(period.id);
 
-    const prevMonth = period.month === 1 ? 12 : period.month - 1;
-    const prevYear = period.month === 1 ? period.year - 1 : period.year;
-    const prev = await this.periodRepo.findOne({
-      where: { year: prevYear, month: prevMonth, area: 'OI', campusId: IsNull() },
+    const team = await this.listOiEjecutivos();
+    if (team.length === 0) return;
+
+    const existing = await this.recordRepo.find({
+      where: { period: { id: period.id } },
+      relations: ['period'],
     });
+    const existingKeys = new Set(existing.map((r) => r.userId.trim().toLowerCase()));
 
-    if (prev) {
-      const prevRecords = await this.recordRepo.find({ where: { period: { id: prev.id } } });
-      for (const rec of prevRecords) {
-        await this.recordRepo.save(this.recordRepo.create({
-          period,
-          userId: rec.userId,
-          userName: rec.userName,
-          campusId: rec.campusId,
-          campusNombre: rec.campusNombre,
-          factorEspecial: rec.factorEspecial ?? 1,
-          estado: 'PENDIENTE',
-        }));
-      }
-      if (prevRecords.length > 0) return;
+    for (const eje of team) {
+      if (existingKeys.has(eje.userId.toLowerCase())) continue;
+      await this.recordRepo.save(this.recordRepo.create({
+        period,
+        userId: eje.userId,
+        userName: eje.userName,
+        campusId: 1,
+        campusNombre: this.commissionCampusNombre(1),
+        factorEspecial: 1,
+        estado: 'PENDIENTE',
+      }));
     }
-
-    const oiTeam = await this.listOiEjecutivos();
-    if (oiTeam.length > 0) {
-      for (const eje of oiTeam) {
-        await this.recordRepo.save(this.recordRepo.create({
-          period,
-          userId: eje.userId,
-          userName: eje.userName,
-          campusId: 1,
-          campusNombre: this.commissionCampusNombre(1),
-          factorEspecial: 1,
-          estado: 'PENDIENTE',
-        }));
-      }
-      return;
-    }
-
-    const fallbackId = await this.resolveCrmUserId('christian.melendez');
-    await this.recordRepo.save(this.recordRepo.create({
-      period,
-      userId: fallbackId,
-      userName: 'Christian Melendez',
-      campusId: 1,
-      campusNombre: this.commissionCampusNombre(1),
-      factorEspecial: 1,
-      estado: 'PENDIENTE',
-    }));
   }
 
-  /** Miembros del equipo Ejecutivas OI (CRM). */
+  /** Corrige userId en records (UUID CRM → login SV) para cruce con facturación. */
+  private async normalizePeriodRecordSvKeys(periodId: number): Promise<void> {
+    const records = await this.recordRepo.find({ where: { period: { id: periodId } } });
+    for (const rec of records) {
+      const svKey = await this.resolveCommissionSvKey(rec.userId);
+      const normalized = svKey.trim().toLowerCase();
+      if (normalized === rec.userId.trim().toLowerCase()) continue;
+
+      const duplicate = await this.recordRepo.findOne({
+        where: { period: { id: periodId }, userId: normalized },
+      });
+      if (duplicate && duplicate.id !== rec.id) {
+        await this.detailRepo.delete({ record: { id: rec.id } });
+        await this.recordRepo.delete(rec.id);
+        continue;
+      }
+      rec.userId = normalized;
+      await this.recordRepo.save(rec);
+    }
+  }
+
+  /** Miembros del equipo Ejecutivas OI (CRM). userId = login SV para cruce con facturación. */
   async listOiEjecutivos(): Promise<Array<{ userId: string; userName: string; userLogin: string | null }>> {
     const rows: Array<{
       user_id: string;
       display_name: string | null;
       user_login: string | null;
+      sv_login: string | null;
     }> = await this.dataSource.query(
       `
       SELECT u.id AS user_id,
@@ -628,7 +627,8 @@ export class CommissionsDataService {
           NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
           u.user_name
         ) AS display_name,
-        u.user_name AS user_login
+        u.user_name AS user_login,
+        COALESCE(NULLIF(TRIM(u.c_usersv), ''), u.user_name, u.id) AS sv_login
       FROM "user" u
       INNER JOIN team_user tu ON tu.user_id = u.id
         AND tu.team_id = $1
@@ -640,7 +640,7 @@ export class CommissionsDataService {
       [OI_TEAM_ID],
     );
     return rows.map((r) => ({
-      userId: r.user_id,
+      userId: String(r.sv_login ?? r.user_login ?? r.user_id).trim().toLowerCase(),
       userName: r.display_name ?? r.user_login ?? r.user_id,
       userLogin: r.user_login,
     }));
@@ -652,6 +652,29 @@ export class CommissionsDataService {
     if (!key) return key;
     const map = await this.buildCrmUsernameToUserIdMap();
     return map.get(key.toLowerCase()) ?? key;
+  }
+
+  /**
+   * Clave para commission_record.userId — login SV (c_usersv / user_name).
+   * Igual que Controles: debe coincidir con ejecutivo_controles / ejecutivo_oi en SV.
+   */
+  private async resolveCommissionSvKey(raw: string): Promise<string> {
+    const key = raw.trim();
+    if (!key) return key;
+    const rows: Array<{ id: string; user_name: string | null; c_usersv: string | null }> =
+      await this.dataSource.query(
+        `SELECT id, user_name, c_usersv FROM "user"
+         WHERE id = $1
+            OR LOWER(user_name) = LOWER($1)
+            OR LOWER(c_usersv) = LOWER($1)
+         LIMIT 1`,
+        [key],
+      );
+    const row = rows[0];
+    if (row) {
+      return String(row.c_usersv ?? row.user_name ?? row.id).trim().toLowerCase();
+    }
+    return key.toLowerCase();
   }
 
   /**
@@ -1030,8 +1053,8 @@ export class CommissionsDataService {
     return { contracts, crmWins };
   }
 
-  /** Configuración de apoyo entre sedes (activa). */
-  async listSedeApoyo(): Promise<Array<{
+  /** Configuración de apoyo entre sedes del período (mes). */
+  async listSedeApoyo(periodId?: number): Promise<Array<{
     id: number;
     userId: string;
     userName: string | null;
@@ -1039,40 +1062,63 @@ export class CommissionsDataService {
     campusNombre: string;
     porcentaje: number;
     activo: boolean;
+    periodId: number | null;
   }>> {
-    const rows = await this.sedeApoyoRepo.find({ where: { activo: true }, order: { userId: 'ASC' } });
+    if (periodId != null) {
+      await this.ensureSedeApoyoForPeriod(periodId);
+    }
+
+    const rows = await this.sedeApoyoRepo.find({
+      where: periodId != null
+        ? { periodId, activo: true }
+        : { activo: true },
+      order: { userId: 'ASC' },
+    });
     if (rows.length === 0) return [];
 
     const userIds = [...new Set(rows.map((r) => r.userId))];
-    const users: Array<{ id: string; user_name: string | null; first_name: string | null; last_name: string | null }> =
+    const users: Array<{ id: string; user_name: string | null; c_usersv: string | null; first_name: string | null; last_name: string | null }> =
       await this.dataSource.query(
-        `SELECT id, user_name, first_name, last_name FROM "user" WHERE id = ANY($1::text[])`,
+        `SELECT id, user_name, c_usersv, first_name, last_name FROM "user"
+         WHERE id = ANY($1::text[])
+            OR LOWER(user_name) = ANY(SELECT LOWER unnest($1::text[]))
+            OR LOWER(c_usersv) = ANY(SELECT LOWER unnest($1::text[]))`,
         [userIds],
       );
-    const nameById = new Map(users.map((u) => [
-      u.id,
-      [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.user_name || u.id,
-    ]));
+    const nameByKey = new Map<string, string>();
+    for (const u of users) {
+      const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.user_name || u.id;
+      for (const key of [u.id, u.user_name, u.c_usersv].filter(Boolean)) {
+        nameByKey.set(String(key).trim().toLowerCase(), name);
+      }
+    }
 
     return rows.map((r) => ({
       id: r.id,
       userId: r.userId,
-      userName: nameById.get(r.userId) ?? null,
+      userName: nameByKey.get(r.userId.trim().toLowerCase()) ?? r.userId,
       campusId: r.campusId,
       campusNombre: this.commissionCampusNombre(r.campusId),
       porcentaje: Number(r.porcentaje),
       activo: r.activo,
+      periodId: r.periodId,
     }));
   }
 
-  async upsertSedeApoyo(items: Array<{ userId: string; campusId: number; porcentaje: number; activo?: boolean }>): Promise<void> {
+  async upsertSedeApoyo(
+    items: Array<{ userId: string; campusId: number; porcentaje: number; activo?: boolean }>,
+    periodId?: number,
+  ): Promise<void> {
     for (const item of items) {
-      const existing = await this.sedeApoyoRepo.findOne({
-        where: { userId: item.userId, campusId: item.campusId },
-      });
+      const userKey = await this.resolveCommissionSvKey(item.userId);
+      const where = periodId != null
+        ? { periodId, userId: userKey, campusId: item.campusId }
+        : { userId: userKey, campusId: item.campusId, periodId: IsNull() };
+      const existing = await this.sedeApoyoRepo.findOne({ where: where as any });
       const row = existing ?? this.sedeApoyoRepo.create({
-        userId: item.userId,
+        userId: userKey,
         campusId: item.campusId,
+        periodId: periodId ?? null,
       });
       row.porcentaje = item.porcentaje;
       row.activo = item.activo ?? true;
@@ -1081,17 +1127,63 @@ export class CommissionsDataService {
   }
 
   async deleteSedeApoyo(id: number): Promise<void> {
-    await this.sedeApoyoRepo.update(id, { activo: false });
+    await this.sedeApoyoRepo.delete(id);
   }
 
-  private async buildCierreTtoSedeConfig(): Promise<CierreTtoSedeConfig> {
+  private async ensureSedeApoyoForPeriod(periodId: number): Promise<void> {
+    const count = await this.sedeApoyoRepo.count({ where: { periodId, activo: true } });
+    if (count > 0) return;
+
+    const period = await this.periodRepo.findOne({ where: { id: periodId } });
+    if (!period || period.area !== 'CIERRE_TTO') return;
+
+    await this.copySedeApoyoFromPrevious(period);
+  }
+
+  private async copySedeApoyoFromPrevious(period: CommissionPeriod): Promise<void> {
+    const prevMonth = period.month === 1 ? 12 : period.month - 1;
+    const prevYear = period.month === 1 ? period.year - 1 : period.year;
+    const prev = await this.periodRepo.findOne({
+      where: { year: prevYear, month: prevMonth, area: 'CIERRE_TTO', campusId: IsNull() },
+    });
+
+    let source = prev
+      ? await this.sedeApoyoRepo.find({ where: { periodId: prev.id, activo: true } })
+      : [];
+
+    if (source.length === 0) {
+      source = await this.sedeApoyoRepo.find({
+        where: { periodId: IsNull(), activo: true },
+      });
+    }
+
+    for (const row of source) {
+      const exists = await this.sedeApoyoRepo.findOne({
+        where: { periodId: period.id, userId: row.userId, campusId: row.campusId },
+      });
+      if (exists) continue;
+      await this.sedeApoyoRepo.save(this.sedeApoyoRepo.create({
+        periodId: period.id,
+        userId: row.userId,
+        campusId: row.campusId,
+        porcentaje: row.porcentaje,
+        activo: true,
+      }));
+    }
+  }
+
+  private async buildCierreTtoSedeConfig(periodId: number): Promise<CierreTtoSedeConfig> {
     const catalog = await this.listCerradorasEjecutivos();
     const homeCampusByUser = new Map<string, number>();
     for (const e of catalog) {
       homeCampusByUser.set(e.userId, e.campusId);
+      if (e.userLogin) homeCampusByUser.set(e.userLogin.trim().toLowerCase(), e.campusId);
     }
 
-    const apoyoRows = await this.sedeApoyoRepo.find({ where: { activo: true } });
+    await this.ensureSedeApoyoForPeriod(periodId);
+    const apoyoRows = await this.sedeApoyoRepo.find({
+      where: { periodId, activo: true },
+    });
     const apoyoFactorByUserCampus = new Map<string, number>();
     for (const row of apoyoRows) {
       apoyoFactorByUserCampus.set(`${row.userId}__${row.campusId}`, Number(row.porcentaje));
@@ -1262,7 +1354,7 @@ export class CommissionsDataService {
     await this.ensureCierreTtoTeamRecords(period);
     await this.clearCierreTtoCalculatedData(periodId);
     const rateByCode = await this.getPeriodRatesMap(periodId);
-    const sedeConfig = await this.buildCierreTtoSedeConfig();
+    const sedeConfig = await this.buildCierreTtoSedeConfig(periodId);
     const { contracts, stats } = await this.fetchCerradorasContractsForMonth(period.year, period.month);
     const catalog = await this.listCerradorasEjecutivos();
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
@@ -1294,8 +1386,10 @@ export class CommissionsDataService {
     dbAsignada?: number;
     factorEspecial?: number;
   }>): Promise<void> {
+    const resolvedKeys: string[] = [];
     for (const eje of ejecutivos) {
-      const resolvedUserId = await this.resolveCrmUserId(eje.userId);
+      const resolvedUserId = await this.resolveCommissionSvKey(eje.userId);
+      resolvedKeys.push(resolvedUserId);
       const campusId = eje.campusId ?? period.campusId ?? undefined;
       const existing = await this.recordRepo.findOne({
         where: {
@@ -1318,6 +1412,15 @@ export class CommissionsDataService {
       if (eje.metaMontoSinIgv != null) record.metaMontoIndividual = eje.metaMontoSinIgv;
       record.estado = record.estado === 'CALCULADO' ? record.estado : 'PENDIENTE';
       await this.recordRepo.save(record);
+    }
+
+    const existingRecords = await this.recordRepo.find({ where: { period: { id: period.id } } });
+    const keepKeys = new Set(resolvedKeys.map((k) => k.toLowerCase()));
+    for (const rec of existingRecords) {
+      if (!keepKeys.has(rec.userId.trim().toLowerCase())) {
+        await this.detailRepo.delete({ record: { id: rec.id } });
+        await this.recordRepo.delete(rec.id);
+      }
     }
   }
 
@@ -1393,9 +1496,15 @@ export class CommissionsDataService {
       this.logger.warn(`Período ${periodId} sin ejecutivos configurados`);
     }
 
+    const svKeyMap = await this.buildCrmUserSvKeyMap(
+      configRecords.map((r) => r.userId),
+    );
+
     const ejecutivosInput: ControlesEjecutivoInput[] = configRecords.map((rec) => {
-      const key = rec.userId.trim().toLowerCase();
-      const montoIndividual = byEjecutivo.get(key) ?? 0;
+      const svKey = svKeyMap.get(rec.userId)
+        ?? svKeyMap.get(rec.userId.trim().toLowerCase())
+        ?? rec.userId.trim().toLowerCase();
+      const montoIndividual = byEjecutivo.get(svKey) ?? 0;
       const metaIndividual = Number(rec.metaMontoIndividual ?? period.metaMontoSinIgv ?? 0);
       return {
         userId: rec.userId,
@@ -1444,43 +1553,38 @@ export class CommissionsDataService {
     return map;
   }
 
-  /**
-   * Agrega facturado (invoice SV) y evaluaciones por userId CRM.
-   * Facturación: ejecutiva OI del paciente (union_doctor_patient); fallback facturador SV.
-   * Evaluaciones: ejecutiva OI asignada al paciente.
-   */
+  /** Clave SV (login) → facturado + evaluaciones. Misma lógica de cruce que Controles. */
   private async fetchOiMetricsFromSv(
     year: number,
     month: number,
     campusId?: number | null,
-  ): Promise<Map<string, { facturadoConIgv: number; evaluaciones: number }>> {
+  ): Promise<Map<string, OiCrmUserMetrics>> {
     const { start, end } = this.monthRange(year, month);
-    const map = new Map<string, { facturadoConIgv: number; evaluaciones: number }>();
-
-    const { tokenSv } = await this.svServices.getTokenSvAdmin();
-    const usernameToCrmId = await this.buildCrmUsernameToUserIdMap();
+    const map = new Map<string, OiCrmUserMetrics>();
 
     const addToMap = (
       username: string,
-      updater: (prev: { facturadoConIgv: number; evaluaciones: number }) => void,
+      patch: Partial<OiCrmUserMetrics>,
     ) => {
-      const u = username.trim().toLowerCase();
-      if (!u || u === 'sin_asignar') return;
-      const crmId = usernameToCrmId.get(u);
-      const keys = new Set<string>([u]);
-      if (crmId) keys.add(crmId);
-      const existing = map.get(u) ?? (crmId ? map.get(crmId) : undefined);
-      const prev = existing ?? { facturadoConIgv: 0, evaluaciones: 0 };
-      updater(prev);
-      for (const key of keys) {
-        map.set(key, prev);
-      }
+      const key = username.trim().toLowerCase();
+      if (!key || key === 'sin_asignar') return;
+      mergeOiCrmMetricsRow(map, key, patch);
     };
 
-    const [factRawRows, evaRawRows] = await Promise.all([
-      this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined),
-      this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined),
-    ]);
+    let factRawRows: Record<string, unknown>[] = [];
+    let evaRawRows: Record<string, unknown>[] = [];
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      [factRawRows, evaRawRows] = await Promise.all([
+        this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined),
+        this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined),
+      ]);
+    } catch (err) {
+      this.logger.warn(
+        `OI SV HTTP ${year}-${month} falló: ${err instanceof Error ? err.message : err}`,
+      );
+      return map;
+    }
 
     for (const row of factRawRows) {
       const ejecutivoOi = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
@@ -1490,49 +1594,25 @@ export class CommissionsDataService {
         : facturador;
       const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
       if (!attrib || amountPen <= 0) continue;
-      addToMap(attrib, (prev) => { prev.facturadoConIgv += amountPen; });
+      addToMap(attrib, { facturadoConIgv: amountPen });
     }
 
     for (const row of evaRawRows) {
       const ejecutivo = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
       const evals = Number(row.evaluaciones ?? 1);
       if (!ejecutivo || ejecutivo === 'sin_asignar') continue;
-      addToMap(ejecutivo, (prev) => { prev.evaluaciones += evals; });
+      addToMap(ejecutivo, { evaluaciones: evals });
     }
 
     this.logger.log(
-      `OI SV HTTP ${year}-${month}: ${map.size} claves, ${factRawRows.length} líneas factura, ${evaRawRows.length} grupos eval`,
+      `OI SV ${year}-${month}: ${map.size} ejecutivas, ${factRawRows.length} facturas, ${evaRawRows.length} grupos eval`,
     );
     return map;
   }
 
-  /** Busca métricas SV para un record OI probando userId, login SV y c_usersv. */
-  private resolveOiMetricsForRecord(
-    rec: CommissionRecord,
-    svMetrics: Map<string, { facturadoConIgv: number; evaluaciones: number }>,
-    svKeyMap: Map<string, string>,
-    usernameToCrmId: Map<string, string>,
-  ): { facturadoConIgv: number; evaluaciones: number } | undefined {
-    const uid = rec.userId.trim();
-    const candidates = new Set<string>([
-      uid,
-      uid.toLowerCase(),
-      svKeyMap.get(uid) ?? '',
-      svKeyMap.get(uid.toLowerCase()) ?? '',
-    ]);
-    const crmFromLogin = usernameToCrmId.get(uid.toLowerCase());
-    if (crmFromLogin) candidates.add(crmFromLogin);
-
-    for (const key of candidates) {
-      if (!key) continue;
-      const hit = svMetrics.get(key) ?? svMetrics.get(key.toLowerCase());
-      if (hit) return hit;
-    }
-    return undefined;
-  }
-
   /**
-   * Sincroniza montos OI desde SV (facturas + evaluaciones) y recalcula comisiones.
+   * Sincroniza montos OI desde SV (facturación invoice + evaluaciones) y recalcula comisiones.
+   * Cruce por login SV igual que Controles (userId = c_usersv / user_name).
    */
   async syncAndCalculateOi(periodId: number): Promise<CommissionDashboard> {
     const period = await this.periodRepo.findOne({ where: { id: periodId } });
@@ -1552,20 +1632,21 @@ export class CommissionsDataService {
     }
 
     const svMetrics = await this.fetchOiMetricsFromSv(period.year, period.month, period.campusId);
-    const [svKeyMap, usernameToCrmId] = await Promise.all([
-      this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId)),
-      this.buildCrmUsernameToUserIdMap(),
-    ]);
+
+    const svKeyMap = await this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId));
 
     const ejecutivosInput: OiExecutivoInput[] = configRecords.map((rec) => {
-      const metrics = this.resolveOiMetricsForRecord(rec, svMetrics, svKeyMap, usernameToCrmId);
+      const svKey = svKeyMap.get(rec.userId)
+        ?? svKeyMap.get(rec.userId.trim().toLowerCase())
+        ?? rec.userId.trim().toLowerCase();
+      const metrics = svMetrics.get(svKey) ?? { facturadoConIgv: 0, evaluaciones: 0 };
       return {
         userId: rec.userId,
         userName: rec.userName ?? rec.userId,
         campusId: rec.campusId ?? period.campusId ?? null,
         campusNombre: rec.campusNombre ?? '',
-        montoFacturadoConIgv: metrics?.facturadoConIgv ?? 0,
-        cantidadEvaluaciones: metrics?.evaluaciones ?? 0,
+        montoFacturadoConIgv: metrics.facturadoConIgv,
+        cantidadEvaluaciones: metrics.evaluaciones,
       };
     });
 
@@ -1583,13 +1664,18 @@ export class CommissionsDataService {
 
     await calculateOi(period, periodInput, ejecutivosInput, this.recordRepo);
 
+    const facturadoTotal = ejecutivosInput.reduce((s, e) => s + e.montoFacturadoConIgv, 0);
     period.notas = JSON.stringify({
       syncedAt: new Date().toISOString(),
       source: 'sv-invoice-http',
-      facturacionLineas: svMetrics.size,
-      facturadoTotal: ejecutivosInput.reduce((s, e) => s + e.montoFacturadoConIgv, 0),
+      facturacionEjecutivas: svMetrics.size,
+      facturadoTotal,
     });
     await this.periodRepo.save(period);
+
+    this.logger.log(
+      `OI sync ${period.year}-${period.month}: facturado S/ ${facturadoTotal.toFixed(2)}, ${svMetrics.size} claves SV+CRM`,
+    );
 
     return this.buildDashboard(periodId, new Date().toISOString());
   }
@@ -1777,6 +1863,65 @@ export class CommissionsDataService {
     return [...map.entries()]
       .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
       .sort((a, b) => b.value - a.value);
+  }
+
+  async updatePeriodMeta(
+    periodId: number,
+    dto: {
+      metaMontoConIgv?: number;
+      metaMontoSinIgv?: number;
+      metaCantidad?: number;
+      baseFijaConIgv?: number;
+      nEjecutivas?: number;
+      dbTotal?: number;
+      objEvaluaciones?: number;
+      notas?: string;
+      campusNombre?: string;
+      ejecutivos?: Array<{
+        userId: string;
+        userName?: string;
+        campusId?: number;
+        campusNombre?: string;
+        metaMontoSinIgv?: number;
+        dbAsignada?: number;
+        factorEspecial?: number;
+      }>;
+    },
+  ): Promise<CommissionPeriod> {
+    const period = await this.periodRepo.findOne({ where: { id: periodId } });
+    if (!period) throw new Error(`Período ${periodId} no encontrado`);
+
+    if (dto.metaMontoConIgv != null) period.metaMontoConIgv = dto.metaMontoConIgv;
+    if (dto.metaMontoSinIgv != null) period.metaMontoSinIgv = dto.metaMontoSinIgv;
+    if (dto.metaCantidad != null) period.metaCantidad = dto.metaCantidad;
+    if (dto.baseFijaConIgv != null) period.baseFijaConIgv = dto.baseFijaConIgv;
+    if (dto.nEjecutivas != null) period.nEjecutivas = dto.nEjecutivas;
+    if (dto.dbTotal != null) period.dbTotal = dto.dbTotal;
+    if (dto.objEvaluaciones != null) period.objEvaluaciones = dto.objEvaluaciones;
+    if (dto.notas != null) period.notas = dto.notas;
+    if (dto.campusNombre != null) period.campusNombre = dto.campusNombre;
+
+    const saved = await this.periodRepo.save(period);
+    if (dto.ejecutivos?.length) {
+      await this.saveExecutivosConfig(saved, dto.ejecutivos);
+    }
+    return saved;
+  }
+
+  async deletePeriod(periodId: number): Promise<void> {
+    const period = await this.periodRepo.findOne({ where: { id: periodId } });
+    if (!period) throw new Error(`Período ${periodId} no encontrado`);
+    if (period.estado === 'CERRADO') {
+      throw new Error('No se puede eliminar un período cerrado');
+    }
+    const records = await this.recordRepo.find({ where: { period: { id: periodId } } });
+    for (const rec of records) {
+      await this.detailRepo.delete({ record: { id: rec.id } });
+    }
+    await this.rateRepo.delete({ periodId });
+    await this.sedeApoyoRepo.delete({ periodId });
+    await this.recordRepo.delete({ period: { id: periodId } });
+    await this.periodRepo.delete(periodId);
   }
 
   async getDashboardByAreaMonth(
