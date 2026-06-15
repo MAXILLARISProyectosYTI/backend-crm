@@ -29,13 +29,9 @@ import {
 } from '../crm-cerradoras/utils/closer-commission.util';
 import { SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
 import {
-  mergeOiCrmMetricsRow,
   type OiCrmUserMetrics,
 } from './utils/oi-crm-metrics.util';
-import {
-  queryOiEvaluacionesFromSvDb,
-  queryOiFacturacionFromSvDb,
-} from './utils/oi-sv-invoice.util';
+import { OiSvInvoiceService } from './services/oi-sv-invoice.service';
 
 const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
 const OI_TEAM_ID = TEAMS_IDS.EJ_COMERCIAL_OI;
@@ -154,10 +150,17 @@ export interface CommissionDashboard {
   pendingClosures?: number;
   cerradorasCatalog?: CerradorasEjecutivoCatalogItem[];
   syncStats?: { contractsTotal: number; contractsCrm: number; contractsSv: number };
-  /** Fuente de datos de la última sync (sv-http | crm-cache | sin-datos) */
+  /** sv-invoice-db | sin-datos */
   dataSource?: string;
   /** Mensaje de error del SV si la sync directa falló */
   svError?: string | null;
+  /** Diagnóstico sync OI (filas invoice, ejecutivas con datos) */
+  oiSyncStats?: {
+    factRowCount: number;
+    evalGroupCount: number;
+    ejecutivasConDatos: number;
+    facturadoTotal: number;
+  };
 }
 
 @Injectable()
@@ -183,6 +186,7 @@ export class CommissionsDataService {
     private readonly dataSource: DataSource,
     private readonly crmControlesService: CrmControlesService,
     private readonly svServices: SvServices,
+    private readonly oiSvInvoiceService: OiSvInvoiceService,
   ) {}
 
   private monthRange(year: number, month: number): { start: string; end: string } {
@@ -1772,140 +1776,97 @@ export class CommissionsDataService {
     return map;
   }
 
-  /** Clave SV (login) → facturado + evaluaciones. Misma lógica de cruce que Controles. */
+  /** Agrega commission_record por cada login SV con facturación/evaluaciones en el mes. */
+  private async ensureOiRecordsFromSvMetrics(
+    period: CommissionPeriod,
+    svMetrics: Map<string, OiCrmUserMetrics>,
+  ): Promise<void> {
+    const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
+    const knownSvKeys = new Set<string>();
+
+    for (const rec of existing) {
+      const svKey = await this.resolveCommissionSvKey(rec.userId);
+      knownSvKeys.add(svKey);
+      const normalized = svKey.trim().toLowerCase();
+      if (rec.userId.trim().toLowerCase() !== normalized) {
+        const dup = existing.find(
+          (r) => r.id !== rec.id && r.userId.trim().toLowerCase() === normalized,
+        );
+        if (dup) {
+          await this.detailRepo.delete({ record: { id: rec.id } });
+          await this.recordRepo.delete(rec.id);
+        } else {
+          rec.userId = normalized;
+          await this.recordRepo.save(rec);
+        }
+      }
+    }
+
+    const team = await this.listOiEjecutivos();
+    const teamByKey = new Map(team.map((e) => [e.userId.toLowerCase(), e]));
+
+    for (const [svKey, metrics] of svMetrics) {
+      if (metrics.facturadoConIgv <= 0 && metrics.evaluaciones <= 0) continue;
+      if (knownSvKeys.has(svKey)) continue;
+
+      const fromTeam = teamByKey.get(svKey);
+      const userName = fromTeam?.userName
+        ?? await this.oiSvInvoiceService.lookupDisplayName(svKey)
+        ?? svKey;
+
+      await this.recordRepo.save(this.recordRepo.create({
+        period,
+        userId: svKey,
+        userName,
+        campusId: period.campusId ?? null,
+        campusNombre: period.campusId != null
+          ? this.commissionCampusNombre(period.campusId)
+          : null,
+        factorEspecial: 1,
+        estado: 'PENDIENTE',
+      }));
+      knownSvKeys.add(svKey);
+    }
+  }
+
+  /**
+   * Facturación OI + evaluaciones desde BD SV (invoice_result_body / reservation).
+   * Fuente única — no depende de HTTP localhost ni cache.
+   */
   private async fetchOiMetricsFromSv(
     year: number,
     month: number,
     campusId?: number | null,
-  ): Promise<{ map: Map<string, OiCrmUserMetrics>; source: string; svError: string | null }> {
-    const { start, end } = this.monthRange(year, month);
-    const map = new Map<string, OiCrmUserMetrics>();
-
-    const addToMap = (
-      username: string,
-      patch: Partial<OiCrmUserMetrics>,
-    ) => {
-      const key = username.trim().toLowerCase();
-      if (!key || key === 'sin_asignar') return;
-      mergeOiCrmMetricsRow(map, key, patch);
-    };
-
-    const processFactRows = (rows: Record<string, unknown>[]) => {
-      for (const row of rows) {
-        const ejecutivoOi = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
-        const facturador = String(row.facturador_username ?? '').trim().toLowerCase();
-        const attrib = (ejecutivoOi && ejecutivoOi !== 'sin_asignar')
-          ? ejecutivoOi
-          : facturador;
-        const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
-        if (!attrib || amountPen <= 0) continue;
-        addToMap(attrib, { facturadoConIgv: amountPen });
-      }
-    };
-
-    const processEvalRows = (rows: Record<string, unknown>[]) => {
-      for (const row of rows) {
-        const ejecutivo = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
-        const evals = Number(row.evaluaciones ?? 1);
-        if (!ejecutivo || ejecutivo === 'sin_asignar') continue;
-        addToMap(ejecutivo, { evaluaciones: evals });
-      }
-    };
-
-    let factRawRows: Record<string, unknown>[] = [];
-    let evaRawRows: Record<string, unknown>[] = [];
-    let svError: string | null = null;
-
-    const filterByCampus = (rows: Record<string, unknown>[]) => {
-      if (campusId == null) return rows;
-      return rows.filter((row) =>
-        this.matchesFilterCampus(Number(row.campus_id), campusId),
-      );
-    };
-
-    // — Intento 1: BD SV directa (invoice_result_body) —
+  ): Promise<{
+    map: Map<string, OiCrmUserMetrics>;
+    source: string;
+    svError: string | null;
+    factRowCount: number;
+    evalGroupCount: number;
+  }> {
     try {
-      let dbFact = await queryOiFacturacionFromSvDb(start, end);
-      let dbEval = await queryOiEvaluacionesFromSvDb(start, end);
-      const rawFactCount = dbFact.length;
-      dbFact = filterByCampus(dbFact);
-      dbEval = filterByCampus(dbEval);
-      if (dbFact.length > 0 || dbEval.length > 0) {
-        processFactRows(dbFact);
-        processEvalRows(dbEval);
-        this.logger.log(
-          `OI SV-DB ${year}-${month}: ${map.size} ejecutivas, ${dbFact.length}/${rawFactCount} facturas, ${dbEval.length} grupos eval`,
-        );
-        void this.crmControlesService.syncOiFacturacionFromSv().catch((e) =>
-          this.logger.warn(`Re-sync cache OI tras SV-DB: ${e instanceof Error ? e.message : e}`),
-        );
-        return { map, source: 'sv-invoice-db', svError: null };
-      }
-      if (rawFactCount > 0) {
-        this.logger.warn(
-          `OI SV-DB ${year}-${month}: ${rawFactCount} filas en SV pero 0 tras filtro campus=${campusId ?? 'all'}`,
-        );
-      }
-    } catch (dbErr) {
-      svError = dbErr instanceof Error ? dbErr.message : String(dbErr);
-      this.logger.warn(`OI SV-DB ${year}-${month} falló: ${svError}`);
-    }
-
-    // — Intento 2: SV HTTP —
-    try {
-      const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      let httpFact = await this.svServices.getFacturacionOiFromSv(tokenSv, start, end, campusId ?? undefined);
-      let httpEval = await this.svServices.getEvaluacionesOiFromSv(tokenSv, start, end, campusId ?? undefined);
-      factRawRows = Array.isArray(httpFact) ? httpFact : [];
-      evaRawRows = Array.isArray(httpEval) ? httpEval : [];
-    } catch (err) {
-      const httpErr = err instanceof Error ? err.message : String(err);
-      svError = svError ? `${svError}; HTTP: ${httpErr}` : httpErr;
-      this.logger.warn(`OI SV HTTP ${year}-${month} falló: ${httpErr}`);
-    }
-
-    if (factRawRows.length > 0 || evaRawRows.length > 0) {
-      processFactRows(factRawRows);
-      processEvalRows(evaRawRows);
-      this.logger.log(
-        `OI SV HTTP ${year}-${month}: ${map.size} ejecutivas, ${factRawRows.length} facturas, ${evaRawRows.length} grupos eval`,
-      );
+      const result = await this.oiSvInvoiceService.fetchMonthMetrics(year, month, campusId ?? undefined);
       void this.crmControlesService.syncOiFacturacionFromSv().catch((e) =>
-        this.logger.warn(`Re-sync cache OI tras HTTP: ${e instanceof Error ? e.message : e}`),
+        this.logger.warn(`Cache OI: ${e instanceof Error ? e.message : e}`),
       );
-      return { map, source: 'sv-http', svError: null };
+      return {
+        map: result.map,
+        source: result.source,
+        svError: null,
+        factRowCount: result.factRowCount,
+        evalGroupCount: result.evalGroupCount,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`OI SV invoice ${year}-${month} falló: ${msg}`);
+      return {
+        map: new Map(),
+        source: 'sin-datos',
+        svError: msg,
+        factRowCount: 0,
+        evalGroupCount: 0,
+      };
     }
-
-    // — Intento 3: cache local (últimos 18 meses) —
-    try {
-      await this.crmControlesService.syncOiFacturacionFromSv();
-    } catch (syncErr) {
-      this.logger.warn(
-        `Sync cache OI falló: ${syncErr instanceof Error ? syncErr.message : syncErr}`,
-      );
-    }
-    const { data: cachedRows, meta } = this.crmControlesService.getOiFacturacionSnapshot();
-    const filteredCache = cachedRows.filter((row) => {
-      const date = this.parseDate(
-        (row.fecha_abono as string) ?? (row.invoice_date as string),
-      );
-      if (!date || !this.inMonth(date, year, month)) return false;
-      if (campusId != null && !this.matchesFilterCampus(Number(row.campus_id), campusId)) return false;
-      return true;
-    });
-
-    if (filteredCache.length > 0) {
-      processFactRows(filteredCache);
-      this.logger.log(
-        `OI cache ${year}-${month}: ${map.size} ejecutivas, ${filteredCache.length} filas (cache desde ${meta.lastSyncAt})`,
-      );
-      return { map, source: 'crm-cache', svError };
-    }
-
-    this.logger.warn(
-      `OI ${year}-${month}: sin datos en SV ni cache. SV error: ${svError ?? 'ninguno'}, cache rows: ${cachedRows.length}`,
-    );
-    return { map, source: 'sin-datos', svError: svError ?? 'Sin filas en SV ni cache' };
   }
 
   /**
@@ -1920,18 +1881,25 @@ export class CommissionsDataService {
 
       await this.ensureOiEjecutivosConfigured(period);
 
+      const {
+        map: svMetrics,
+        source: oiMetricsSource,
+        svError,
+        factRowCount,
+        evalGroupCount,
+      } = await this.fetchOiMetricsFromSv(period.year, period.month, period.campusId);
+
+      await this.ensureOiRecordsFromSvMetrics(period, svMetrics);
+
       const configRecords = await this.recordRepo.find({
         where: { period: { id: periodId } },
         relations: ['period'],
       });
 
       if (configRecords.length === 0) {
-        this.logger.warn(`Período OI ${periodId} sin ejecutivos configurados`);
+        this.logger.warn(`Período OI ${periodId} sin ejecutivos tras sync SV`);
         return this.buildDashboard(periodId);
       }
-
-      const { map: svMetrics, source: oiMetricsSource, svError } =
-        await this.fetchOiMetricsFromSv(period.year, period.month, period.campusId);
 
       const svKeyMap = await this.buildCrmUserSvKeyMap(configRecords.map((r) => r.userId));
 
@@ -1941,8 +1909,8 @@ export class CommissionsDataService {
           ?? rec.userId.trim().toLowerCase();
         const metrics = svMetrics.get(svKey) ?? { facturadoConIgv: 0, evaluaciones: 0 };
         return {
-          userId: rec.userId,
-          userName: rec.userName ?? rec.userId,
+          userId: svKey,
+          userName: rec.userName ?? svKey,
           campusId: rec.campusId ?? period.campusId ?? null,
           campusNombre: rec.campusNombre ?? '',
           montoFacturadoConIgv: metrics.facturadoConIgv,
@@ -1965,21 +1933,37 @@ export class CommissionsDataService {
       await calculateOi(period, periodInput, ejecutivosInput, this.recordRepo);
 
       const facturadoTotal = ejecutivosInput.reduce((s, e) => s + e.montoFacturadoConIgv, 0);
+      const ejecutivasConDatos = ejecutivosInput.filter(
+        (e) => e.montoFacturadoConIgv > 0 || e.cantidadEvaluaciones > 0,
+      ).length;
+
       period.notas = JSON.stringify({
         syncedAt: new Date().toISOString(),
         source: oiMetricsSource,
-        factRowsCount: svMetrics.size,
+        factRowCount,
+        evalGroupCount,
+        ejecutivasConDatos,
         facturadoTotal,
         svError: svError ?? undefined,
       });
       await this.periodRepo.save(period);
 
       this.logger.log(
-        `OI sync ${period.year}-${period.month}: facturado S/ ${facturadoTotal.toFixed(2)}, ${svMetrics.size} claves SV, fuente=${oiMetricsSource}`,
+        `OI sync ${period.year}-${period.month}: ${factRowCount} líneas invoice, facturado S/ ${facturadoTotal.toFixed(2)}, ${ejecutivasConDatos} ejecutivas con datos, fuente=${oiMetricsSource}`,
       );
 
       const dash = await this.buildDashboard(periodId, new Date().toISOString());
-      return { ...dash, dataSource: oiMetricsSource, svError: svError ?? null };
+      return {
+        ...dash,
+        dataSource: oiMetricsSource,
+        svError: svError ?? null,
+        oiSyncStats: {
+          factRowCount,
+          evalGroupCount,
+          ejecutivasConDatos,
+          facturadoTotal,
+        },
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`syncAndCalculateOi ${periodId}: ${msg}`);
@@ -2128,6 +2112,16 @@ export class CommissionsDataService {
     } catch { /* plain text */ }
     const notasSource = notasMeta.source != null ? String(notasMeta.source) : undefined;
     const notasSvError = notasMeta.svError != null ? String(notasMeta.svError) : null;
+    const oiSyncStats = isOi && (
+      notasMeta.factRowCount != null || notasMeta.facturadoTotal != null
+    )
+      ? {
+        factRowCount: Number(notasMeta.factRowCount ?? 0),
+        evalGroupCount: Number(notasMeta.evalGroupCount ?? 0),
+        ejecutivasConDatos: Number(notasMeta.ejecutivasConDatos ?? 0),
+        facturadoTotal: Number(notasMeta.facturadoTotal ?? 0),
+      }
+      : undefined;
 
     return {
       period: {
@@ -2169,6 +2163,7 @@ export class CommissionsDataService {
       syncStats,
       dataSource: notasSource,
       svError: notasSvError,
+      oiSyncStats,
     };
   }
 

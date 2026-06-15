@@ -9,7 +9,7 @@ export function mergeOiCrmMetricsRow(
   userId: string,
   patch: Partial<OiCrmUserMetrics>,
 ): void {
-  const key = userId.trim();
+  const key = userId.trim().toLowerCase();
   if (!key) return;
   const prev = map.get(key) ?? { facturadoConIgv: 0, evaluaciones: 0 };
   map.set(key, {

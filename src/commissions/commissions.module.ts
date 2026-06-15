@@ -10,6 +10,7 @@ import { CommissionCerradoraSedeApoyo } from './commission-cerradora-sede-apoyo.
 import { CommissionsService } from './commissions.service';
 import { CommissionsDataService } from './commissions-data.service';
 import { CommissionsController } from './commissions.controller';
+import { OiSvInvoiceService } from './services/oi-sv-invoice.service';
 import { CrmControlesModule } from '../crm-controles/crm-controles.module';
 import { SvServices } from '../sv-services/sv.services';
 
@@ -27,7 +28,7 @@ import { SvServices } from '../sv-services/sv.services';
     forwardRef(() => CrmControlesModule),
   ],
   controllers: [CommissionsController],
-  providers: [CommissionsService, CommissionsDataService, SvServices],
+  providers: [CommissionsService, CommissionsDataService, OiSvInvoiceService, SvServices],
   exports: [CommissionsService, CommissionsDataService],
 })
 export class CommissionsModule {}
