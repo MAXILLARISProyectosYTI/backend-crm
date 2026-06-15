@@ -12,6 +12,7 @@ import { KpiGerencialModule } from 'src/kpi-gerencial/kpi-gerencial.module';
 import { AssignmentQueueStateModule } from 'src/assignment-queue-state/assignment-queue-state.module';
 import { RoleModule } from 'src/role/role.module';
 import { User } from 'src/user/user.entity';
+import { CommissionsModule } from 'src/commissions/commissions.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { User } from 'src/user/user.entity';
     forwardRef(() => KpiGerencialModule),
     AssignmentQueueStateModule,
     RoleModule,
+    forwardRef(() => CommissionsModule),
   ],
   controllers: [CrmControlesController],
   providers: [

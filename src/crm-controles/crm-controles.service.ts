@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -10,7 +10,7 @@ import type {
   CrmControlesPatientRow,
   CrmControlesPacientesResponse,
 } from './crm-controles.types';
-import { queryOiFacturacionFromSvDb } from '../commissions/utils/oi-sv-invoice.util';
+import { OiSvInvoiceService } from '../commissions/services/oi-sv-invoice.service';
 
 @Injectable()
 export class CrmControlesService implements OnModuleInit {
@@ -64,6 +64,8 @@ export class CrmControlesService implements OnModuleInit {
     @InjectRepository(User) private readonly userRepository: Repository<User>,
     @Optional() private readonly notifService: NotificacionesService,
     @Optional() private readonly assignmentService: CrmControlesAssignmentService,
+    @Optional() @Inject(forwardRef(() => OiSvInvoiceService))
+    private readonly oiSvInvoiceService?: OiSvInvoiceService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -384,7 +386,10 @@ export class CrmControlesService implements OnModuleInit {
     const untilStr = until.toISOString().slice(0, 10);
 
     try {
-      const rows = await queryOiFacturacionFromSvDb(sinceStr, untilStr);
+      if (!this.oiSvInvoiceService) {
+        throw new Error('OiSvInvoiceService no disponible');
+      }
+      const rows = await this.oiSvInvoiceService.queryFacturacionRows(sinceStr, untilStr);
       this.oiFacturacion = rows;
       this.oiFacturacionMeta = {
         lastSyncAt: new Date().toISOString(),
