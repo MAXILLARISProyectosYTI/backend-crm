@@ -191,6 +191,15 @@ export class CommissionsController {
     return this.service.syncOiPeriod(id);
   }
 
+  /** Diagnóstico: prueba conexión BD SV invoice (prod vs dev). */
+  @Get('oi/sv-ping')
+  pingOiSv(
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+  ) {
+    return this.service.pingOiSvDatabase(year, month);
+  }
+
   @Get('summary')
   getSummaryByAreaAndMonth(
     @Query('area') area: string,

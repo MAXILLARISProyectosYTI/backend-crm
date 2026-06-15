@@ -16,6 +16,7 @@ import { calculateCierreTto, type ContractSvRow } from './engines/cierre-tto.eng
 import { calculateOi, OI_PORCENTAJE_COMISION_TTOS, type OiExecutivoInput, type OiPeriodInput } from './engines/oi.engine';
 import { calculateControles, type ControlesEjecutivoInput, type ControlesPeriodInput } from './engines/controles.engine';
 import { CommissionsDataService } from './commissions-data.service';
+import { OiSvInvoiceService } from './services/oi-sv-invoice.service';
 
 @Injectable()
 export class CommissionsService {
@@ -33,6 +34,7 @@ export class CommissionsService {
     @InjectRepository(CommissionClosureTag)
     private readonly tagRepo: Repository<CommissionClosureTag>,
     private readonly dataService: CommissionsDataService,
+    private readonly oiSvInvoiceService: OiSvInvoiceService,
   ) {}
 
   // ── Catálogo ──────────────────────────────────────────────────────────────
@@ -282,6 +284,10 @@ export class CommissionsService {
 
   syncOiPeriod(periodId: number) {
     return this.dataService.syncAndCalculateOi(periodId);
+  }
+
+  pingOiSvDatabase(year: number, month: number) {
+    return this.oiSvInvoiceService.pingMonth(year, month);
   }
 
   async getDashboardByPeriodId(periodId: number) {

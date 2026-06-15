@@ -29,6 +29,6 @@ import { SvServices } from '../sv-services/sv.services';
   ],
   controllers: [CommissionsController],
   providers: [CommissionsService, CommissionsDataService, OiSvInvoiceService, SvServices],
-  exports: [CommissionsService, CommissionsDataService],
+  exports: [CommissionsService, CommissionsDataService, OiSvInvoiceService],
 })
 export class CommissionsModule {}

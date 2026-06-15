@@ -1,9 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
 import {
   mergeOiCrmMetricsRow,
   type OiCrmUserMetrics,
 } from '../utils/oi-crm-metrics.util';
+import {
+  type SvDatabaseConfig,
+  resolveSvDatabaseConfig,
+  isCrmProductionEnv,
+} from '../../config/sv-database.config';
 
 export interface OiSvMonthMetrics {
   map: Map<string, OiCrmUserMetrics>;
@@ -14,16 +20,39 @@ export interface OiSvMonthMetrics {
 
 /** Consulta directa a BD SV (invoice_result_*) — fuente única para comisiones OI. */
 @Injectable()
-export class OiSvInvoiceService {
+export class OiSvInvoiceService implements OnModuleInit {
   private readonly logger = new Logger(OiSvInvoiceService.name);
+  private svConfig: SvDatabaseConfig;
+
+  constructor(private readonly configService: ConfigService) {
+    this.svConfig = this.configService.get<SvDatabaseConfig>('svDatabase')
+      ?? resolveSvDatabaseConfig();
+  }
+
+  onModuleInit(): void {
+    const { host, port, database, username } = this.svConfig;
+    const envLabel = isCrmProductionEnv() ? 'production' : 'development';
+    this.logger.log(
+      `OI invoice SV: ${host}:${port}/${database} (user=${username}, env=${envLabel})`,
+    );
+  }
+
+  getSvConfig(): SvDatabaseConfig {
+    return this.svConfig;
+  }
 
   private createClient(): Client {
+    const cfg = this.svConfig;
+    if (!cfg.password) {
+      throw new Error('No hay password para BD SV — revisa DB_PASSWORD o SV_DB_PASSWORD');
+    }
     return new Client({
-      host: process.env.SV_DB_HOST || '161.132.211.235',
-      port: parseInt(process.env.SV_DB_PORT || '5501', 10),
-      user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
-      password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
-      database: process.env.SV_DB_DATABASE || 'sv_dev',
+      host: cfg.host,
+      port: cfg.port,
+      user: cfg.username,
+      password: cfg.password,
+      database: cfg.database,
+      connectionTimeoutMillis: 15000,
     });
   }
 
@@ -34,7 +63,29 @@ export class OiSvInvoiceService {
     return { start, end };
   }
 
-  /** Facturación del mes: evaluaciones OI + planes de tratamiento (excl. controles OFM/MARPE). */
+  /** Prueba conexión y devuelve conteo de líneas invoice del mes (diagnóstico prod). */
+  async pingMonth(year: number, month: number): Promise<{
+    ok: boolean;
+    host: string;
+    database: string;
+    factRowCount: number;
+    error?: string;
+  }> {
+    const { host, database } = this.svConfig;
+    try {
+      const { factRowCount } = await this.fetchMonthMetrics(year, month);
+      return { ok: true, host, database, factRowCount };
+    } catch (err) {
+      return {
+        ok: false,
+        host,
+        database,
+        factRowCount: 0,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   async queryFacturacionRows(
     since: string,
     until: string,
@@ -123,7 +174,6 @@ export class OiSvInvoiceService {
     }
   }
 
-  /** Evaluaciones OI realizadas (reservas) en el mes. */
   async queryEvaluacionesRows(
     since: string,
     until: string,
@@ -195,10 +245,6 @@ export class OiSvInvoiceService {
     }
   }
 
-  /**
-   * Atribución OI: quien facturó en invoice (billing_user) tiene prioridad;
-   * si no hay facturador, usa ejecutivo OI del paciente.
-   */
   aggregateMetrics(
     factRows: Record<string, unknown>[],
     evalRows: Record<string, unknown>[],
@@ -243,7 +289,7 @@ export class OiSvInvoiceService {
     ]);
     const map = this.aggregateMetrics(factRows, evalRows);
     this.logger.log(
-      `OI invoice ${year}-${month}: ${factRows.length} líneas factura, ${evalRows.length} grupos eval, ${map.size} ejecutivas`,
+      `OI invoice ${year}-${month} @ ${this.svConfig.database}: ${factRows.length} líneas, ${map.size} ejecutivas`,
     );
     return {
       map,
