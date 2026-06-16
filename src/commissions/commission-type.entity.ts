@@ -12,7 +12,7 @@ export class CommissionType {
   description: string;
 
   @Column({ type: 'varchar', length: 30 })
-  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES';
+  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER';
 
   @Column({ type: 'varchar', length: 30, nullable: true })
   tratamiento: string | null;

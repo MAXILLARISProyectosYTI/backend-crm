@@ -1858,6 +1858,94 @@ export class SvServices {
     }
   }
 
+  async getCallCenterMetricsFromSv(
+    tokenSv: string,
+    since: string,
+    until: string,
+    campusId?: number,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const params = new URLSearchParams({ since, until });
+    if (campusId != null) params.set('campusId', String(campusId));
+    const url = `${base}/union_doctor_patient_attention/call-center-metrics?${params.toString()}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getCallCenterMetricsFromSv', url, error);
+      throw new BadRequestException(
+        `Error al obtener métricas Call Center desde SV — url: ${url}`,
+      );
+    }
+  }
+
+  async getEvaluacionesOiDetalleFromSv(
+    tokenSv: string,
+    since: string,
+    until: string,
+    campusId?: number,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const params = new URLSearchParams({ since, until });
+    if (campusId != null) params.set('campusId', String(campusId));
+    const url = `${base}/union_doctor_patient_attention/evaluaciones-oi-detalle?${params.toString()}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<unknown>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data;
+      if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+      return [];
+    } catch (error) {
+      console.error('Error getEvaluacionesOiDetalleFromSv', url, error);
+      return [];
+    }
+  }
+
+  async getCallCenterExportLinesFromSv(
+    tokenSv: string,
+    since: string,
+    until: string,
+    campusId?: number,
+  ): Promise<{ vendidas: Record<string, unknown>[]; asistidas: Record<string, unknown>[] }> {
+    if (!this.URL_BACK_SV) {
+      throw new BadRequestException('URL_BACK_SV no configurada');
+    }
+    const base = this.URL_BACK_SV.replace(/\/$/, '');
+    const params = new URLSearchParams({ since, until });
+    if (campusId != null) params.set('campusId', String(campusId));
+    const url = `${base}/union_doctor_patient_attention/call-center-export-lines?${params.toString()}`;
+    const timeout = Number(process.env.SV_CRM_CONTROLES_TIMEOUT_MS ?? 120000);
+    try {
+      const response = await axios.get<{ vendidas?: unknown[]; asistidas?: unknown[] }>(url, {
+        headers: { Authorization: `Bearer ${tokenSv}` },
+        timeout,
+      });
+      const raw = response.data ?? {};
+      return {
+        vendidas: Array.isArray(raw.vendidas) ? raw.vendidas as Record<string, unknown>[] : [],
+        asistidas: Array.isArray(raw.asistidas) ? raw.asistidas as Record<string, unknown>[] : [],
+      };
+    } catch (error) {
+      console.error('Error getCallCenterExportLinesFromSv', url, error);
+      return { vendidas: [], asistidas: [] };
+    }
+  }
+
   async getReprogramacionesControlesFromSv(
     tokenSv: string,
   ): Promise<Record<string, unknown>[]> {

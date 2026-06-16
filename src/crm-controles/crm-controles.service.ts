@@ -386,6 +386,24 @@ export class CrmControlesService implements OnModuleInit {
     const untilStr = until.toISOString().slice(0, 10);
 
     try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getFacturacionOiFromSv(tokenSv, sinceStr, untilStr);
+      this.oiFacturacion = Array.isArray(rows) ? rows : [];
+      this.oiFacturacionMeta = {
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        source: 'sv-http',
+      };
+      this.logger.log(
+        `CRM OI facturación (HTTP): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`,
+      );
+      return;
+    } catch (httpErr) {
+      const httpMsg = httpErr instanceof Error ? httpErr.message : String(httpErr);
+      this.logger.warn(`CRM OI: HTTP falló (${httpMsg}), intento BD`);
+    }
+
+    try {
       if (!this.oiSvInvoiceService) {
         throw new Error('OiSvInvoiceService no disponible');
       }
@@ -402,20 +420,9 @@ export class CrmControlesService implements OnModuleInit {
       return;
     } catch (dbErr) {
       const dbMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
-      this.logger.warn(`CRM OI: BD SV falló (${dbMsg}), intento HTTP`);
-    }
-
-    try {
-      const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const rows = await this.svServices.getFacturacionOiFromSv(tokenSv, sinceStr, untilStr);
-      this.oiFacturacion = Array.isArray(rows) ? rows : [];
-      this.oiFacturacionMeta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv-http' };
-      this.logger.log(`CRM OI facturación (HTTP): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.oiFacturacionMeta = { ...this.oiFacturacionMeta, lastError: msg };
-      this.logger.error(`CRM OI: error sync facturación — ${msg}`);
-      throw err;
+      this.logger.warn(`CRM OI: BD SV falló (${dbMsg})`);
+      this.oiFacturacionMeta = { ...this.oiFacturacionMeta, lastError: dbMsg };
+      throw dbErr;
     }
   }
 

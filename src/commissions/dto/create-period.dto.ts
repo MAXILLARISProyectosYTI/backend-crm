@@ -12,8 +12,8 @@ export class CreatePeriodDto {
   @Max(12)
   month: number;
 
-  @IsEnum(['CIERRE_TTO', 'OI', 'CONTROLES'])
-  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES';
+  @IsEnum(['CIERRE_TTO', 'OI', 'CONTROLES', 'CALL_CENTER'])
+  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER';
 
   @IsOptional()
   @IsInt()

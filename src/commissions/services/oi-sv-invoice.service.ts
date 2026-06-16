@@ -221,7 +221,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       INNER JOIN clinic_history ch ON ch.id = r.patient_id
       LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
       LEFT JOIN facturador_eval fe ON fe.id_clinic_history = ch.id
-      WHERE r.state <> 0
+      WHERE r.state IN (3, 4)
         AND r.tariff_id IN (
           SELECT t3.id FROM tariff t3 WHERE t3."name" ILIKE '%Evalu%'
             AND COALESCE(t3.id, 0) NOT IN (58, 192, 198)
