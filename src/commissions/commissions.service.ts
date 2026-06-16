@@ -47,6 +47,23 @@ export class CommissionsService {
   // ── Períodos ──────────────────────────────────────────────────────────────
 
   async createPeriod(dto: CreatePeriodDto): Promise<CommissionPeriod> {
+    try {
+      return await this.createPeriodInternal(dto);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('commission_period_area_check') || msg.includes('CALL_CENTER')) {
+        this.logger.error(
+          `createPeriod ${dto.area} ${dto.year}-${dto.month}: falta migración CALL_CENTER. Ejecuta: npm run migration:run`,
+        );
+        throw new Error(
+          'El área CALL_CENTER no está habilitada en la base de datos. Ejecuta la migración 1749420000000-CommissionCallCenterArea en el backend CRM.',
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async createPeriodInternal(dto: CreatePeriodDto): Promise<CommissionPeriod> {
     const existing = await this.periodRepo.findOne({
       where: {
         year: dto.year,
@@ -87,8 +104,10 @@ export class CommissionsService {
       nEjecutivas: dto.nEjecutivas ?? null,
       porcentajeComision: dto.area === 'OI' ? OI_PORCENTAJE_COMISION_TTOS : null,
       dbTotal: dto.dbTotal ?? null,
-      objEvaluaciones: dto.objEvaluaciones ?? (dto.area === 'OI' ? 20 : null),
-      notas: dto.notas ?? null,
+      objEvaluaciones: dto.objEvaluaciones ?? (dto.area === 'OI' ? 20 : dto.area === 'CALL_CENTER' ? 25 : null),
+      notas: dto.notas ?? (dto.area === 'CALL_CENTER'
+        ? JSON.stringify({ config: { minEvaVendidas: 25, minEvaAsistidas: 25 } })
+        : null),
     });
     const saved = await this.periodRepo.save(period);
 
@@ -274,7 +293,7 @@ export class CommissionsService {
 
   // ── Dashboard KPI (meta + cálculo automático) ─────────────────────────────
 
-  getDashboard(area: 'CIERRE_TTO' | 'OI' | 'CONTROLES', year: number, month: number, campusId?: number) {
+  getDashboard(area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER', year: number, month: number, campusId?: number) {
     return this.dataService.getDashboardByAreaMonth(area, year, month, campusId);
   }
 
@@ -284,6 +303,10 @@ export class CommissionsService {
 
   syncOiPeriod(periodId: number) {
     return this.dataService.syncAndCalculateOi(periodId);
+  }
+
+  syncCallCenterPeriod(periodId: number) {
+    return this.dataService.syncAndCalculateCallCenter(periodId);
   }
 
   pingOiSvDatabase(year: number, month: number) {
@@ -299,6 +322,9 @@ export class CommissionsService {
       if (period.area === 'OI') {
         return await this.dataService.getOiDashboard(periodId);
       }
+      if (period.area === 'CALL_CENTER') {
+        return await this.dataService.getCallCenterDashboard(periodId);
+      }
       if (period.area === 'CIERRE_TTO') {
         return await this.dataService.getCierreTtoDashboard(periodId);
       }
@@ -313,6 +339,14 @@ export class CommissionsService {
 
   listCerradorasEjecutivos() {
     return this.dataService.listCerradorasEjecutivos();
+  }
+
+  listVentasStaffCatalog(area?: 'CALL_CENTER' | 'OI' | 'ALL') {
+    return this.dataService.listVentasStaffCatalog(area ?? 'ALL');
+  }
+
+  getExportDetail(periodId: number) {
+    return this.dataService.getExportDetail(periodId);
   }
 
   async listSedeApoyo(periodId?: number) {
