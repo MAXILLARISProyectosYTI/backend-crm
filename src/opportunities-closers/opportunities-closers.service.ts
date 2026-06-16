@@ -91,10 +91,50 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     }
   }
 
+  /** Una sola oportunidad activa por cotización (la de mayor avance). */
+  private appendCanonicalQuotationDedupe(qb: ReturnType<Repository<OpportunitiesClosers>['createQueryBuilder']>) {
+    qb.andWhere(`op.id IN (
+      SELECT deduped.id FROM (
+        SELECT op_d.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(NULLIF(TRIM(op_d.cotizacion_id), ''), op_d.id)
+            ORDER BY
+              CASE WHEN LOWER(TRIM(op_d.status)) IN ('win', 'ganado', 'cierre ganado') THEN 0 ELSE 1 END,
+              CASE WHEN op_d.contract_id IS NOT NULL AND TRIM(op_d.contract_id) <> '' THEN 0 ELSE 1 END,
+              CASE WHEN op_d.factura_id IS NOT NULL AND TRIM(op_d.factura_id) <> '' THEN 0 ELSE 1 END,
+              op_d.created_at ASC
+          ) AS rn
+        FROM c_oportunidad_cerradora op_d
+        WHERE op_d.deleted = false
+      ) deduped
+      WHERE deduped.rn = 1
+    )`);
+  }
+
+  async findOpportunityCloserByQuotationId(quotationId: string): Promise<OpportunitiesClosers | null> {
+    const normalized = quotationId?.trim();
+    if (!normalized) return null;
+    return this.opportunitiesClosersRepository.findOne({
+      where: { cotizacionId: normalized, deleted: false },
+    });
+  }
+
   async createOpportunityCloser(payload: Partial<OpportunitiesClosers>) {
+    const cotizacionId = payload.cotizacionId?.trim();
+    if (cotizacionId) {
+      const existing = await this.findOpportunityCloserByQuotationId(cotizacionId);
+      if (existing) {
+        this.logger.warn(
+          `[createOpportunityCloser] Cotización ${cotizacionId} ya tiene oportunidad cerradora id=${existing.id}; no se crea duplicado.`,
+        );
+        return existing;
+      }
+    }
+
     const opportunity = this.opportunitiesClosersRepository.create({
       id: payload.id ?? this.idGeneratorService.generateId(),
       ...payload,
+      cotizacionId: cotizacionId ?? payload.cotizacionId,
       createdAt: payload.createdAt ?? new Date(),
     });
 
@@ -116,6 +156,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     const contractType = options?.contractType ?? 'todos';
     const effectiveLimit = forPacientesPanel ? Math.min(limit, 5000) : limit;
     const docusealCutover = getDocusealProductionCutover();
+    let searchFallbackCotizacionIds: string[] | undefined;
 
     const buildQuery = () => {
       const qb = this.opportunitiesClosersRepository
@@ -194,6 +235,12 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
           qb.andWhere('op.createdAt <= :dateTo', { dateTo: new Date(`${dateTo}T23:59:59`) });
         }
       }
+      if (searchFallbackCotizacionIds?.length) {
+        qb.andWhere('op.cotizacionId IN (:...searchFallbackCotizacionIds)', { searchFallbackCotizacionIds });
+      }
+      if (!forPacientesPanel) {
+        this.appendCanonicalQuotationDedupe(qb);
+      }
       return qb;
     };
 
@@ -246,6 +293,12 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
           const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
           await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
           inserted++;
+        }
+        if (inserted === 0 && skippedExists > 0) {
+          searchFallbackCotizacionIds = [...byQuotationId.keys()];
+          this.logger.log(
+            `[findAll] Cotizaciones ya en cola pero sin match por nombre; fallback por cotizacion_id: ${searchFallbackCotizacionIds.join(', ')}`,
+          );
         }
         total = await buildQuery().getCount();
         this.logger.log(`[findAll] Resumen: insertados=${inserted}, omitidos_ya_en_cola=${skippedExists}, omitidos_cotizacion_id_inválido=${skippedBadQuotationId}, total después de insertar: ${total}`);
@@ -993,10 +1046,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
   }
 
   async existsOpportunityCloserByQuotationId(quotationId: string) {
-    const opportunity = await this.opportunitiesClosersRepository.findOne({
-      where: { cotizacionId: quotationId },
-    });
-    return opportunity ? true : false;
+    return !!(await this.findOpportunityCloserByQuotationId(quotationId));
   }
 
   async getLastOpportunity(){
