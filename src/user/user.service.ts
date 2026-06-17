@@ -948,10 +948,11 @@ export class UserService {
     const userRoles = await this.roleService.getCurrentRoleUsers(userId);
     const hasTeamLeaderRole = userRoles.some(ru => ru.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
     const isTeamLeaderArequipa = teams.some(team => team.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
-    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA]);
+    const isTeamLeaderTrujillo = teams.some(team => team.team_id === TEAMS_IDS.TEAM_TRUJILLO) && hasTeamLeaderRole;
+    const allUsers = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA, TEAMS_IDS.TEAM_TRUJILLO]);
 
     if(isOwnerOrTI || user.type === 'admin') {
-      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA];
+      const teamsUsers = [TEAMS_IDS.EJ_COMERCIAL, TEAMS_IDS.EJ_COMERCIAL_OI, TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_FIORELLA, TEAMS_IDS.TEAM_VERONICA, TEAMS_IDS.TEAM_MICHELL, TEAMS_IDS.TEAM_AREQUIPA, TEAMS_IDS.TEAM_TRUJILLO];
       const usersByTeam = allUsers.filter(user => teamsUsers.some(team => user.team_id === team));
       return usersByTeam;
     }
@@ -1020,6 +1021,23 @@ export class UserService {
             user_id: userId,
             user_name: user.userName || '',
             team_id: TEAMS_IDS.TEAM_AREQUIPA,
+            team_name: userTeam.team_name,
+          });
+        }
+      }
+      return filteredUsers;
+    }
+
+    if (isTeamLeaderTrujillo) {
+      const filteredUsers = allUsers.filter(u => u.team_id === TEAMS_IDS.TEAM_TRUJILLO);
+      const userInList = filteredUsers.some(u => u.user_id === userId);
+      if (!userInList) {
+        const userTeam = teams.find(t => t.team_id === TEAMS_IDS.TEAM_TRUJILLO);
+        if (userTeam?.team_name) {
+          filteredUsers.push({
+            user_id: userId,
+            user_name: user.userName || '',
+            team_id: TEAMS_IDS.TEAM_TRUJILLO,
             team_name: userTeam.team_name,
           });
         }
