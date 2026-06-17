@@ -1511,6 +1511,7 @@ export class OpportunityService {
     const roles = (userWithRoles as { roles?: { roleId?: string }[] }).roles ?? [];
     const hasTeamLeaderRole = roles.some(r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
     const isTeamLeaderArequipa = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
+    const isTeamLeaderTrujillo = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_TRUJILLO) && hasTeamLeaderRole;
     
     if (isTeamLeader) {
       if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA)) {
@@ -1526,6 +1527,9 @@ export class OpportunityService {
     } else if (isTeamLeaderArequipa) {
       team = TEAMS_IDS.TEAM_AREQUIPA;
       users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
+    } else if (isTeamLeaderTrujillo) {
+      team = TEAMS_IDS.TEAM_TRUJILLO;
+      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_TRUJILLO]);
     }
 
 
@@ -1542,7 +1546,7 @@ export class OpportunityService {
       if (isTIorOwner || isAdmin || isAssistent) {
         // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
         // Solo mantiene el filtro de deleted = false que ya está aplicado
-      } else if (isTeamLeader || isTeamLeaderArequipa) {
+      } else if (isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo) {
         // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
         const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
         if (!userIds.includes(userRequest)) {
@@ -2569,9 +2573,10 @@ export class OpportunityService {
     if (validTeamsGlobal.some(t => teams.some(team => team.team_id === t)))
       return true;
 
-    // Equipo Arequipa: solo es "for refer" si tiene rol Team Leader Comercial (no todos los del equipo)
+    // Equipo Arequipa / Trujillo: solo es "for refer" si tiene rol Team Leader Comercial
     const isInArequipa = teams.some(team => team.team_id === TEAMS_IDS.TEAM_AREQUIPA);
-    if (isInArequipa) {
+    const isInTrujillo = teams.some(team => team.team_id === TEAMS_IDS.TEAM_TRUJILLO);
+    if (isInArequipa || isInTrujillo) {
       const user = await this.userService.findOne(userId);
       const roles = (user as { roles?: { roleId?: string }[] }).roles ?? [];
       const hasTeamLeaderRole = roles.some(
