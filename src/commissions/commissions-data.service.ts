@@ -3606,6 +3606,7 @@ export class CommissionsDataService {
         porcentajeComisionOi: isCierre
           ? Number(period.porcentajeComisionOi ?? CERRADORAS_OI_PORCENTAJE_DEFAULT)
           : null,
+        notas: period.notas ?? null,
       },
       facturacionGrupalSinIgv: Math.round(facturacionGrupalSinIgv * 100) / 100,
       porcentajeGrupal: Math.round(porcentajeGrupal * 10000) / 10000,
