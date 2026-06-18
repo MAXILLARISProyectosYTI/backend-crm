@@ -28,6 +28,7 @@ import { FilesService } from 'src/files/files.service';
 import { UpdateMeetingDto } from 'src/meeting/dto/update.dto';
 import { ENUM_TARGET_TYPE } from 'src/action-history/dto/enum-target-type';
 import { EnumCodeFlow } from './dto/enumCodeManage';
+import { isApneaCourtesyWindowActive } from './utils/apneaCourtesyWindow';
 import { CampaignService } from 'src/campaign/campaign.service';
 import {
   PatientIsNewCrmResponse,
@@ -2763,6 +2764,34 @@ export class OpportunityService {
     }
 
     return redirectResponse;
+  }
+
+  async marcarApneaCortesiaTomada(opportunityId: string): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
+    if (!isApneaCourtesyWindowActive()) {
+      throw new BadRequestException('La promoción de apnea de cortesía no está activa en este momento');
+    }
+
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false },
+    });
+    if (!opportunity) {
+      throw new NotFoundException('No se encontró la oportunidad');
+    }
+
+    if (opportunity.cSubCampaignId !== CAMPAIGNS_IDS.APNEA && opportunity.cSubCampaignId !== CAMPAIGNS_IDS.OFM) {
+      throw new BadRequestException('La promoción de apnea de cortesía solo aplica a oportunidades OFM o APNEA');
+    }
+
+    if (opportunity.cApneaCortesiaTomada) {
+      return { ok: true, cApneaCortesiaTomada: true };
+    }
+
+    await this.opportunityRepository.update(
+      { id: opportunityId },
+      { cApneaCortesiaTomada: true, modifiedAt: new Date() },
+    );
+
+    return { ok: true, cApneaCortesiaTomada: true };
   }
 
 
