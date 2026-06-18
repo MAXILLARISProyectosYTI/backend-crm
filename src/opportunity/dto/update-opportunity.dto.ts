@@ -285,6 +285,14 @@ export class UpdateOpportunityDto {
   cCampaign1Id?: string;
 
   @IsOptional()
+  @IsBoolean()
+  cApneaCortesiaTomada?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  cApneaCortesiaEntregada?: boolean;
+
+  @IsOptional()
   @IsDateString()
   createdAt?: string;
 
