@@ -309,8 +309,8 @@ export class CommissionsService {
     return this.dataService.syncAndCalculateCallCenter(periodId);
   }
 
-  pingOiSvDatabase(year: number, month: number) {
-    return this.oiSvInvoiceService.pingMonth(year, month);
+  pingOiSvDatabase(year: number, month: number, campusId?: number) {
+    return this.dataService.diagnoseOiSv(year, month, campusId ?? null);
   }
 
   async getDashboardByPeriodId(periodId: number) {

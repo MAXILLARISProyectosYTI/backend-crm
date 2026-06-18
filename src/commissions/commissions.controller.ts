@@ -213,8 +213,10 @@ export class CommissionsController {
   pingOiSv(
     @Query('year', ParseIntPipe) year: number,
     @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
   ) {
-    return this.service.pingOiSvDatabase(year, month);
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.pingOiSvDatabase(year, month, campus);
   }
 
   @Get('summary')
