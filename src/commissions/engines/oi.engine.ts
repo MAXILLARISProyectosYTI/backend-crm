@@ -27,6 +27,47 @@ export interface OiPeriodInput {
   metaEvaluaciones: number;
   /** Total evaluaciones del equipo en el período */
   totalEvaluacionesEquipo: number;
+  /** Config desde BD (notas.config): tarifas por evaluación y bono grupal */
+  config?: OiConfig;
+}
+
+export interface OiConfig {
+  /** S/ por evaluación facturada (default 10) */
+  comisionPorEva: number;
+  /** Mínimo evaluaciones para pasar a tarifa OFM superior (default 20) */
+  minEvaParaTarifaOfm: number;
+  /** S/ por evaluación cuando supera el umbral mínimo (default 10, puede diferir) */
+  comisionPorEvaOfm: number;
+  /** Bono grupal en S/ cuando el equipo alcanza ≥80% de la meta de evaluaciones (default 400) */
+  bonoEvaluacionesAsistidas: number;
+  /** Umbral mínimo de facturación como % de la meta para activar bono grupal de evals (default 0.8) */
+  umbralBonoGrupalEvas: number;
+}
+
+export const DEFAULT_OI_CONFIG: OiConfig = {
+  comisionPorEva: 10,
+  minEvaParaTarifaOfm: 20,
+  comisionPorEvaOfm: 10,
+  bonoEvaluacionesAsistidas: 400,
+  umbralBonoGrupalEvas: 0.8,
+};
+
+/** Lee config OI desde period.notas preservando sync metadata. */
+export function parseOiConfig(period: CommissionPeriod): OiConfig {
+  if (!period.notas) return { ...DEFAULT_OI_CONFIG };
+  try {
+    const parsed = JSON.parse(period.notas) as { config?: Partial<OiConfig> };
+    const cfg = parsed.config ?? {};
+    return {
+      comisionPorEva:           cfg.comisionPorEva           ?? DEFAULT_OI_CONFIG.comisionPorEva,
+      minEvaParaTarifaOfm:      cfg.minEvaParaTarifaOfm      ?? DEFAULT_OI_CONFIG.minEvaParaTarifaOfm,
+      comisionPorEvaOfm:        cfg.comisionPorEvaOfm        ?? DEFAULT_OI_CONFIG.comisionPorEvaOfm,
+      bonoEvaluacionesAsistidas: cfg.bonoEvaluacionesAsistidas ?? DEFAULT_OI_CONFIG.bonoEvaluacionesAsistidas,
+      umbralBonoGrupalEvas:     cfg.umbralBonoGrupalEvas     ?? DEFAULT_OI_CONFIG.umbralBonoGrupalEvas,
+    };
+  } catch {
+    return { ...DEFAULT_OI_CONFIG };
+  }
 }
 
 export interface OiResult {
@@ -48,17 +89,15 @@ const logger = new Logger('OiEngine');
 /** Porcentaje fijo OI — no depende de cantidad de ejecutivas */
 export const OI_PORCENTAJE_COMISION_TTOS = 0.035;
 
-const COMISION_FIJA_POR_EVA_OI = 10;
-const COMISION_POR_EVA_OFM = 10;
-const MIN_EVA_PARA_TARIFA_OFM = 20;
-const BONO_EVALUACIONES_ASISTIDAS = 400;
-
 export async function calculateOi(
   period: CommissionPeriod,
   periodInput: OiPeriodInput,
   ejecutivos: OiExecutivoInput[],
   recordRepo: Repository<CommissionRecord>,
 ): Promise<OiResult[]> {
+  // Parámetros de tarifa desde BD (notas.config) con fallback a defaults
+  const cfg: OiConfig = periodInput.config ?? parseOiConfig(period);
+
   const {
     montoObjetivoConIgv,
     minimoFacturadoConIgv,
@@ -72,7 +111,9 @@ export async function calculateOi(
   const porcentajeCumplimientoEvas = metaEvaluaciones > 0
     ? totalEvaluacionesEquipo / metaEvaluaciones
     : 0;
-  const bonoGrupal = porcentajeCumplimientoEvas >= 0.8 ? BONO_EVALUACIONES_ASISTIDAS : 0;
+  const bonoGrupal = porcentajeCumplimientoEvas >= cfg.umbralBonoGrupalEvas
+    ? cfg.bonoEvaluacionesAsistidas
+    : 0;
 
   const results: OiResult[] = [];
 
@@ -86,9 +127,10 @@ export async function calculateOi(
       ? Math.round(diferencial * pct * 100) / 100
       : 0;
 
-    const tarifaEva = eje.cantidadEvaluaciones >= MIN_EVA_PARA_TARIFA_OFM
-      ? COMISION_POR_EVA_OFM
-      : COMISION_FIJA_POR_EVA_OI;
+    // Tarifa por evaluación: si supera el umbral usa la tarifa OFM (puede ser distinta)
+    const tarifaEva = eje.cantidadEvaluaciones >= cfg.minEvaParaTarifaOfm
+      ? cfg.comisionPorEvaOfm
+      : cfg.comisionPorEva;
     const comisionEvaluaciones = eje.cantidadEvaluaciones * tarifaEva;
     const comisionTotal = comisionTtos + comisionEvaluaciones + bonoGrupal;
 
