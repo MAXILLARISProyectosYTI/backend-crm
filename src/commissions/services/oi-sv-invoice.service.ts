@@ -128,7 +128,7 @@ export class OiSvInvoiceService implements OnModuleInit {
           ELSE irb.amount
         END                            AS amount_pen,
         ch.campus                      AS campus_id,
-        LOWER(TRIM(ej.ejecutivo_oi))   AS ejecutivo_oi,
+        LOWER(TRIM(COALESCE(ej.ejecutivo_oi, u_bill.username, u_so.username, 'sin_asignar'))) AS ejecutivo_oi,
         LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS facturador_username,
         irb.tariff_id,
         t.name                         AS tipo_arancel
@@ -140,7 +140,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
       LEFT JOIN tariff t ON t.id = irb.tariff_id
       LEFT JOIN coin c2 ON c2.id = irb.id_currency
-      INNER JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+      LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
       LEFT JOIN users u_so ON u_so.id = so.user_created
       LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
       WHERE COALESCE(t."name", '') NOT ILIKE '%Control OFM%'
@@ -182,8 +182,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       campusFilter = ` AND ch.campus = $${params.length}`;
     }
 
-    // Evaluaciones FACTURADAS por ejecutivo OI (OS generada + factura emitida).
-    // Requiere id_sales_executive; no cuenta evaluaciones atendidas pero sin facturar.
+    // Evaluaciones FACTURADAS por ejecutivo OI (OS + factura). Atribución: ejecutiva OI → facturador → creador OS.
     const sql = `
       WITH ejecutivo AS (
         SELECT DISTINCT ON (udp2.id_clinic_history)
@@ -196,7 +195,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         ORDER BY udp2.id_clinic_history, udp2.id DESC
       )
       SELECT
-        ej.ejecutivo_oi              AS ejecutivo_oi,
+        LOWER(TRIM(COALESCE(ej.ejecutivo_oi, u_bill.username, u_so.username, 'sin_asignar'))) AS ejecutivo_oi,
         ch.campus                    AS campus_id,
         COUNT(DISTINCT irb.id)::int  AS evaluaciones
       FROM invoice_result_body irb
@@ -206,7 +205,9 @@ export class OiSvInvoiceService implements OnModuleInit {
       INNER JOIN service_order so ON so.id = irh.id_service_order
       INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
       LEFT  JOIN tariff t ON t.id = irb.tariff_id
-      INNER JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+      LEFT  JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+      LEFT  JOIN users u_so ON u_so.id = so.user_created
+      LEFT  JOIN users u_bill ON u_bill.id = irh.billing_user_id
       WHERE t."name" ILIKE '%Evalu%'
         AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
         AND (
@@ -216,7 +217,7 @@ export class OiSvInvoiceService implements OnModuleInit {
             AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
         )
         ${campusFilter}
-      GROUP BY ej.ejecutivo_oi, ch.campus
+      GROUP BY 1, ch.campus
     `;
 
     try {

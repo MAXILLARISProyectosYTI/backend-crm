@@ -2980,6 +2980,114 @@ export class CommissionsDataService {
     return this.syncAndCalculateOi(periodId);
   }
 
+  /** Diagnóstico prod: HTTP SV vs BD directa (sin recalcular comisiones). */
+  async diagnoseOiSv(
+    year: number,
+    month: number,
+    campusId?: number | null,
+  ): Promise<{
+    year: number;
+    month: number;
+    range: { start: string; end: string };
+    campusId: number | null;
+    urlBackSvConfigured: boolean;
+    db: {
+      host: string;
+      port: number;
+      database: string;
+      factRowCount: number;
+      evalGroupCount: number;
+      error: string | null;
+    };
+    http: {
+      factRowCount: number;
+      evalRowCount: number;
+      error: string | null;
+    };
+    ok: boolean;
+    summary: string;
+  }> {
+    const { start, end } = this.monthRange(year, month);
+    const svCfg = this.oiSvInvoiceService.getSvConfig();
+    const urlBackSvConfigured = Boolean(process.env.URL_BACK_SV?.trim());
+
+    const filterByCampus = (rows: Record<string, unknown>[]) => {
+      if (campusId == null) return rows;
+      return rows.filter((row) =>
+        this.matchesFilterCampus(Number(row.campus_id), campusId),
+      );
+    };
+
+    let httpFact = 0;
+    let httpEval = 0;
+    let httpError: string | null = null;
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      let factRows = await this.svServices.getFacturacionOiFromSv(
+        tokenSv, start, end, campusId ?? undefined,
+      );
+      let evalRows = await this.svServices.getEvaluacionesOiFromSv(
+        tokenSv, start, end, campusId ?? undefined,
+      );
+      factRows = filterByCampus(Array.isArray(factRows) ? factRows : []);
+      evalRows = filterByCampus(Array.isArray(evalRows) ? evalRows : []);
+      httpFact = factRows.length;
+      httpEval = evalRows.length;
+    } catch (err) {
+      httpError = err instanceof Error ? err.message : String(err);
+    }
+
+    let dbFact = 0;
+    let dbEval = 0;
+    let dbError: string | null = null;
+    try {
+      const result = await this.oiSvInvoiceService.fetchMonthMetrics(
+        year, month, campusId ?? undefined,
+      );
+      dbFact = result.factRowCount;
+      dbEval = result.evalGroupCount;
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : String(err);
+    }
+
+    const hasData = httpFact > 0 || httpEval > 0 || dbFact > 0 || dbEval > 0;
+    let summary: string;
+    if (hasData) {
+      summary = `Datos encontrados — HTTP: ${httpFact} fact / ${httpEval} eval; BD: ${dbFact} fact / ${dbEval} eval`;
+    } else if (httpError && dbError) {
+      summary = `HTTP y BD fallaron — HTTP: ${httpError}; BD: ${dbError}`;
+    } else if (httpError) {
+      summary = `HTTP falló (${httpError}); BD conectó pero 0 filas`;
+    } else if (dbError) {
+      summary = `HTTP respondió vacío; BD falló (${dbError})`;
+    } else {
+      summary = 'Sin filas en SV (HTTP y BD) — revisa URL_BACK_SV, SV_DB_* y facturas OI del mes';
+    }
+
+    return {
+      year,
+      month,
+      range: { start, end },
+      campusId: campusId ?? null,
+      urlBackSvConfigured,
+      db: {
+        host: svCfg.host,
+        port: svCfg.port,
+        database: svCfg.database,
+        factRowCount: dbFact,
+        evalGroupCount: dbEval,
+        error: dbError,
+      },
+      http: {
+        factRowCount: httpFact,
+        evalRowCount: httpEval,
+        error: httpError,
+      },
+      ok: hasData,
+      summary,
+    };
+  }
+
   /** Ejecutivas Call Center y equipos comerciales por sede. userId = login SV. */
   async listCallCenterEjecutivos(): Promise<Array<{ userId: string; userName: string; campusId?: number; campusNombre?: string }>> {
     const { ejecutivosPayload } = await this.listVentasStaffCatalog('CALL_CENTER');
