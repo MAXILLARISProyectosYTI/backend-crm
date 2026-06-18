@@ -413,9 +413,11 @@ export class OiSvInvoiceService implements OnModuleInit {
     const client = this.createClient();
     const params: unknown[] = [since, until];
     let campusFilter = '';
+    let campusFilterAsist = '';
     if (campusIds != null && campusIds.length > 0) {
       params.push(campusIds);
       campusFilter = ` AND ch.campus = ANY($${params.length}::int[])`;
+      campusFilterAsist = ` AND COALESCE(r.id_campus, ch.campus) = ANY($${params.length}::int[])`;
     }
 
     const sql = `
@@ -504,30 +506,34 @@ export class OiSvInvoiceService implements OnModuleInit {
       ),
       eva_asist AS (
         SELECT
-          LOWER(TRIM(COALESCE(ej.ejecutivo, fe.billing_user, 'sin_asignar'))) AS ejecutivo,
-          ch.campus AS campus_id,
+          LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, 'sin_asignar'))) AS ejecutivo,
+          COALESCE(r.id_campus, ch.campus) AS campus_id,
           COUNT(*)::int AS eva_asistidas
         FROM reservation r
         INNER JOIN clinic_history ch ON ch.id = r.patient_id
+        LEFT JOIN tariff t ON t.id = r.tariff_id
         LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
         LEFT JOIN LATERAL (
-          SELECT LOWER(TRIM(COALESCE(u_bill2.username, u_so2.username))) AS billing_user
+          SELECT
+            LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
+            LOWER(TRIM(COALESCE(u_so2.username, ''))) AS so_creator
           FROM invoice_result_body irb2
-          INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head AND irh2.status_invoice = 1
+          INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
+            AND irh2.status_invoice = 1 AND COALESCE(irh2.credit_memo_state, false) = false
           INNER JOIN service_order so2 ON so2.id = irh2.id_service_order
           LEFT JOIN tariff t2 ON t2.id = irb2.tariff_id
           LEFT JOIN users u_bill2 ON u_bill2.id = irh2.billing_user_id
           LEFT JOIN users u_so2 ON u_so2.id = so2.user_created
-          WHERE so2.idclinichistory = ch.id AND t2."name" ILIKE '%Evalu%'
-          ORDER BY irh2.invoice_date DESC LIMIT 1
-        ) fe ON true
-        WHERE r.state IN (3, 4)
-          AND r.tariff_id IN (
-            SELECT t3.id FROM tariff t3 WHERE t3."name" ILIKE '%Evalu%'
-              AND COALESCE(t3.id, 0) NOT IN (58, 192, 198)
-          )
+          WHERE so2.idclinichistory = ch.id
+            AND COALESCE(t2."name", '') ILIKE '%Evalu%'
+            AND COALESCE(irb2.tariff_id, 0) NOT IN (58, 192, 198)
+          ORDER BY irh2.invoice_date DESC NULLS LAST LIMIT 1
+        ) iv ON true
+        WHERE r.state = 3
+          AND COALESCE(t."name", '') ILIKE '%Evalu%'
+          AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
           AND r.date >= $1::date AND r.date <= $2::date
-          ${campusFilter}
+          ${campusFilterAsist}
         GROUP BY 1, 2
       ),
       keys AS (
