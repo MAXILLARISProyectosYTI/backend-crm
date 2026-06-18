@@ -276,6 +276,8 @@ export interface CommissionDashboard {
     bonoEquipoTtosThreshold?: number | null;
     bonoEquipoAmount?: number | null;
     porcentajeComisionOi?: number | null;
+    /** JSON con config de tarifas (OI, Call Center, sync meta, etc.) */
+    notas?: string | null;
   };
   facturacionGrupalSinIgv: number;
   porcentajeGrupal: number;
