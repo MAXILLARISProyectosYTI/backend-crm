@@ -10,6 +10,8 @@
     "migration:run": "node -r dotenv/config -r ts-node/register ./node_modules/typeorm/cli.js migration:run -d migraciones/data-source.ts",
     "migration:revert": "node -r dotenv/config -r ts-node/register ./node_modules/typeorm/cli.js migration:revert -d migraciones/data-source.ts",
     "migration:show": "node -r dotenv/config -r ts-node/register ./node_modules/typeorm/cli.js migration:show -d migraciones/data-source.ts",
+    "incidencias:sync-sv:dry": "node -r dotenv/config -r ts-node/register -r tsconfig-paths/register scripts/sync-incidencias-pending.ts --dry-run",
+    "incidencias:sync-sv": "node -r dotenv/config -r ts-node/register -r tsconfig-paths/register scripts/sync-incidencias-pending.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

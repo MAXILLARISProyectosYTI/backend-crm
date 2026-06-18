@@ -62,6 +62,16 @@ export class Incidencia {
   @Column({ type: 'varchar', length: 50, nullable: true, default: 'Recepción', name: 'area_destino' })
   areaDestino: string | null;
 
+  /** ID del issue en SV (`POST /issues`) cuando la sync fue exitosa. */
+  @Column({ type: 'int', nullable: true, name: 'sv_issue_id' })
+  svIssueId: number | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, default: 'synced', name: 'sync_status' })
+  syncStatus: string | null;
+
+  @Column({ type: 'text', nullable: true, name: 'sync_error' })
+  syncError: string | null;
+
   @CreateDateColumn({ name: 'fecha_creacion' })
   fechaCreacion: Date;
 

@@ -78,6 +78,12 @@ export class OpportunityController {
     const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity, oiDerived);
     let response = redirectResponse;
 
+    const opportunityRecord = await this.opportunityService.findOne(uuidOpportunity);
+    const apneaCortesiaFlags = {
+      cApneaCortesiaTomada: opportunityRecord?.cApneaCortesiaTomada ?? false,
+      cApneaCortesiaEntregada: opportunityRecord?.cApneaCortesiaEntregada ?? false,
+    };
+
     try {
       const alreadyInvoiced = await this.opportunityPresaveService.checkIfAlreadyInvoiced(uuidOpportunity);
       const isComplete = await this.opportunityService.isCompleteForRedirect(uuidOpportunity);
@@ -176,7 +182,7 @@ export class OpportunityController {
     }
 
     console.log('[GET /opportunity/redirect] Respuesta', JSON.stringify(response, null, 2));
-    return response;
+    return { ...response, ...apneaCortesiaFlags };
   }
 
   @Public()
@@ -475,6 +481,14 @@ export class OpportunityController {
     @Body() body: UpdateSedeAtencionDto,
   ): Promise<Opportunity> {
     return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null, body.campusName);
+  }
+
+  /** Registra solicitud de apnea de cortesía (promoción 16–30/06/2026, hora Lima). */
+  @Patch(':id/apnea-cortesia/tomar')
+  async marcarApneaCortesiaTomada(
+    @Param('id') id: string,
+  ): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
+    return this.opportunityService.marcarApneaCortesiaTomada(id);
   }
 
   @Patch(':id')
