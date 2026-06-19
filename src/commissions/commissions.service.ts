@@ -297,6 +297,15 @@ export class CommissionsService {
     return this.dataService.getDashboardByAreaMonth(area, year, month, campusId);
   }
 
+  getFacturacionMtd(
+    area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
+    year: number,
+    month: number,
+    campusId?: number,
+  ) {
+    return this.dataService.getFacturacionMtd(area, year, month, campusId);
+  }
+
   syncControlesPeriod(periodId: number) {
     return this.dataService.syncAndCalculateControles(periodId, true);
   }

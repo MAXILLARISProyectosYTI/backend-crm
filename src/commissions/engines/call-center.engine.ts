@@ -1,7 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { IsNull, Repository } from 'typeorm';
+import { TEAMS_IDS } from '../../globals/ids';
 import { CommissionPeriod } from '../commission-period.entity';
 import { CommissionRecord } from '../commission-record.entity';
+
+/** Login SV del team leader por equipo CRM (bono pool S/450 × asist / 128). */
+export const DEFAULT_CALL_CENTER_TEAM_LEADERS: Record<string, string> = {
+  [TEAMS_IDS.TEAM_VERONICA]: 'veronica.zerpa',
+  [TEAMS_IDS.TEAM_FIORELLA]: 'fiorella.rojas',
+  [TEAMS_IDS.TEAM_MICHELL]: 'michell.goitia',
+  [TEAMS_IDS.TEAM_AREQUIPA]: 'river.medina',
+  [TEAMS_IDS.TEAM_TRUJILLO]: 'samuel.guillen',
+};
 
 export interface CallCenterTarifas {
   ttoOfmContado: [number, number];
@@ -58,7 +68,7 @@ export const DEFAULT_CALL_CENTER_CONFIG: CallCenterConfig = {
     poolMonto: 450,
     metaAsistenciasEquipo: 128,
   },
-  teamLeaderByTeamId: {},
+  teamLeaderByTeamId: { ...DEFAULT_CALL_CENTER_TEAM_LEADERS },
 };
 
 export interface CallCenterExecutivoInput {
@@ -110,7 +120,10 @@ export function parseCallCenterConfig(period: CommissionPeriod): CallCenterConfi
         ...DEFAULT_CALL_CENTER_CONFIG.bonoTeamLeader,
         ...(cfg.bonoTeamLeader ?? {}),
       },
-      teamLeaderByTeamId: cfg.teamLeaderByTeamId ?? DEFAULT_CALL_CENTER_CONFIG.teamLeaderByTeamId,
+      teamLeaderByTeamId: {
+        ...DEFAULT_CALL_CENTER_CONFIG.teamLeaderByTeamId,
+        ...(cfg.teamLeaderByTeamId ?? {}),
+      },
     };
   } catch {
     return DEFAULT_CALL_CENTER_CONFIG;
