@@ -1890,6 +1890,7 @@ export class CommissionsDataService {
 
       const assign = quotationId > 0 ? winByQuotation.get(quotationId) : undefined;
       const solicitud = quotationId > 0 ? solicitudByQuotation.get(quotationId) : undefined;
+      const presave = quotationId > 0 ? presaveByQuotation.get(quotationId) : undefined;
 
       const attrib = this.resolveCerradoraFromInvoiceAttribution(
         assign,
@@ -2177,6 +2178,10 @@ export class CommissionsDataService {
       const quotationId = parseInt(String(row.cotizacion_id ?? ''), 10);
       if (Number.isNaN(quotationId) || quotationId <= 0) continue;
 
+      const presave = presaveByQuotation.get(quotationId);
+      const solicitud = solicitudByQuotation.get(quotationId);
+      const solicitudFacturado = solicitud?.facturado === true;
+
       const crmUserId = this.resolveCerradoraFromWinAssignment(
         {
           assignedUserId: row.assigned_user_id,
@@ -2190,11 +2195,8 @@ export class CommissionsDataService {
       ) ?? this.resolveCerradoraUserId(row.assigned_user_id, usernameToCrmId, cerradoraIds);
       if (!crmUserId) continue;
 
-      const presave = presaveByQuotation.get(quotationId);
-      const solicitud = solicitudByQuotation.get(quotationId);
       const hasPresave = !!presave;
       const hasRegisteredPayment = parsePresaveHasRegisteredPayments(presave?.registered_payments);
-      const solicitudFacturado = solicitud?.facturado === true;
       const firmaContrato = (solicitud?.firma_contrato ?? null) as 'pendiente' | 'firmado' | 'rechazado' | null;
 
       const gestionEvidence = hasCloserGestionEvidence({
