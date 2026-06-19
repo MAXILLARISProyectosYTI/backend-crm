@@ -28,7 +28,7 @@ export interface CierreTtoBonusConfig {
 }
 
 export interface CierreTtoSedeConfig {
-  /** userId → sede principal (equipo cerradoras) */
+  /** userId → sede principal (facturación SV de cierres) */
   homeCampusByUser: Map<string, number>;
   /** `${userId}__${campusId}` → factor (0.20 = 20% en sede de apoyo) */
   apoyoFactorByUserCampus: Map<string, number>;

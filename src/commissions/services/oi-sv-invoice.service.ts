@@ -18,7 +18,50 @@ export interface OiSvMonthMetrics {
   source: 'sv-invoice-db';
 }
 
-/** Consulta directa a BD SV (invoice_result_*) — fuente única para comisiones OI. */
+/** Evaluación OI (odontología integral), excluye OFM/MARPE/APNEA. */
+export const OI_EVAL_TARIFF_WHERE = `
+  COALESCE(t.name, '') ILIKE '%Evalu%'
+  AND COALESCE(t.id, 0) NOT IN (58, 192, 198)
+  AND COALESCE(t.name, '') NOT ILIKE '%OFM%'
+  AND COALESCE(t.name, '') NOT ILIKE '%MARPE%'
+  AND COALESCE(t.name, '') NOT ILIKE '%APNEA%'
+  AND COALESCE(t.name, '') NOT ILIKE '%CAPNEA%'
+  AND (
+    COALESCE(t.name, '') ILIKE '%OI%'
+    OR COALESCE(t.name, '') ILIKE '%Odontolog%Integr%'
+    OR COALESCE(t.name, '') ILIKE '%Odontologia Integral%'
+    OR COALESCE(t.name, '') NOT ILIKE '% OFM%'
+  )
+`;
+
+/** En facturación OI: líneas eval solo si son pago completo (id_payment CRM). */
+export const OI_FACTURACION_EVAL_OR_PT_WHERE = `
+  (
+    COALESCE(t.name, '') NOT ILIKE '%Evalu%'
+    OR EXISTS (
+      SELECT 1
+      FROM clinic_history_crm chc_pay
+      INNER JOIN reservation r_pay ON r_pay.id = chc_pay.id_reservation
+        AND r_pay.patient_id = ch.id
+      LEFT JOIN tariff t_pay ON t_pay.id = r_pay.tariff_id
+      WHERE chc_pay.patient_id = ch.id
+        AND chc_pay.id_payment = irh.id
+        AND chc_pay.id_reservation IS NOT NULL
+        AND ${OI_EVAL_TARIFF_WHERE.replace(/\bt\./g, 't_pay.')}
+    )
+  )
+`;
+
+/** Login SV atribuido: union_doctor_patient (OI) → creador OS → facturador. */
+export const OI_EJECUTIVO_LOGIN_EXPR = `
+  LOWER(TRIM(COALESCE(
+    NULLIF(TRIM(ej.ejecutivo_oi), ''),
+    NULLIF(TRIM(u_so.username), ''),
+    NULLIF(TRIM(u_bill.username), ''),
+    'sin_asignar'
+  )))
+`;
+
 @Injectable()
 export class OiSvInvoiceService implements OnModuleInit {
   private readonly logger = new Logger(OiSvInvoiceService.name);
@@ -128,8 +171,10 @@ export class OiSvInvoiceService implements OnModuleInit {
           ELSE irb.amount
         END                            AS amount_pen,
         ch.campus                      AS campus_id,
-        LOWER(TRIM(COALESCE(ej.ejecutivo_oi, u_bill.username, u_so.username, 'sin_asignar'))) AS ejecutivo_oi,
-        LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS facturador_username,
+        NULLIF(LOWER(TRIM(ej.ejecutivo_oi)), '') AS asignado_oi,
+        NULLIF(LOWER(TRIM(u_so.username)), '') AS os_creator_username,
+        NULLIF(LOWER(TRIM(u_bill.username)), '') AS facturador_username,
+        ${OI_EJECUTIVO_LOGIN_EXPR}       AS ejecutivo_oi,
         irb.tariff_id,
         t.name                         AS tipo_arancel
       FROM invoice_result_body irb
@@ -146,6 +191,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       WHERE COALESCE(t."name", '') NOT ILIKE '%Control OFM%'
         AND COALESCE(t."name", '') NOT ILIKE '%Control Marpe%'
         AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
+        AND ${OI_FACTURACION_EVAL_OR_PT_WHERE}
         AND (
           (irb.payment_date IS NOT NULL
             AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
@@ -179,10 +225,10 @@ export class OiSvInvoiceService implements OnModuleInit {
     let campusFilter = '';
     if (campusId != null) {
       params.push(campusId);
-      campusFilter = ` AND ch.campus = $${params.length}`;
+      campusFilter = ` AND COALESCE(r.id_campus, ch.campus) = $${params.length}`;
     }
 
-    // Evaluaciones FACTURADAS por ejecutivo OI (OS + factura). Atribución: ejecutiva OI → facturador → creador OS.
+    // Evaluaciones OI COMPLETAS: pago completo vía clinic_history_crm.id_payment (no parciales).
     const sql = `
       WITH ejecutivo AS (
         SELECT DISTINCT ON (udp2.id_clinic_history)
@@ -195,29 +241,27 @@ export class OiSvInvoiceService implements OnModuleInit {
         ORDER BY udp2.id_clinic_history, udp2.id DESC
       )
       SELECT
-        LOWER(TRIM(COALESCE(ej.ejecutivo_oi, u_bill.username, u_so.username, 'sin_asignar'))) AS ejecutivo_oi,
-        ch.campus                    AS campus_id,
-        COUNT(DISTINCT irb.id)::int  AS evaluaciones
-      FROM invoice_result_body irb
-      INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+        ${OI_EJECUTIVO_LOGIN_EXPR} AS ejecutivo_oi,
+        COALESCE(r.id_campus, ch.campus) AS campus_id,
+        COUNT(DISTINCT chc.id)::int  AS evaluaciones
+      FROM clinic_history_crm chc
+      INNER JOIN clinic_history ch ON ch.id = chc.patient_id
+      INNER JOIN reservation r ON r.id = chc.id_reservation AND r.patient_id = ch.id
+      LEFT JOIN tariff t ON t.id = r.tariff_id
+      LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+      INNER JOIN invoice_result_head irh ON irh.id = chc.id_payment
         AND irh.status_invoice = 1
         AND COALESCE(irh.credit_memo_state, false) = false
       INNER JOIN service_order so ON so.id = irh.id_service_order
-      INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-      LEFT  JOIN tariff t ON t.id = irb.tariff_id
-      LEFT  JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-      LEFT  JOIN users u_so ON u_so.id = so.user_created
-      LEFT  JOIN users u_bill ON u_bill.id = irh.billing_user_id
-      WHERE t."name" ILIKE '%Evalu%'
-        AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
-        AND (
-          (irb.payment_date IS NOT NULL
-            AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-          OR (irb.payment_date IS NULL
-            AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-        )
+      LEFT JOIN users u_so ON u_so.id = so.user_created
+      LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+      WHERE chc.id_payment IS NOT NULL
+        AND chc.id_reservation IS NOT NULL
+        AND ${OI_EVAL_TARIFF_WHERE}
+        AND irh.invoice_date::date >= $1::date
+        AND irh.invoice_date::date <= $2::date
         ${campusFilter}
-      GROUP BY 1, ch.campus
+      GROUP BY 1, 2
     `;
 
     try {
@@ -233,6 +277,18 @@ export class OiSvInvoiceService implements OnModuleInit {
     }
   }
 
+  /** id_sales_executive (HC) → creador OS → facturador recepción. */
+  static resolveOiEjecutivoLogin(row: Record<string, unknown>): string {
+    const pick = (...keys: string[]) => {
+      for (const key of keys) {
+        const s = String(row[key] ?? '').trim().toLowerCase();
+        if (s && s !== 'sin_asignar') return s;
+      }
+      return '';
+    };
+    return pick('ejecutivo_oi', 'asignado_oi', 'os_creator_username', 'facturador_username');
+  }
+
   aggregateMetrics(
     factRows: Record<string, unknown>[],
     evalRows: Record<string, unknown>[],
@@ -246,21 +302,16 @@ export class OiSvInvoiceService implements OnModuleInit {
     };
 
     for (const row of factRows) {
-      const ejecutivoOi = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
-      const facturador = String(row.facturador_username ?? '').trim().toLowerCase();
-      // Prioridad: ejecutivo OI asignado (id_sales_executive) → facturador (fallback)
-      const attrib = (ejecutivoOi && ejecutivoOi !== 'sin_asignar')
-        ? ejecutivoOi
-        : facturador;
+      const attrib = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
       if (!attrib || amountPen <= 0) continue;
       add(attrib, { facturadoConIgv: amountPen });
     }
 
     for (const row of evalRows) {
-      const ejecutivo = String(row.ejecutivo_oi ?? '').trim().toLowerCase();
+      const ejecutivo = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const evals = Number(row.evaluaciones ?? 0);
-      if (!ejecutivo || ejecutivo === 'sin_asignar' || evals <= 0) continue;
+      if (!ejecutivo || evals <= 0) continue;
       add(ejecutivo, { evaluaciones: evals });
     }
 
@@ -515,7 +566,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         FROM (
           SELECT
             LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) AS ejecutivo,
-            ch.campus AS campus_id,
+            COALESCE(r.id_campus, ch.campus) AS campus_id,
             COUNT(DISTINCT irb.id)::int AS cnt
           FROM invoice_result_body irb
           INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
@@ -537,7 +588,7 @@ export class OiSvInvoiceService implements OnModuleInit {
               (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
               OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
             )
-            ${campusFilter}
+            ${campusFilterAsist}
           GROUP BY 1, 2
           HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) <> ''
           UNION ALL
@@ -729,8 +780,8 @@ export class OiSvInvoiceService implements OnModuleInit {
   }
 
   /**
-   * Sede principal por cerradora según dónde facturó en SV (últimos 18 meses).
-   * login SV (username) → campus_id dominante.
+   * Sede principal por cerradora: sede donde más cierres facturó en SV (últimos 18 meses).
+   * Misma lógica que facturacion-cerradoras (contratos OFM/MARPE/APNEA), no equipos CRM.
    */
   async queryCerradoraDominantCampusByLogin(
     svLogins: string[],
@@ -746,27 +797,52 @@ export class OiSvInvoiceService implements OnModuleInit {
     try {
       await client.connect();
       const result = await client.query(
-        `WITH fact AS (
+        `WITH pagos AS (
            SELECT
              LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS billing_login,
              ch.campus AS campus_id,
-             COUNT(DISTINCT irh.id)::int AS invoices
-           FROM invoice_result_head irh
+             COALESCE(c_direct.id, c_patient.id) AS contract_id
+           FROM invoice_result_body irb
+           INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+             AND irh.status_invoice = 1
+             AND COALESCE(irh.credit_memo_state, false) = false
            INNER JOIN service_order so ON so.id = irh.id_service_order
            INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+           LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+           LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+           LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+           LEFT JOIN LATERAL (
+             SELECT c2.id
+             FROM contract c2
+             INNER JOIN contract_structure cs ON cs.id = c2.contract_structure_id
+             WHERE c2.idclinichistory = ch.id AND c2.state = 1
+               AND (
+                 cs.treatment_code LIKE 'OFM%'
+                 OR cs.treatment_code LIKE 'MARPE%'
+                 OR cs.treatment_code LIKE 'APNEA%'
+               )
+             ORDER BY c2.date DESC NULLS LAST
+             LIMIT 1
+           ) c_patient ON c_direct.id IS NULL
            LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
            LEFT JOIN users u_so ON u_so.id = so.user_created
-           WHERE irh.status_invoice = 1
-             AND COALESCE(irh.credit_memo_state, false) = false
-             AND irh.invoice_date >= $1::date
+           WHERE (
+             (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date)
+             OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date)
+           )
+             AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
              AND LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) = ANY($2::text[])
-           GROUP BY billing_login, ch.campus
+         ),
+         fact AS (
+           SELECT billing_login, campus_id, COUNT(DISTINCT contract_id)::int AS closures
+           FROM pagos
+           WHERE billing_login <> '' AND campus_id > 0
+           GROUP BY billing_login, campus_id
          ),
          ranked AS (
            SELECT billing_login, campus_id,
-             ROW_NUMBER() OVER (PARTITION BY billing_login ORDER BY invoices DESC, campus_id) AS rn
+             ROW_NUMBER() OVER (PARTITION BY billing_login ORDER BY closures DESC, campus_id) AS rn
            FROM fact
-           WHERE campus_id > 0
          )
          SELECT billing_login, campus_id FROM ranked WHERE rn = 1`,
         [sinceStr, logins],
