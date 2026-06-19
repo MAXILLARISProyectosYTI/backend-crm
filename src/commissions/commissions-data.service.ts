@@ -46,7 +46,7 @@ const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 const CONTROLES_TEAM_ID = TEAMS_IDS.EQ_EJECUTIVOS_CONTROLES;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 19;
+const CIERRE_TTO_SYNC_VERSION = 20;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Sede principal en catálogo cerradoras (operación regional fija). */
@@ -774,15 +774,35 @@ export class CommissionsDataService {
     billingLogin: string,
     usernameToCrmId: Map<string, string>,
     cerradoraIds: Set<string>,
+    soAssign?: { assignedUserId: string | null; quotationId: number | null },
   ): { userId: string; source: 'crm' | 'os' | 'billing' } | null {
     if (assign) {
-      const fromCrm = this.resolveCerradoraFromWinAssignment(
+      const fromCrmWin = this.resolveCerradoraFromWinAssignment(
         assign,
         usernameToCrmId,
         cerradoraIds,
       );
-      if (fromCrm) return { userId: fromCrm, source: 'crm' };
+      if (fromCrmWin) return { userId: fromCrmWin, source: 'crm' };
+      // SV ya facturó: usar cerradora asignada en CRM aunque el win no esté marcado facturado
+      const fromAssigned = this.resolveCerradoraUserId(
+        assign.assignedUserId,
+        usernameToCrmId,
+        cerradoraIds,
+      );
+      if (fromAssigned) return { userId: fromAssigned, source: 'crm' };
+      const fromCerradoraUser = this.resolveCerradoraUserId(
+        assign.cerradoraUsername,
+        usernameToCrmId,
+        cerradoraIds,
+      );
+      if (fromCerradoraUser) return { userId: fromCerradoraUser, source: 'crm' };
     }
+    const fromSoOpp = this.resolveCerradoraUserId(
+      soAssign?.assignedUserId,
+      usernameToCrmId,
+      cerradoraIds,
+    );
+    if (fromSoOpp) return { userId: fromSoOpp, source: 'crm' };
     const osLogin = osCreatorLogin.trim().toLowerCase();
     if (osLogin) {
       const fromOs = this.resolveCerradoraUserId(osLogin, usernameToCrmId, cerradoraIds);
@@ -1866,7 +1886,11 @@ export class CommissionsDataService {
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
 
     const quotationIds = svRows.map((r) => Number(r.quotation_id)).filter((id) => id > 0);
-    const winByQuotation = await this.loadCerradoraWinAssignmentByQuotation(quotationIds);
+    const serviceOrderIds = svRows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
+    const [winByQuotation, assignByServiceOrder] = await Promise.all([
+      this.loadCerradoraWinAssignmentByQuotation(quotationIds),
+      this.loadCerradoraAssignmentByServiceOrder(serviceOrderIds),
+    ]);
 
     const agg = new Map<string, {
       userId: string;
@@ -1880,7 +1904,13 @@ export class CommissionsDataService {
       const campus = this.mapCommissionCampusId(row.campus_id);
       if (campusId != null && !this.matchesFilterCampus(campus, campusId)) continue;
 
-      const quotationId = Number(row.quotation_id) || 0;
+      let quotationId = Number(row.quotation_id) || 0;
+      const soAssign = row.service_order_id > 0
+        ? assignByServiceOrder.get(row.service_order_id)
+        : undefined;
+      if (quotationId <= 0 && soAssign?.quotationId) {
+        quotationId = soAssign.quotationId;
+      }
       const assign = quotationId > 0 ? winByQuotation.get(quotationId) : undefined;
       const attrib = this.resolveCerradoraFromInvoiceAttribution(
         assign,
@@ -1888,6 +1918,7 @@ export class CommissionsDataService {
         row.billing_username,
         usernameToCrmId,
         cerradoraIds,
+        soAssign,
       );
       if (!attrib) continue;
 
@@ -1981,6 +2012,7 @@ export class CommissionsDataService {
         row.billing_username,
         usernameToCrmId,
         cerradoraIds,
+        soAssign,
       );
       if (!attrib) continue;
 
