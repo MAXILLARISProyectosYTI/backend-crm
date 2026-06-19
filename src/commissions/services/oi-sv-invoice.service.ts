@@ -481,60 +481,103 @@ export class OiSvInvoiceService implements OnModuleInit {
       ),
       eva_vend AS (
         SELECT
-          LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) AS ejecutivo,
-          ch.campus AS campus_id,
-          COUNT(*) FILTER (WHERE COALESCE(t.name, '') NOT ILIKE '%APNEA%' AND COALESCE(t.name, '') NOT ILIKE '%CAPNEA%')::int AS eva_vendidas_ofm,
-          COUNT(*) FILTER (WHERE COALESCE(t.name, '') ILIKE '%APNEA%' OR COALESCE(t.name, '') ILIKE '%CAPNEA%')::int AS eva_vendidas_apnea
-        FROM invoice_result_body irb
-        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-          AND irh.status_invoice = 1 AND COALESCE(irh.credit_memo_state, false) = false
-        INNER JOIN service_order so ON so.id = irh.id_service_order
-        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-        LEFT JOIN tariff t ON t.id = irb.tariff_id
-        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        LEFT JOIN users u_so ON u_so.id = so.user_created
-        WHERE t."name" ILIKE '%Evalu%'
-          AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
-          AND (
-            (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-            OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-          )
-          ${campusFilter}
-        GROUP BY 1, 2
-        HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) <> ''
-      ),
-      eva_asist AS (
-        SELECT
-          LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, 'sin_asignar'))) AS ejecutivo,
+          LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, ''))) AS ejecutivo,
           COALESCE(r.id_campus, ch.campus) AS campus_id,
-          COUNT(*)::int AS eva_asistidas
-        FROM reservation r
-        INNER JOIN clinic_history ch ON ch.id = r.patient_id
+          COUNT(DISTINCT chc.id) FILTER (
+            WHERE COALESCE(t.name, '') NOT ILIKE '%APNEA%'
+              AND COALESCE(t.name, '') NOT ILIKE '%CAPNEA%'
+          )::int AS eva_vendidas_ofm,
+          COUNT(DISTINCT chc.id) FILTER (
+            WHERE COALESCE(t.name, '') ILIKE '%APNEA%'
+              OR COALESCE(t.name, '') ILIKE '%CAPNEA%'
+          )::int AS eva_vendidas_apnea
+        FROM clinic_history_crm chc
+        INNER JOIN clinic_history ch ON ch.id = chc.patient_id
+        INNER JOIN reservation r ON r.id = chc.id_reservation AND r.patient_id = ch.id
         LEFT JOIN tariff t ON t.id = r.tariff_id
         LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-        LEFT JOIN LATERAL (
-          SELECT
-            LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
-            LOWER(TRIM(COALESCE(u_so2.username, ''))) AS so_creator
-          FROM invoice_result_body irb2
-          INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
-            AND irh2.status_invoice = 1 AND COALESCE(irh2.credit_memo_state, false) = false
-          INNER JOIN service_order so2 ON so2.id = irh2.id_service_order
-          LEFT JOIN tariff t2 ON t2.id = irb2.tariff_id
-          LEFT JOIN users u_bill2 ON u_bill2.id = irh2.billing_user_id
-          LEFT JOIN users u_so2 ON u_so2.id = so2.user_created
-          WHERE so2.idclinichistory = ch.id
-            AND COALESCE(t2."name", '') ILIKE '%Evalu%'
-            AND COALESCE(irb2.tariff_id, 0) NOT IN (58, 192, 198)
-          ORDER BY irh2.invoice_date DESC NULLS LAST LIMIT 1
-        ) iv ON true
-        WHERE r.state = 3
-          AND COALESCE(t."name", '') ILIKE '%Evalu%'
+        INNER JOIN invoice_result_head irh ON irh.id = chc.id_payment
+          AND irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
+        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+        WHERE chc.id_payment IS NOT NULL
+          AND chc.id_reservation IS NOT NULL
           AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
-          AND r.date >= $1::date AND r.date <= $2::date
-          ${campusFilterAsist}
+          AND COALESCE(t.name, '') ILIKE '%Evalu%'
+          AND irh.invoice_date::date >= $1::date
+          AND irh.invoice_date::date <= $2::date
+          ${campusFilter.replace(/ch\.campus/g, 'COALESCE(r.id_campus, ch.campus)')}
         GROUP BY 1, 2
+        HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, ''))) <> ''
+      ),
+      eva_asist AS (
+        SELECT ejecutivo, campus_id, SUM(cnt)::int AS eva_asistidas
+        FROM (
+          SELECT
+            LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) AS ejecutivo,
+            ch.campus AS campus_id,
+            COUNT(DISTINCT irb.id)::int AS cnt
+          FROM invoice_result_body irb
+          INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+            AND irh.status_invoice = 1 AND COALESCE(irh.credit_memo_state, false) = false
+          INNER JOIN service_order so ON so.id = irh.id_service_order
+          INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+          INNER JOIN clinic_history_crm chc ON chc.patient_id = ch.id
+            AND chc.id_reservation IS NOT NULL
+          INNER JOIN reservation r ON r.id = chc.id_reservation
+            AND r.patient_id = ch.id
+            AND r.state IN (3, 4, 5)
+          LEFT JOIN tariff t ON t.id = irb.tariff_id
+          LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+          LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+          LEFT JOIN users u_so ON u_so.id = so.user_created
+          WHERE t."name" ILIKE '%Evalu%'
+            AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
+            AND (
+              (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+              OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+            )
+            ${campusFilter}
+          GROUP BY 1, 2
+          HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) <> ''
+          UNION ALL
+          SELECT
+            LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) AS ejecutivo,
+            COALESCE(r.id_campus, ch.campus) AS campus_id,
+            COUNT(DISTINCT r.id)::int AS cnt
+          FROM reservation r
+          INNER JOIN clinic_history ch ON ch.id = r.patient_id
+          LEFT JOIN tariff t ON t.id = r.tariff_id
+          LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+          LEFT JOIN LATERAL (
+            SELECT
+              LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
+              LOWER(TRIM(COALESCE(u_so2.username, ''))) AS so_creator
+            FROM invoice_result_body irb2
+            INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
+              AND irh2.status_invoice = 1 AND COALESCE(irh2.credit_memo_state, false) = false
+            INNER JOIN service_order so2 ON so2.id = irh2.id_service_order
+            LEFT JOIN tariff t2 ON t2.id = irb2.tariff_id
+            LEFT JOIN users u_bill2 ON u_bill2.id = irh2.billing_user_id
+            LEFT JOIN users u_so2 ON u_so2.id = so2.user_created
+            WHERE so2.idclinichistory = ch.id
+              AND COALESCE(t2."name", '') ILIKE '%Evalu%'
+              AND COALESCE(irb2.tariff_id, 0) NOT IN (58, 192, 198)
+            ORDER BY irh2.invoice_date DESC NULLS LAST LIMIT 1
+          ) iv ON true
+          WHERE r.state IN (3, 4, 5)
+            AND COALESCE(t."name", '') ILIKE '%Evalu%'
+            AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
+            AND r.date >= $1::date AND r.date <= $2::date
+            AND NOT EXISTS (
+              SELECT 1 FROM clinic_history_crm chc2
+              WHERE chc2.id_reservation = r.id AND chc2.patient_id = ch.id
+            )
+            ${campusFilterAsist}
+          GROUP BY 1, 2
+          HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) <> ''
+        ) eva_asist_union
+        GROUP BY ejecutivo, campus_id
       ),
       keys AS (
         SELECT ejecutivo, campus_id FROM tto_agg
@@ -572,7 +615,7 @@ export class OiSvInvoiceService implements OnModuleInit {
     }
   }
 
-  /** Sede de facturación SV (clinic_history.campus) por cotización y/o contrato. */
+  /** Sede de facturación SV (clinic_history.campus) por cotización y/o contrato. Prioriza boleta/factura sobre contrato. */
   async queryCerradorasInvoiceCampusMap(
     quotationIds: number[],
     contractIds: number[] = [],
@@ -589,6 +632,24 @@ export class OiSvInvoiceService implements OnModuleInit {
     try {
       await client.connect();
       if (qIds.length > 0) {
+        const byInvoiceQ = await client.query(
+          `SELECT DISTINCT ON (q.id)
+              q.id AS quotation_id,
+              ch.campus AS campus_id
+           FROM quotation q
+           INNER JOIN service_order so ON so.idquotation = q.id
+           INNER JOIN invoice_result_head irh ON irh.id_service_order = so.id AND irh.status_invoice = 1
+           INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+           WHERE q.id = ANY($1::int[])
+           ORDER BY q.id, irh.invoice_date DESC NULLS LAST`,
+          [qIds],
+        );
+        for (const row of byInvoiceQ.rows) {
+          const qid = Number(row.quotation_id);
+          const campus = Number(row.campus_id);
+          if (qid > 0 && campus > 0) byQuotation.set(qid, campus);
+        }
+
         const byQ = await client.query(
           `SELECT DISTINCT ON (c.idquotation)
               c.idquotation AS quotation_id,
@@ -606,32 +667,37 @@ export class OiSvInvoiceService implements OnModuleInit {
           const qid = Number(row.quotation_id);
           const cid = Number(row.contract_id);
           const campus = Number(row.campus_id);
-          if (qid > 0 && campus > 0) byQuotation.set(qid, campus);
+          if (qid > 0 && campus > 0 && !byQuotation.has(qid)) byQuotation.set(qid, campus);
           if (cid > 0 && campus > 0) byContract.set(cid, campus);
-        }
-
-        const byInvoiceQ = await client.query(
-          `SELECT DISTINCT ON (q.id)
-              q.id AS quotation_id,
-              ch.campus AS campus_id
-           FROM quotation q
-           INNER JOIN service_order so ON so.idquotation = q.id
-           INNER JOIN invoice_result_head irh ON irh.id_service_order = so.id AND irh.status_invoice = 1
-           INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-           WHERE q.id = ANY($1::int[])
-           ORDER BY q.id, irh.invoice_date DESC NULLS LAST`,
-          [qIds],
-        );
-        for (const row of byInvoiceQ.rows) {
-          const qid = Number(row.quotation_id);
-          const campus = Number(row.campus_id);
-          if (qid > 0 && campus > 0 && !byQuotation.has(qid)) {
-            byQuotation.set(qid, campus);
-          }
         }
       }
 
       if (cIds.length > 0) {
+        const byInvoiceC = await client.query(
+          `SELECT DISTINCT ON (c.id)
+              c.id AS contract_id,
+              COALESCE(c.idquotation, 0) AS quotation_id,
+              ch.campus AS campus_id
+           FROM contract c
+           INNER JOIN contract_detail cd ON cd.idcontract = c.id AND cd.state = 1
+           INNER JOIN service_order_payment_detail sopd ON sopd.id = cd.id
+           INNER JOIN invoice_result_body irb ON irb.service_order_payment_detail_id = sopd.id
+           INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head AND irh.status_invoice = 1
+           INNER JOIN service_order so ON so.id = irh.id_service_order
+           INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+           WHERE c.id = ANY($1::int[])
+             AND c.state = 1
+           ORDER BY c.id, irh.invoice_date DESC NULLS LAST`,
+          [cIds],
+        );
+        for (const row of byInvoiceC.rows) {
+          const cid = Number(row.contract_id);
+          const qid = Number(row.quotation_id);
+          const campus = Number(row.campus_id);
+          if (cid > 0 && campus > 0) byContract.set(cid, campus);
+          if (qid > 0 && campus > 0) byQuotation.set(qid, campus);
+        }
+
         const byC = await client.query(
           `SELECT DISTINCT ON (c.id)
               c.id AS contract_id,
@@ -648,10 +714,8 @@ export class OiSvInvoiceService implements OnModuleInit {
           const cid = Number(row.contract_id);
           const qid = Number(row.quotation_id);
           const campus = Number(row.campus_id);
-          if (cid > 0 && campus > 0) byContract.set(cid, campus);
-          if (qid > 0 && campus > 0 && !byQuotation.has(qid)) {
-            byQuotation.set(qid, campus);
-          }
+          if (cid > 0 && campus > 0 && !byContract.has(cid)) byContract.set(cid, campus);
+          if (qid > 0 && campus > 0 && !byQuotation.has(qid)) byQuotation.set(qid, campus);
         }
       }
     } finally {
@@ -662,6 +726,63 @@ export class OiSvInvoiceService implements OnModuleInit {
       }
     }
     return { byQuotation, byContract };
+  }
+
+  /**
+   * Sede principal por cerradora según dónde facturó en SV (últimos 18 meses).
+   * login SV (username) → campus_id dominante.
+   */
+  async queryCerradoraDominantCampusByLogin(
+    svLogins: string[],
+  ): Promise<Map<string, number>> {
+    const logins = [...new Set(svLogins.map((l) => l.trim().toLowerCase()).filter(Boolean))];
+    if (logins.length === 0) return new Map();
+
+    const since = new Date();
+    since.setMonth(since.getMonth() - 18);
+    const sinceStr = since.toISOString().slice(0, 10);
+
+    const client = this.createClient();
+    try {
+      await client.connect();
+      const result = await client.query(
+        `WITH fact AS (
+           SELECT
+             LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS billing_login,
+             ch.campus AS campus_id,
+             COUNT(DISTINCT irh.id)::int AS invoices
+           FROM invoice_result_head irh
+           INNER JOIN service_order so ON so.id = irh.id_service_order
+           INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+           LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+           LEFT JOIN users u_so ON u_so.id = so.user_created
+           WHERE irh.status_invoice = 1
+             AND COALESCE(irh.credit_memo_state, false) = false
+             AND irh.invoice_date >= $1::date
+             AND LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) = ANY($2::text[])
+           GROUP BY billing_login, ch.campus
+         ),
+         ranked AS (
+           SELECT billing_login, campus_id,
+             ROW_NUMBER() OVER (PARTITION BY billing_login ORDER BY invoices DESC, campus_id) AS rn
+           FROM fact
+           WHERE campus_id > 0
+         )
+         SELECT billing_login, campus_id FROM ranked WHERE rn = 1`,
+        [sinceStr, logins],
+      );
+      const map = new Map<string, number>();
+      for (const row of result.rows) {
+        map.set(String(row.billing_login), Number(row.campus_id));
+      }
+      return map;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async queryQuotationInvoiceCampusMap(
