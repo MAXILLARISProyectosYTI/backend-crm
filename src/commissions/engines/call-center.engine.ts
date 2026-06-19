@@ -18,13 +18,23 @@ export interface CallCenterBonoTier {
   amount: number;
 }
 
+export interface CallCenterTeamBonoConfig {
+  /** Pool mensual por team (Excel: S/ 450). */
+  poolMonto: number;
+  /** Meta de asistencias del team para el 100% del pool (Excel: 128). */
+  metaAsistenciasEquipo: number;
+}
+
 export interface CallCenterConfig {
   minEvaVendidas: number;
   minEvaAsistidas: number;
   tarifas: CallCenterTarifas;
   bonoAsistencias: CallCenterBonoTier[];
-  /** Sedes donde aplica bono por asistencias (Lima = 1) */
+  /** Sedes donde aplica bono individual por asistencias (Lima=1, Arequipa=15). */
   bonoAsistenciasCampusIds: number[];
+  bonoTeamLeader: CallCenterTeamBonoConfig;
+  /** teamId CRM → login SV del team leader que recibe el bono de equipo. */
+  teamLeaderByTeamId: Record<string, string>;
 }
 
 export const DEFAULT_CALL_CENTER_CONFIG: CallCenterConfig = {
@@ -43,7 +53,12 @@ export const DEFAULT_CALL_CENTER_CONFIG: CallCenterConfig = {
     { min: 50, amount: 800 },
     { min: 40, amount: 600 },
   ],
-  bonoAsistenciasCampusIds: [1],
+  bonoAsistenciasCampusIds: [1, 15],
+  bonoTeamLeader: {
+    poolMonto: 450,
+    metaAsistenciasEquipo: 128,
+  },
+  teamLeaderByTeamId: {},
 };
 
 export interface CallCenterExecutivoInput {
@@ -51,6 +66,10 @@ export interface CallCenterExecutivoInput {
   userName: string;
   campusId: number | null;
   campusNombre: string;
+  crmTeamId?: string | null;
+  crmTeamName?: string | null;
+  /** OBJ individual (Excel AN). Si no se define, usa minEvaVendidas/minEvaAsistidas del período. */
+  minGateObj?: number | null;
   ttoOfmContado: number;
   ttoOfmCuotas: number;
   ttoApneaContado: number;
@@ -87,6 +106,11 @@ export function parseCallCenterConfig(period: CommissionPeriod): CallCenterConfi
       tarifas: { ...DEFAULT_CALL_CENTER_CONFIG.tarifas, ...(cfg.tarifas ?? {}) },
       bonoAsistencias: cfg.bonoAsistencias ?? DEFAULT_CALL_CENTER_CONFIG.bonoAsistencias,
       bonoAsistenciasCampusIds: cfg.bonoAsistenciasCampusIds ?? DEFAULT_CALL_CENTER_CONFIG.bonoAsistenciasCampusIds,
+      bonoTeamLeader: {
+        ...DEFAULT_CALL_CENTER_CONFIG.bonoTeamLeader,
+        ...(cfg.bonoTeamLeader ?? {}),
+      },
+      teamLeaderByTeamId: cfg.teamLeaderByTeamId ?? DEFAULT_CALL_CENTER_CONFIG.teamLeaderByTeamId,
     };
   } catch {
     return DEFAULT_CALL_CENTER_CONFIG;
@@ -97,16 +121,78 @@ function pickTierRate(count: number, tierAt: number, rates: [number, number]): n
   return count >= tierAt ? rates[1] : rates[0];
 }
 
-function calcBonoAsistencias(
-  evaAsistidas: number,
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function resolveGateObj(eje: CallCenterExecutivoInput, config: CallCenterConfig): {
+  minVend: number;
+  minAsist: number;
+} {
+  const obj = eje.minGateObj ?? null;
+  if (obj != null && obj > 0) {
+    return { minVend: obj, minAsist: obj };
+  }
+  return { minVend: config.minEvaVendidas, minAsist: config.minEvaAsistidas };
+}
+
+function passesIndividualGate(
+  evaVendidasTotal: number,
+  evaAsistidasTotal: number,
+  minVend: number,
+  minAsist: number,
+): boolean {
+  return evaVendidasTotal >= minVend && evaAsistidasTotal >= minAsist;
+}
+
+function calcBonoAsistenciasIndividual(
+  evaAsistidasTotal: number,
   campusId: number | null,
   config: CallCenterConfig,
 ): number {
   if (campusId == null || !config.bonoAsistenciasCampusIds.includes(campusId)) return 0;
   for (const tier of [...config.bonoAsistencias].sort((a, b) => b.min - a.min)) {
-    if (evaAsistidas >= tier.min) return tier.amount;
+    if (evaAsistidasTotal >= tier.min) return tier.amount;
   }
   return 0;
+}
+
+function calcTeamLeaderBono(teamAsistencias: number, config: CallCenterConfig): number {
+  const { poolMonto, metaAsistenciasEquipo } = config.bonoTeamLeader;
+  if (metaAsistenciasEquipo <= 0 || teamAsistencias <= 0) return 0;
+  const ratio = Math.min(1, teamAsistencias / metaAsistenciasEquipo);
+  return round2(poolMonto * ratio);
+}
+
+function pickPrimaryCampusRecordIndex(
+  rows: Array<{ campusId: number | null; evaAsistidas: number }>,
+): number {
+  const limaIdx = rows.findIndex((r) => r.campusId === 1);
+  if (limaIdx >= 0) return limaIdx;
+  let bestIdx = 0;
+  let bestAsist = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].evaAsistidas > bestAsist) {
+      bestAsist = rows[i].evaAsistidas;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+interface UserAggregate {
+  evaVendidas: number;
+  evaAsistidas: number;
+  minVend: number;
+  minAsist: number;
+  aplicaGate: boolean;
+  rowIndexes: number[];
+}
+
+interface TeamAggregate {
+  teamId: string;
+  asistencias: number;
+  leaderUserId: string | null;
 }
 
 export async function calculateCallCenter(
@@ -116,11 +202,94 @@ export async function calculateCallCenter(
   recordRepo: Repository<CommissionRecord>,
 ): Promise<CallCenterResult[]> {
   const results: CallCenterResult[] = [];
+  const pendingRows: Array<{
+    eje: CallCenterExecutivoInput;
+    evaVendidas: number;
+    evaAsistidas: number;
+    aplicaGate: boolean;
+    comisionTtos: number;
+    comisionEvaluaciones: number;
+    comisionBono: number;
+    comisionTotal: number;
+    bonoIndividual: number;
+    bonoTeamLeader: number;
+    crmTeamId: string | null;
+  }> = [];
+
+  const userAgg = new Map<string, UserAggregate>();
+  for (let i = 0; i < ejecutivos.length; i++) {
+    const eje = ejecutivos[i];
+    const uid = eje.userId.trim().toLowerCase();
+    const evaVend = eje.evaVendidasOfm + eje.evaVendidasApnea;
+    const gate = resolveGateObj(eje, config);
+    const agg = userAgg.get(uid) ?? {
+      evaVendidas: 0,
+      evaAsistidas: 0,
+      minVend: gate.minVend,
+      minAsist: gate.minAsist,
+      aplicaGate: false,
+      rowIndexes: [],
+    };
+    agg.evaVendidas += evaVend;
+    agg.evaAsistidas += eje.evaAsistidas;
+    agg.minVend = gate.minVend;
+    agg.minAsist = gate.minAsist;
+    agg.rowIndexes.push(i);
+    userAgg.set(uid, agg);
+  }
+
+  for (const agg of userAgg.values()) {
+    agg.aplicaGate = passesIndividualGate(
+      agg.evaVendidas,
+      agg.evaAsistidas,
+      agg.minVend,
+      agg.minAsist,
+    );
+  }
+
+  const teamAgg = new Map<string, TeamAggregate>();
+  for (const eje of ejecutivos) {
+    const teamId = eje.crmTeamId?.trim();
+    if (!teamId) continue;
+    const leaderCfg = config.teamLeaderByTeamId[teamId]?.trim().toLowerCase();
+    const prev = teamAgg.get(teamId) ?? {
+      teamId,
+      asistencias: 0,
+      leaderUserId: leaderCfg ?? null,
+    };
+    prev.asistencias += eje.evaAsistidas;
+    if (leaderCfg) prev.leaderUserId = leaderCfg;
+    teamAgg.set(teamId, prev);
+  }
+
+  const teamLeaderBonusByUser = new Map<string, number>();
+  for (const team of teamAgg.values()) {
+    if (!team.leaderUserId) continue;
+    const bono = calcTeamLeaderBono(team.asistencias, config);
+    if (bono <= 0) continue;
+    const key = team.leaderUserId.toLowerCase();
+    teamLeaderBonusByUser.set(key, (teamLeaderBonusByUser.get(key) ?? 0) + bono);
+  }
+
+  const bonoIndividualByUser = new Map<string, number>();
+  for (const [uid, agg] of userAgg.entries()) {
+    if (!agg.aplicaGate) continue;
+    const primaryIdx = pickPrimaryCampusRecordIndex(
+      agg.rowIndexes.map((i) => ({
+        campusId: ejecutivos[i].campusId,
+        evaAsistidas: ejecutivos[i].evaAsistidas,
+      })),
+    );
+    const campusId = ejecutivos[agg.rowIndexes[primaryIdx]]?.campusId ?? null;
+    const bono = calcBonoAsistenciasIndividual(agg.evaAsistidas, campusId, config);
+    if (bono > 0) bonoIndividualByUser.set(uid, bono);
+  }
 
   for (const eje of ejecutivos) {
-    const evaVendidas = eje.evaVendidasOfm + eje.evaVendidasApnea;
-    const aplicaGate = evaVendidas >= config.minEvaVendidas
-      && eje.evaAsistidas >= config.minEvaAsistidas;
+    const uid = eje.userId.trim().toLowerCase();
+    const agg = userAgg.get(uid)!;
+    const evaVendidasRow = eje.evaVendidasOfm + eje.evaVendidasApnea;
+    const aplicaGate = agg.aplicaGate;
 
     const { tarifas } = config;
     const rateOfmContado = pickTierRate(eje.ttoOfmContado, tarifas.tierTtoOfmContado, tarifas.ttoOfmContado);
@@ -129,7 +298,7 @@ export async function calculateCallCenter(
       tarifas.tierTtoOfmContado,
       tarifas.ttoOfmCuotas,
     );
-    const rateEva = pickTierRate(eje.evaAsistidas, tarifas.tierEvaAsistida, tarifas.evaAsistida);
+    const rateEva = pickTierRate(agg.evaAsistidas, tarifas.tierEvaAsistida, tarifas.evaAsistida);
 
     const comisionTtos = aplicaGate
       ? eje.ttoOfmContado * rateOfmContado
@@ -138,13 +307,52 @@ export async function calculateCallCenter(
         + eje.ttoApneaCuotas * tarifas.ttoApneaCuotas
       : 0;
     const comisionEvaluaciones = aplicaGate ? eje.evaAsistidas * rateEva : 0;
-    const comisionBono = aplicaGate
-      ? calcBonoAsistencias(eje.evaAsistidas, eje.campusId, config)
-      : 0;
-    const comisionTotal = Math.round((comisionTtos + comisionEvaluaciones + comisionBono) * 100) / 100;
+
+    pendingRows.push({
+      eje,
+      evaVendidas: evaVendidasRow,
+      evaAsistidas: eje.evaAsistidas,
+      aplicaGate,
+      comisionTtos: round2(comisionTtos),
+      comisionEvaluaciones: round2(comisionEvaluaciones),
+      comisionBono: 0,
+      comisionTotal: 0,
+      bonoIndividual: 0,
+      bonoTeamLeader: 0,
+      crmTeamId: eje.crmTeamId ?? null,
+    });
+  }
+
+  for (const [uid, agg] of userAgg.entries()) {
+    const bonoInd = bonoIndividualByUser.get(uid) ?? 0;
+    const bonoLead = teamLeaderBonusByUser.get(uid) ?? 0;
+    if (bonoInd <= 0 && bonoLead <= 0) continue;
+
+    const primaryIdx = pickPrimaryCampusRecordIndex(
+      agg.rowIndexes.map((i) => ({
+        campusId: pendingRows[i].eje.campusId,
+        evaAsistidas: pendingRows[i].evaAsistidas,
+      })),
+    );
+    const globalIdx = agg.rowIndexes[primaryIdx];
+    pendingRows[globalIdx].bonoIndividual = bonoInd;
+    pendingRows[globalIdx].bonoTeamLeader = bonoLead;
+    pendingRows[globalIdx].comisionBono = round2(bonoInd + bonoLead);
+  }
+
+  for (const row of pendingRows) {
+    row.comisionTotal = round2(row.comisionTtos + row.comisionEvaluaciones + row.comisionBono);
+  }
+
+  for (const row of pendingRows) {
+    const { eje } = row;
+    const uid = eje.userId.trim().toLowerCase();
+    const agg = userAgg.get(uid)!;
 
     logger.debug(
-      `CC [${eje.userName}]: gate=${aplicaGate} evV=${evaVendidas} evA=${eje.evaAsistidas} ttos=${comisionTtos} evas=${comisionEvaluaciones} bono=${comisionBono}`,
+      `CC [${eje.userName}@${eje.campusNombre}]: gate=${row.aplicaGate} `
+      + `totV=${agg.evaVendidas} totA=${agg.evaAsistidas} obj=${agg.minVend} `
+      + `ttos=${row.comisionTtos} evas=${row.comisionEvaluaciones} bono=${row.comisionBono}`,
     );
 
     const recordMatches = await recordRepo.find({
@@ -168,16 +376,16 @@ export async function calculateCallCenter(
 
     record.userName = eje.userName;
     record.campusNombre = eje.campusNombre;
-    record.montoFacturadoSinIgv = evaVendidas;
-    record.cantidadUnidades = eje.evaAsistidas;
-    record.comisionTtos = Math.round(comisionTtos * 100) / 100;
-    record.comisionEvaluaciones = Math.round(comisionEvaluaciones * 100) / 100;
-    record.comisionBono = comisionBono;
-    record.comisionTotal = comisionTotal;
-    record.porcentajeAlcanzado = config.minEvaAsistidas > 0
-      ? eje.evaAsistidas / config.minEvaAsistidas
+    record.montoFacturadoSinIgv = row.evaVendidas;
+    record.cantidadUnidades = row.evaAsistidas;
+    record.comisionTtos = row.comisionTtos;
+    record.comisionEvaluaciones = row.comisionEvaluaciones;
+    record.comisionBono = row.comisionBono;
+    record.comisionTotal = row.comisionTotal;
+    record.porcentajeAlcanzado = agg.minAsist > 0
+      ? agg.evaAsistidas / agg.minAsist
       : 0;
-    record.estado = aplicaGate ? 'CALCULADO' : 'PENDIENTE';
+    record.estado = row.aplicaGate ? 'CALCULADO' : 'PENDIENTE';
     record.notas = JSON.stringify({
       ttoOfmContado: eje.ttoOfmContado,
       ttoOfmCuotas: eje.ttoOfmCuotas,
@@ -185,7 +393,17 @@ export async function calculateCallCenter(
       ttoApneaCuotas: eje.ttoApneaCuotas,
       evaVendidasOfm: eje.evaVendidasOfm,
       evaVendidasApnea: eje.evaVendidasApnea,
-      aplicaGate,
+      evaVendidasSede: row.evaVendidas,
+      evaAsistidasSede: row.evaAsistidas,
+      evaVendidasTotal: agg.evaVendidas,
+      evaAsistidasTotal: agg.evaAsistidas,
+      minGateObj: agg.minVend,
+      aplicaGate: row.aplicaGate,
+      aplicaGateIndividual: row.aplicaGate,
+      bonoIndividual: row.bonoIndividual,
+      bonoTeamLeader: row.bonoTeamLeader,
+      crmTeamId: eje.crmTeamId ?? null,
+      crmTeamName: eje.crmTeamName ?? null,
     });
 
     await recordRepo.save(record);
@@ -194,13 +412,13 @@ export async function calculateCallCenter(
       userId: eje.userId,
       userName: eje.userName,
       campusId: eje.campusId,
-      evaVendidas,
-      evaAsistidas: eje.evaAsistidas,
-      aplicaGate,
-      comisionTtos: record.comisionTtos,
-      comisionEvaluaciones: record.comisionEvaluaciones,
-      comisionBono,
-      comisionTotal,
+      evaVendidas: agg.evaVendidas,
+      evaAsistidas: row.evaAsistidas,
+      aplicaGate: row.aplicaGate,
+      comisionTtos: row.comisionTtos,
+      comisionEvaluaciones: row.comisionEvaluaciones,
+      comisionBono: row.comisionBono,
+      comisionTotal: row.comisionTotal,
       metricas: eje,
     });
   }
