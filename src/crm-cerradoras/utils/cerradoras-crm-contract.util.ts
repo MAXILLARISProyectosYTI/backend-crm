@@ -66,6 +66,16 @@ export function mapTratamientoFromCrm(input: {
   return 'OFM';
 }
 
+/** Tratamiento desde treatment_code SV (contrato OFM/MARPE/APNEA). */
+export function mapTratamientoFromTreatmentCode(treatmentCode?: string | null): string | null {
+  const code = (treatmentCode ?? '').toUpperCase();
+  if (!code) return null;
+  if (code.includes('APNEA') || code.includes('CAPNEA')) return 'APNEA';
+  if (code.includes('MARPE')) return 'MARPE';
+  if (code.includes('OFM') || code.includes('ALINEADOR')) return 'OFM';
+  return null;
+}
+
 export function resolveCrmContractId(
   contractIdRaw: string | null | undefined,
   quotationId: number,

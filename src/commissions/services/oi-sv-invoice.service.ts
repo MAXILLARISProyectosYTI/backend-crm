@@ -1087,6 +1087,7 @@ export class OiSvInvoiceService implements OnModuleInit {
     moldes_date: string | null;
     first_payment_date: string | null;
     amount_usd: number;
+    treatment_code: string;
   }>> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
@@ -1099,6 +1100,7 @@ export class OiSvInvoiceService implements OnModuleInit {
           COALESCE(c_direct.idquotation, c_patient.idquotation, NULLIF(so.idquotation, 0), 0) AS quotation_id,
           COALESCE(c_direct.date, c_patient.date)::text AS contract_date,
           COALESCE(c_direct.num, c_patient.num, '') AS contract_num,
+          COALESCE(cs_direct.treatment_code, c_patient.treatment_code, '') AS treatment_code,
           ch.campus AS campus_id,
           irh.id_service_order AS service_order_id,
           irh.service_order_creator_id AS service_order_creator_id,
@@ -1139,15 +1141,16 @@ export class OiSvInvoiceService implements OnModuleInit {
         LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
         LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
         LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+        LEFT JOIN contract_structure cs_direct ON cs_direct.id = c_direct.contract_structure_id
         LEFT JOIN LATERAL (
-          SELECT c2.id, c2.idquotation, c2.date, c2.num
+          SELECT c2.id, c2.idquotation, c2.date, c2.num, cs2.treatment_code
           FROM contract c2
-          INNER JOIN contract_structure cs ON cs.id = c2.contract_structure_id
+          INNER JOIN contract_structure cs2 ON cs2.id = c2.contract_structure_id
           WHERE c2.idclinichistory = ch.id AND c2.state = 1
             AND (
-              cs.treatment_code LIKE 'OFM%'
-              OR cs.treatment_code LIKE 'MARPE%'
-              OR cs.treatment_code LIKE 'APNEA%'
+              cs2.treatment_code LIKE 'OFM%'
+              OR cs2.treatment_code LIKE 'MARPE%'
+              OR cs2.treatment_code LIKE 'APNEA%'
             )
           ORDER BY c2.date DESC NULLS LAST
           LIMIT 1
@@ -1165,7 +1168,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         ${campusFilter}
       )
       SELECT DISTINCT ON (service_order_id)
-        contract_id, quotation_id, contract_date, contract_num,
+        contract_id, quotation_id, contract_date, contract_num, treatment_code,
         campus_id, service_order_id, service_order_creator_id,
         billing_username, os_creator_username,
         payment_date, moldes_date, first_payment_date, amount_usd
@@ -1191,6 +1194,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         moldes_date: r.moldes_date ? String(r.moldes_date).slice(0, 10) : null,
         first_payment_date: r.first_payment_date ? String(r.first_payment_date).slice(0, 10) : null,
         amount_usd: Number(r.amount_usd ?? 0),
+        treatment_code: String(r.treatment_code ?? ''),
       })).filter((r) => r.contract_id > 0 && (r.billing_username || r.os_creator_username));
     } finally {
       try {
