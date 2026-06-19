@@ -45,7 +45,7 @@ const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 const CONTROLES_TEAM_ID = TEAMS_IDS.EQ_EJECUTIVOS_CONTROLES;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 11;
+const CIERRE_TTO_SYNC_VERSION = 12;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Plantilla de ejecutivas Controles cuando no hay mes anterior configurado. */
@@ -1035,6 +1035,7 @@ export class CommissionsDataService {
     );
 
     const all: VentasStaffMember[] = [];
+
     for (const row of rows) {
       const teamMeta = VENTAS_STAFF_TEAM_META[row.team_id];
       if (!teamMeta) continue;
@@ -1043,7 +1044,9 @@ export class CommissionsDataService {
       if (!svLogin) continue;
 
       let campusId = 1;
-      if (row.team_id === TEAM_TRUJILLO_ID) campusId = 16;
+      if (Number(row.is_trujillo) === 1) campusId = 16;
+      else if (Number(row.is_arequipa) === 1) campusId = 15;
+      else if (row.team_id === TEAM_TRUJILLO_ID) campusId = 16;
       else if (row.team_id === TEAM_AREQUIPA_ID) campusId = 15;
 
       all.push({
@@ -1124,6 +1127,30 @@ export class CommissionsDataService {
           teamName: 'Team Leaders Comerciales',
         });
       }
+    }
+
+    try {
+      const allSvLogins = all.map((m) => m.userId);
+      const dominantCampusByLogin = await this.oiSvInvoiceService.queryCerradoraDominantCampusByLogin(
+        allSvLogins,
+      );
+      for (const member of all) {
+        const keys = [member.userId, member.userLogin, member.crmUserId]
+          .filter(Boolean)
+          .map((s) => String(s).trim().toLowerCase());
+        for (const key of keys) {
+          const fromSv = dominantCampusByLogin.get(key);
+          if (fromSv != null && fromSv > 0) {
+            member.campusId = this.mapCommissionCampusId(fromSv);
+            member.campusNombre = this.commissionCampusNombre(member.campusId);
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Campus dominante Call Center SV: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     const sedeMap = new Map<number, Map<string, VentasStaffMember[]>>();
@@ -1527,14 +1554,14 @@ export class CommissionsDataService {
     const crmResult = await this.buildCerradorasContractsFromCrm(start, end);
 
     this.logger.log(
-      `Cerradoras sync ${year}-${month} (solo CRM): cierres=${crmResult.crmWins}, comisionables=${crmResult.contracts.length}`,
+      `Cerradoras sync ${year}-${month}: cierres=${crmResult.crmWins}, comisionables=${crmResult.contracts.length}, campus SV=${crmResult.svCampusRows}`,
     );
     return {
       contracts: crmResult.contracts,
       stats: {
         contractsTotal: crmResult.contracts.length,
         contractsCrm: crmResult.crmWins,
-        contractsSv: 0,
+        contractsSv: crmResult.svCampusRows,
       },
     };
   }
@@ -1586,6 +1613,30 @@ export class CommissionsDataService {
     return cerradoraIds.has(assignedCrmId) ? assignedCrmId : null;
   }
 
+  /** Prioriza campus de facturación SV (endpoint facturacion-cerradoras) sobre CRM/contrato. */
+  private async enrichCampusMapsFromSvFacturacion(
+    start: string,
+    end: string,
+    campusByQuotation: Map<number, number>,
+    campusByContract: Map<number, number>,
+  ): Promise<number> {
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getCerradorasContractsFromSv(tokenSv, start, end);
+      for (const row of rows) {
+        const campus = this.mapCommissionCampusId(row.campus_id);
+        if (row.quotation_id > 0) campusByQuotation.set(row.quotation_id, campus);
+        if (row.contract_id > 0) campusByContract.set(row.contract_id, campus);
+      }
+      return rows.length;
+    } catch (err) {
+      this.logger.warn(
+        `Enriquecer campus SV cerradoras: ${err instanceof Error ? err.message : err}`,
+      );
+      return 0;
+    }
+  }
+
   /**
    * Comisiones cerradoras 100% desde CRM:
    * c_oportunidad_cerradora + contract_presave + crm_cerradora_solicitudes.
@@ -1593,7 +1644,7 @@ export class CommissionsDataService {
   private async buildCerradorasContractsFromCrm(
     start: string,
     end: string,
-  ): Promise<{ contracts: ContractSvRow[]; crmWins: number }> {
+  ): Promise<{ contracts: ContractSvRow[]; crmWins: number; svCampusRows: number }> {
     const [catalog, usernameToCrmId] = await Promise.all([
       this.listCerradorasEjecutivos(),
       this.buildCrmUsernameToUserIdMap(),
@@ -1677,6 +1728,12 @@ export class CommissionsDataService {
         `Campus SV cerradoras: ${err instanceof Error ? err.message : err}`,
       );
     }
+    const svCampusRows = await this.enrichCampusMapsFromSvFacturacion(
+      start,
+      end,
+      campusByQuotation,
+      campusByContract,
+    );
 
     const contracts: ContractSvRow[] = [];
     const seenContractIds = new Set<number>();
@@ -1782,7 +1839,7 @@ export class CommissionsDataService {
     }
 
     this.logger.log(`Cerradoras CRM ${start}→${end}: ${crmWins} cierres en mes, ${contracts.length} contratos`);
-    return { contracts, crmWins };
+    return { contracts, crmWins, svCampusRows };
   }
 
   /** Configuración de apoyo entre sedes del período (mes). */
@@ -2027,8 +2084,7 @@ export class CommissionsDataService {
       user_id: string;
       display_name: string | null;
       user_login: string | null;
-      is_arequipa: number;
-      is_trujillo: number;
+      sv_login: string | null;
     }> = await this.dataSource.query(
       `
       SELECT u.id AS user_id,
@@ -2037,34 +2093,45 @@ export class CommissionsDataService {
           u.user_name
         ) AS display_name,
         u.user_name AS user_login,
-        MAX(CASE WHEN tu_areq.team_id = $2 THEN 1 ELSE 0 END)::int AS is_arequipa,
-        MAX(CASE WHEN tu_truj.team_id = $3 THEN 1 ELSE 0 END)::int AS is_trujillo
+        u.c_usersv AS sv_login
       FROM "user" u
       INNER JOIN team_user tu ON tu.user_id = u.id
         AND tu.team_id = $1
         AND COALESCE(tu.deleted, false) = false
-      LEFT JOIN team_user tu_areq ON tu_areq.user_id = u.id
-        AND tu_areq.team_id = $2
-        AND COALESCE(tu_areq.deleted, false) = false
-      LEFT JOIN team_user tu_truj ON tu_truj.user_id = u.id
-        AND tu_truj.team_id = $3
-        AND COALESCE(tu_truj.deleted, false) = false
       WHERE COALESCE(u.deleted, false) = false
         AND COALESCE(u.is_active, true) = true
-      GROUP BY u.id, u.user_name, u.first_name, u.last_name
+      GROUP BY u.id, u.user_name, u.first_name, u.last_name, u.c_usersv
       ORDER BY display_name ASC NULLS LAST, u.user_name ASC
       `,
-      [CERRADORAS_TEAM_ID, TEAM_AREQUIPA_ID, TEAM_TRUJILLO_ID],
+      [CERRADORAS_TEAM_ID],
     );
 
+    const svLogins = rows.flatMap((r) => [
+      r.user_login,
+      r.sv_login,
+      r.user_id,
+    ].filter(Boolean).map((s) => String(s).trim().toLowerCase()));
+
+    let dominantCampusByLogin = new Map<string, number>();
+    try {
+      dominantCampusByLogin = await this.oiSvInvoiceService.queryCerradoraDominantCampusByLogin(svLogins);
+    } catch (err) {
+      this.logger.warn(
+        `Campus dominante cerradoras SV: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
     return rows.map((r) => {
-      let campusId: number;
-      if (Number(r.is_trujillo) === 1) {
-        campusId = 16;
-      } else if (Number(r.is_arequipa) === 1) {
-        campusId = 15;
-      } else {
-        campusId = 1;
+      const loginKeys = [r.user_login, r.sv_login, r.user_id]
+        .filter(Boolean)
+        .map((s) => String(s).trim().toLowerCase());
+      let campusId = 1;
+      for (const key of loginKeys) {
+        const fromSv = dominantCampusByLogin.get(key);
+        if (fromSv != null && fromSv > 0) {
+          campusId = this.mapCommissionCampusId(fromSv);
+          break;
+        }
       }
       return {
         userId: r.user_id,
@@ -2100,6 +2167,7 @@ export class CommissionsDataService {
   /**
    * Garantiza records del catálogo. Solo elimina usuarios que ya no están en el equipo;
    * conserva filas por sede de facturación (ej. cerradora Lima con cierres en Arequipa).
+   * No crea filas vacías por sede CRM/equipo — solo sede de apoyo configurada.
    */
   async ensureCierreTtoTeamRecords(
     period: CommissionPeriod,
@@ -2149,10 +2217,6 @@ export class CommissionsDataService {
         estado: 'PENDIENTE',
       }));
     };
-
-    for (const eje of catalog) {
-      await ensureRecord(eje.userId, eje.campusId, eje.userName);
-    }
 
     const catalogByUser = new Map(catalog.map((c) => [c.userId, c]));
     for (const apoyo of apoyoRows) {
@@ -3257,20 +3321,77 @@ export class CommissionsDataService {
     return merged;
   }
 
-  /** Elimina filas por sede SV que no correspondan al equipo CRM (userId + campus catálogo). */
+  /** Elimina filas de usuarios que ya no están en el catálogo Call Center (conserva sedes SV). */
   private async pruneCallCenterRecordsToCatalog(period: CommissionPeriod): Promise<void> {
     const team = await this.listCallCenterEjecutivos();
-    const catalogKeys = new Set(
-      team.map((e) => `${e.userId.trim().toLowerCase()}::${e.campusId ?? 'all'}`),
-    );
+    const teamUserIds = new Set(team.map((e) => e.userId.trim().toLowerCase()));
     const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
     for (const rec of existing) {
-      const key = `${rec.userId.trim().toLowerCase()}::${rec.campusId ?? 'all'}`;
-      if (!catalogKeys.has(key)) {
+      if (!teamUserIds.has(rec.userId.trim().toLowerCase())) {
         await this.detailRepo.delete({ record: { id: rec.id } });
         await this.recordRepo.delete(rec.id);
       }
     }
+  }
+
+  /** Agrupa métricas SV por ejecutiva CRM y sede de facturación (no consolida todas las sedes). */
+  private buildCallCenterInputsPerCampus(
+    team: Array<{ userId: string; userName: string; campusId?: number; campusNombre?: string }>,
+    metricsByKey: Map<string, CallCenterExecutivoInput>,
+    aliasSets: Map<string, Set<string>>,
+  ): CallCenterExecutivoInput[] {
+    const accum = new Map<string, CallCenterExecutivoInput>();
+
+    const emptyMetrics = (): Omit<CallCenterExecutivoInput, 'userId' | 'userName' | 'campusId' | 'campusNombre'> => ({
+      ttoOfmContado: 0,
+      ttoOfmCuotas: 0,
+      ttoApneaContado: 0,
+      ttoApneaCuotas: 0,
+      evaVendidasOfm: 0,
+      evaVendidasApnea: 0,
+      evaAsistidas: 0,
+    });
+
+    for (const eje of team) {
+      const svKey = eje.userId.trim().toLowerCase();
+      const aliases = aliasSets.get(eje.userId) ?? new Set([svKey]);
+      aliases.add(svKey);
+
+      for (const m of metricsByKey.values()) {
+        if (!aliases.has(m.userId.trim().toLowerCase())) continue;
+        const campusId = m.campusId != null
+          ? this.mapCommissionCampusId(m.campusId)
+          : (eje.campusId ?? null);
+        const key = `${svKey}::${campusId ?? 'all'}`;
+        const prev = accum.get(key);
+        accum.set(key, {
+          userId: svKey,
+          userName: eje.userName ?? m.userName ?? svKey,
+          campusId,
+          campusNombre: campusId != null ? this.commissionCampusNombre(campusId) : '',
+          ttoOfmContado: (prev?.ttoOfmContado ?? 0) + m.ttoOfmContado,
+          ttoOfmCuotas: (prev?.ttoOfmCuotas ?? 0) + m.ttoOfmCuotas,
+          ttoApneaContado: (prev?.ttoApneaContado ?? 0) + m.ttoApneaContado,
+          ttoApneaCuotas: (prev?.ttoApneaCuotas ?? 0) + m.ttoApneaCuotas,
+          evaVendidasOfm: (prev?.evaVendidasOfm ?? 0) + m.evaVendidasOfm,
+          evaVendidasApnea: (prev?.evaVendidasApnea ?? 0) + m.evaVendidasApnea,
+          evaAsistidas: (prev?.evaAsistidas ?? 0) + m.evaAsistidas,
+        });
+      }
+
+      const catalogKey = `${svKey}::${eje.campusId ?? 'all'}`;
+      if (!accum.has(catalogKey)) {
+        accum.set(catalogKey, {
+          userId: svKey,
+          userName: eje.userName ?? svKey,
+          campusId: eje.campusId ?? null,
+          campusNombre: eje.campusNombre ?? '',
+          ...emptyMetrics(),
+        });
+      }
+    }
+
+    return [...accum.values()];
   }
 
   private mergeCallCenterMetricsForAliases(
@@ -3354,32 +3475,7 @@ export class CommissionsDataService {
 
       const aliasSets = await this.buildCrmUserSvAliasSets(team.map((t) => t.userId));
 
-      const ejecutivosInput: CallCenterExecutivoInput[] = [];
-      const seenKeys = new Set<string>();
-
-      for (const eje of team) {
-        const svKey = (await this.resolveCommissionSvKey(eje.userId)).trim().toLowerCase();
-        const aliases = aliasSets.get(eje.userId) ?? new Set([svKey]);
-        aliases.add(svKey);
-        aliases.add(eje.userId.trim().toLowerCase());
-        const campusId = eje.campusId ?? null;
-        const dedupeKey = `${svKey}::${campusId ?? 'all'}`;
-        if (seenKeys.has(dedupeKey)) continue;
-        seenKeys.add(dedupeKey);
-
-        const merged = this.mergeCallCenterMetricsAllCampuses(metricsByKey, aliases);
-        const matchUserName = [...metricsByKey.values()].find(
-          (m) => aliases.has(m.userId.trim().toLowerCase()),
-        )?.userName;
-
-        ejecutivosInput.push({
-          userId: svKey,
-          userName: eje.userName ?? matchUserName ?? svKey,
-          campusId,
-          campusNombre: eje.campusNombre ?? (campusId != null ? this.commissionCampusNombre(campusId) : ''),
-          ...merged,
-        });
-      }
+      const ejecutivosInput = this.buildCallCenterInputsPerCampus(team, metricsByKey, aliasSets);
 
       const totalVend = ejecutivosInput.reduce((s, e) => s + e.evaVendidasOfm + e.evaVendidasApnea, 0);
       const totalAsist = ejecutivosInput.reduce((s, e) => s + e.evaAsistidas, 0);
