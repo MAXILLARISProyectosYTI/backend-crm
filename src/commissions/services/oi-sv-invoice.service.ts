@@ -18,6 +18,30 @@ export interface OiSvMonthMetrics {
   source: 'sv-invoice-db';
 }
 
+export interface FacturacionMtdSummary {
+  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER';
+  year: number;
+  month: number;
+  startDate: string;
+  endDate: string;
+  isPartialMonth: boolean;
+  campusId: number | null;
+  /** Monto principal según área (OI: con IGV, Controles: sin IGV, Cerradoras: USD) */
+  totalPrincipal: number;
+  totalUsd: number;
+  totalPenConIgv: number;
+  totalPenSinIgv: number;
+  osCount: number;
+  paymentCount: number;
+  lineCount: number;
+  currencyLabel: 'USD' | 'PEN_CON_IGV' | 'PEN_SIN_IGV';
+  asOf: string;
+  supported: boolean;
+  message?: string;
+}
+
+const IGV_RATE = 1.18;
+
 /** Evaluación OI (odontología integral), excluye OFM/MARPE/APNEA. */
 export const OI_EVAL_TARIFF_WHERE = `
   COALESCE(t.name, '') ILIKE '%Evalu%'
@@ -62,6 +86,14 @@ export const OI_EJECUTIVO_LOGIN_EXPR = `
   )))
 `;
 
+/** Línea de factura OI que es evaluación (ya pasó OI_FACTURACION_EVAL_OR_PT en queryFacturacionRows). */
+export function isOiEvalFacturacionRow(row: Record<string, unknown>): boolean {
+  const name = String(row.tipo_arancel ?? row.tipo ?? '').trim();
+  if (!name || !/evalu/i.test(name)) return false;
+  const tid = Number(row.tariff_id ?? 0);
+  return tid !== 58 && tid !== 192 && tid !== 198;
+}
+
 @Injectable()
 export class OiSvInvoiceService implements OnModuleInit {
   private readonly logger = new Logger(OiSvInvoiceService.name);
@@ -104,6 +136,238 @@ export class OiSvInvoiceService implements OnModuleInit {
     const lastDay = new Date(year, month, 0).getDate();
     const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
     return { start, end };
+  }
+
+  /** Del día 1 del mes hasta hoy (si es el mes en curso) o fin de mes. */
+  resolveMtdRange(year: number, month: number): {
+    start: string;
+    end: string;
+    isPartialMonth: boolean;
+  } {
+    const { start, end: monthEnd } = this.monthRange(year, month);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const isCurrentMonth = now.getFullYear() === year && now.getMonth() + 1 === month;
+    if (isCurrentMonth && today < monthEnd) {
+      return { start, end: today, isPartialMonth: true };
+    }
+    return { start, end: monthEnd, isPartialMonth: false };
+  }
+
+  /**
+   * Total facturado acumulado del mes (MTD) desde SV, filtrable por sede.
+   * Consulta en vivo: crece conforme se facturan O.S. en el mes.
+   */
+  async queryFacturacionMtdSummary(
+    area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
+    year: number,
+    month: number,
+    campusId?: number | null,
+  ): Promise<FacturacionMtdSummary> {
+    const { start, end, isPartialMonth } = this.resolveMtdRange(year, month);
+    const asOf = new Date().toISOString();
+    const base = {
+      area,
+      year,
+      month,
+      startDate: start,
+      endDate: end,
+      isPartialMonth,
+      campusId: campusId ?? null,
+      asOf,
+    };
+
+    if (area === 'CALL_CENTER') {
+      return {
+        ...base,
+        totalPrincipal: 0,
+        totalUsd: 0,
+        totalPenConIgv: 0,
+        totalPenSinIgv: 0,
+        osCount: 0,
+        paymentCount: 0,
+        lineCount: 0,
+        currencyLabel: 'PEN_CON_IGV',
+        supported: false,
+        message: 'Call Center usa evaluaciones vendidas/asistidas, no monto facturado.',
+      };
+    }
+
+    if (area === 'CIERRE_TTO') {
+      const agg = await this.queryCerradorasMtdAggregate(start, end, campusId);
+      return {
+        ...base,
+        totalPrincipal: agg.totalUsd,
+        totalUsd: agg.totalUsd,
+        totalPenConIgv: agg.totalPenConIgv,
+        totalPenSinIgv: Math.round((agg.totalPenConIgv / IGV_RATE) * 100) / 100,
+        osCount: agg.osCount,
+        paymentCount: agg.paymentCount,
+        lineCount: agg.paymentCount,
+        currencyLabel: 'USD',
+        supported: true,
+      };
+    }
+
+    if (area === 'OI') {
+      const rows = await this.queryFacturacionRows(start, end, campusId);
+      const osIds = new Set<number>();
+      let totalPenConIgv = 0;
+      for (const row of rows) {
+        totalPenConIgv += Number(row.amount_pen ?? row.amount ?? 0);
+        const soId = Number(row.service_order_id ?? 0);
+        if (soId > 0) osIds.add(soId);
+      }
+      totalPenConIgv = Math.round(totalPenConIgv * 100) / 100;
+      return {
+        ...base,
+        totalPrincipal: totalPenConIgv,
+        totalUsd: 0,
+        totalPenConIgv,
+        totalPenSinIgv: Math.round((totalPenConIgv / IGV_RATE) * 100) / 100,
+        osCount: osIds.size,
+        paymentCount: rows.length,
+        lineCount: rows.length,
+        currencyLabel: 'PEN_CON_IGV',
+        supported: true,
+      };
+    }
+
+    const campusIds = campusId != null ? [campusId] : null;
+    const rows = await this.queryControlesFacturacionRows(start, end, campusIds);
+    const seen = new Set<string>();
+    let totalPenSinIgv = 0;
+    for (const row of rows) {
+      const key = String(row.invoice_body_id ?? `${row.id_historia_clinica}-${row.invoice_date}-${row.amount}`);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      totalPenSinIgv += Number(row.amount ?? 0) / IGV_RATE;
+    }
+    totalPenSinIgv = Math.round(totalPenSinIgv * 100) / 100;
+    return {
+      ...base,
+      totalPrincipal: totalPenSinIgv,
+      totalUsd: 0,
+      totalPenConIgv: Math.round(totalPenSinIgv * IGV_RATE * 100) / 100,
+      totalPenSinIgv,
+      osCount: 0,
+      paymentCount: seen.size,
+      lineCount: rows.length,
+      currencyLabel: 'PEN_SIN_IGV',
+      supported: true,
+    };
+  }
+
+  /** Suma pagos OFM/MARPE/APNEA MTD; deduplica por operation_number + moneda. */
+  private async queryCerradorasMtdAggregate(
+    since: string,
+    until: string,
+    campusId?: number | null,
+  ): Promise<{
+    totalUsd: number;
+    totalPenConIgv: number;
+    osCount: number;
+    paymentCount: number;
+  }> {
+    const client = this.createClient();
+    const params: unknown[] = [since, until];
+    let campusFilter = '';
+    if (campusId != null) {
+      params.push(campusId);
+      campusFilter = ` AND ch.campus = $${params.length}`;
+    }
+
+    const sql = `
+      WITH pagos AS (
+        SELECT
+          irh.id_service_order,
+          irb.id AS invoice_body_id,
+          COALESCE(NULLIF(TRIM(irb.operation_number), ''), 'id-' || irb.id::text) AS op_key,
+          irb.id_currency,
+          CASE
+            WHEN irb.id_currency = 2 THEN irb.amount
+            ELSE irb.amount / NULLIF(COALESCE(
+              (SELECT er2.value FROM exchange_rate er2
+               WHERE er2.state = 1
+                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+               ORDER BY er2.date DESC LIMIT 1),
+              3.5
+            ), 0)
+          END AS amount_usd,
+          CASE
+            WHEN irb.id_currency = 1 THEN irb.amount
+            WHEN irb.id_currency = 2 THEN irb.amount * COALESCE(
+              (SELECT er2.value FROM exchange_rate er2
+               WHERE er2.state = 1
+                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+               ORDER BY er2.date DESC LIMIT 1),
+              3.5
+            )
+            ELSE irb.amount
+          END AS amount_pen
+        FROM invoice_result_body irb
+        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+          AND irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
+        INNER JOIN service_order so ON so.id = irh.id_service_order
+        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+        LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+        LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+        LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+        LEFT JOIN LATERAL (
+          SELECT c2.id
+          FROM contract c2
+          INNER JOIN contract_structure cs ON cs.id = c2.contract_structure_id
+          WHERE c2.idclinichistory = ch.id AND c2.state = 1
+            AND (
+              cs.treatment_code LIKE 'OFM%'
+              OR cs.treatment_code LIKE 'MARPE%'
+              OR cs.treatment_code LIKE 'APNEA%'
+            )
+          ORDER BY c2.date DESC NULLS LAST
+          LIMIT 1
+        ) c_patient ON c_direct.id IS NULL
+        WHERE (
+          (irb.payment_date IS NOT NULL
+            AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+          OR (irb.payment_date IS NULL
+            AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+        )
+        AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
+        ${campusFilter}
+      ),
+      dedup AS (
+        SELECT DISTINCT ON (op_key, id_currency)
+          id_service_order, amount_usd, amount_pen
+        FROM pagos
+        ORDER BY op_key, id_currency, invoice_body_id
+      )
+      SELECT
+        ROUND(COALESCE(SUM(amount_usd), 0)::numeric, 2) AS total_usd,
+        ROUND(COALESCE(SUM(amount_pen), 0)::numeric, 2) AS total_pen,
+        COUNT(DISTINCT id_service_order)::int AS os_count,
+        COUNT(*)::int AS payment_count
+      FROM dedup
+    `;
+
+    try {
+      await client.connect();
+      const result = await client.query(sql, params);
+      const row = result.rows[0] ?? {};
+      return {
+        totalUsd: Number(row.total_usd ?? 0),
+        totalPenConIgv: Number(row.total_pen ?? 0),
+        osCount: Number(row.os_count ?? 0),
+        paymentCount: Number(row.payment_count ?? 0),
+      };
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   /** Prueba conexión y devuelve conteo de líneas invoice del mes (diagnóstico prod). */
@@ -155,6 +419,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       )
       SELECT
         irb.id                        AS invoice_body_id,
+        irh.id_service_order          AS service_order_id,
         irh.invoice_date::text         AS invoice_date,
         irb.payment_date::text         AS fecha_abono,
         irb.amount,
@@ -294,6 +559,7 @@ export class OiSvInvoiceService implements OnModuleInit {
     evalRows: Record<string, unknown>[],
   ): Map<string, OiCrmUserMetrics> {
     const map = new Map<string, OiCrmUserMetrics>();
+    const evalFromFact = new Map<string, number>();
 
     const add = (username: string, patch: Partial<OiCrmUserMetrics>) => {
       const key = username.trim().toLowerCase();
@@ -304,15 +570,24 @@ export class OiSvInvoiceService implements OnModuleInit {
     for (const row of factRows) {
       const attrib = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
-      if (!attrib || amountPen <= 0) continue;
-      add(attrib, { facturadoConIgv: amountPen });
+      if (!attrib) continue;
+      if (amountPen > 0) add(attrib, { facturadoConIgv: amountPen });
+      if (isOiEvalFacturacionRow(row)) {
+        evalFromFact.set(attrib, (evalFromFact.get(attrib) ?? 0) + 1);
+      }
     }
 
+    for (const [login, count] of evalFromFact) {
+      add(login, { evaluaciones: count });
+    }
+
+    // Respaldo: CRM id_payment + cita (por si alguna eval no entró en facturación).
     for (const row of evalRows) {
       const ejecutivo = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const evals = Number(row.evaluaciones ?? 0);
       if (!ejecutivo || evals <= 0) continue;
-      add(ejecutivo, { evaluaciones: evals });
+      const prev = map.get(ejecutivo)?.evaluaciones ?? 0;
+      if (evals > prev) add(ejecutivo, { evaluaciones: evals });
     }
 
     return map;
@@ -779,6 +1054,143 @@ export class OiSvInvoiceService implements OnModuleInit {
     return { byQuotation, byContract };
   }
 
+  /** Cotizaciones con factura SV en el período (misma query que facturacion-cerradoras). */
+  async queryCerradorasFacturacionRows(
+    since: string,
+    until: string,
+    campusId?: number | null,
+  ): Promise<Array<{
+    contract_id: number;
+    quotation_id: number;
+    contract_date: string;
+    contract_num: string;
+    campus_id: number;
+    billing_username: string;
+    os_creator_username: string;
+    service_order_id: number;
+    service_order_creator_id: number;
+    payment_date: string;
+    moldes_date: string | null;
+    first_payment_date: string | null;
+    amount_usd: number;
+  }>> {
+    const client = this.createClient();
+    const params: unknown[] = [since, until];
+    let campusFilter = '';
+    if (campusId != null) {
+      params.push(campusId);
+      campusFilter = ` AND ch.campus = $${params.length}`;
+    }
+
+    const sql = `
+      WITH pagos_mes AS (
+        SELECT
+          COALESCE(c_direct.id, c_patient.id) AS contract_id,
+          COALESCE(c_direct.idquotation, c_patient.idquotation, NULLIF(so.idquotation, 0), 0) AS quotation_id,
+          COALESCE(c_direct.date, c_patient.date)::text AS contract_date,
+          COALESCE(c_direct.num, c_patient.num, '') AS contract_num,
+          ch.campus AS campus_id,
+          irh.id_service_order AS service_order_id,
+          irh.service_order_creator_id AS service_order_creator_id,
+          LOWER(TRIM(COALESCE(u_bill.username, ''))) AS billing_username,
+          LOWER(TRIM(COALESCE(
+            NULLIF(TRIM(u_irh_so.username), ''),
+            NULLIF(TRIM(u_so.username), ''),
+            ''
+          ))) AS os_creator_username,
+          COALESCE(irb.payment_date, irh.invoice_date::date)::text AS payment_date,
+          CASE
+            WHEN irb.id_currency = 2 THEN irb.amount
+            ELSE irb.amount / NULLIF(COALESCE(
+              (SELECT er2.value FROM exchange_rate er2
+               WHERE er2.state = 1
+                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+               ORDER BY er2.date DESC LIMIT 1),
+              3.5
+            ), 0)
+          END AS amount_usd,
+          (SELECT MIN(cd2.date)::text FROM contract_detail cd2
+            WHERE cd2.idcontract = COALESCE(c_direct.id, c_patient.id)
+              AND cd2.state = 1 AND cd2.description ILIKE '%moldes%') AS moldes_date,
+          (SELECT MIN(cd3.date)::text FROM contract_detail cd3
+            WHERE cd3.idcontract = COALESCE(c_direct.id, c_patient.id)
+              AND cd3.state = 1) AS first_payment_date,
+          CASE
+            WHEN cd.description ILIKE '%moldes%' THEN 0
+            WHEN cd.description ILIKE '%inicial%' THEN 1
+            ELSE 2
+          END AS quota_priority
+        FROM invoice_result_body irb
+        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+          AND irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
+        INNER JOIN service_order so ON so.id = irh.id_service_order
+        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+        LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+        LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+        LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+        LEFT JOIN LATERAL (
+          SELECT c2.id, c2.idquotation, c2.date, c2.num
+          FROM contract c2
+          INNER JOIN contract_structure cs ON cs.id = c2.contract_structure_id
+          WHERE c2.idclinichistory = ch.id AND c2.state = 1
+            AND (
+              cs.treatment_code LIKE 'OFM%'
+              OR cs.treatment_code LIKE 'MARPE%'
+              OR cs.treatment_code LIKE 'APNEA%'
+            )
+          ORDER BY c2.date DESC NULLS LAST
+          LIMIT 1
+        ) c_patient ON c_direct.id IS NULL
+        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+        LEFT JOIN users u_irh_so ON u_irh_so.id = irh.service_order_creator_id
+        LEFT JOIN users u_so ON u_so.id = so.user_created
+        WHERE (
+          (irb.payment_date IS NOT NULL
+            AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+          OR (irb.payment_date IS NULL
+            AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+        )
+        AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
+        ${campusFilter}
+      )
+      SELECT DISTINCT ON (service_order_id)
+        contract_id, quotation_id, contract_date, contract_num,
+        campus_id, service_order_id, service_order_creator_id,
+        billing_username, os_creator_username,
+        payment_date, moldes_date, first_payment_date, amount_usd
+      FROM pagos_mes
+      WHERE billing_username <> '' OR os_creator_username <> ''
+      ORDER BY service_order_id, quota_priority, payment_date ASC
+    `;
+
+    try {
+      await client.connect();
+      const result = await client.query(sql, params);
+      return (result.rows as Record<string, unknown>[]).map((r) => ({
+        contract_id: Number(r.contract_id),
+        quotation_id: Number(r.quotation_id ?? 0),
+        contract_date: String(r.contract_date ?? ''),
+        contract_num: String(r.contract_num ?? ''),
+        campus_id: Number(r.campus_id ?? 1),
+        billing_username: String(r.billing_username ?? '').trim().toLowerCase(),
+        os_creator_username: String(r.os_creator_username ?? '').trim().toLowerCase(),
+        service_order_id: Number(r.service_order_id ?? 0),
+        service_order_creator_id: Number(r.service_order_creator_id ?? 0),
+        payment_date: String(r.payment_date ?? '').slice(0, 10),
+        moldes_date: r.moldes_date ? String(r.moldes_date).slice(0, 10) : null,
+        first_payment_date: r.first_payment_date ? String(r.first_payment_date).slice(0, 10) : null,
+        amount_usd: Number(r.amount_usd ?? 0),
+      })).filter((r) => r.contract_id > 0 && (r.billing_username || r.os_creator_username));
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   /**
    * Sede principal por cerradora: sede donde más cierres facturó en SV (últimos 18 meses).
    * Misma lógica que facturacion-cerradoras (contratos OFM/MARPE/APNEA), no equipos CRM.
@@ -799,9 +1211,14 @@ export class OiSvInvoiceService implements OnModuleInit {
       const result = await client.query(
         `WITH pagos AS (
            SELECT
-             LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) AS billing_login,
+             LOWER(TRIM(COALESCE(
+               NULLIF(TRIM(u_irh_so.username), ''),
+               NULLIF(TRIM(u_so.username), ''),
+               NULLIF(TRIM(u_bill.username), ''),
+               ''
+             ))) AS billing_login,
              ch.campus AS campus_id,
-             COALESCE(c_direct.id, c_patient.id) AS contract_id
+             irh.id_service_order AS service_order_id
            FROM invoice_result_body irb
            INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
              AND irh.status_invoice = 1
@@ -825,16 +1242,22 @@ export class OiSvInvoiceService implements OnModuleInit {
              LIMIT 1
            ) c_patient ON c_direct.id IS NULL
            LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+           LEFT JOIN users u_irh_so ON u_irh_so.id = irh.service_order_creator_id
            LEFT JOIN users u_so ON u_so.id = so.user_created
            WHERE (
              (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date)
              OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date)
            )
              AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
-             AND LOWER(TRIM(COALESCE(u_bill.username, u_so.username, ''))) = ANY($2::text[])
+             AND LOWER(TRIM(COALESCE(
+               NULLIF(TRIM(u_irh_so.username), ''),
+               NULLIF(TRIM(u_so.username), ''),
+               NULLIF(TRIM(u_bill.username), ''),
+               ''
+             ))) = ANY($2::text[])
          ),
          fact AS (
-           SELECT billing_login, campus_id, COUNT(DISTINCT contract_id)::int AS closures
+           SELECT billing_login, campus_id, COUNT(DISTINCT service_order_id)::int AS closures
            FROM pagos
            WHERE billing_login <> '' AND campus_id > 0
            GROUP BY billing_login, campus_id

@@ -170,6 +170,18 @@ export class CommissionsController {
     return this.service.getDashboard(area, year, month, campus);
   }
 
+  /** Total facturado MTD en vivo desde SV (filtrable por sede). */
+  @Get('facturacion-mtd')
+  getFacturacionMtd(
+    @Query('area') area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
+  ) {
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.getFacturacionMtd(area, year, month, campus);
+  }
+
   @Get('periods/:id/dashboard')
   getDashboardByPeriod(@Param('id', ParseIntPipe) id: number) {
     return this.service.getDashboardByPeriodId(id);
