@@ -42,6 +42,24 @@ export interface FacturacionMtdSummary {
 
 const IGV_RATE = 1.18;
 
+/** Arequipa puede ser campus 15 o 18 en SV — misma lógica que Controles. */
+function cerradorasCampusSqlFilter(
+  campusId: number | null | undefined,
+  params: unknown[],
+  column = 'ch.campus',
+): string {
+  if (campusId == null) return '';
+  const ids = campusId === 15 || campusId === 18 ? [15, 18] : [campusId];
+  params.push(ids);
+  return ` AND ${column} = ANY($${params.length}::int[])`;
+}
+
+function normalizeCerradorasCampusId(raw: number | null | undefined): number {
+  const id = Number(raw ?? 1);
+  if (id === 18 || id === 15) return 15;
+  return id || 1;
+}
+
 /** Evaluación OI (odontología integral), excluye OFM/MARPE/APNEA. */
 export const OI_EVAL_TARIFF_WHERE = `
   COALESCE(t.name, '') ILIKE '%Evalu%'
@@ -272,11 +290,7 @@ export class OiSvInvoiceService implements OnModuleInit {
   }> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
-    let campusFilter = '';
-    if (campusId != null) {
-      params.push(campusId);
-      campusFilter = ` AND ch.campus = $${params.length}`;
-    }
+    const campusFilter = cerradorasCampusSqlFilter(campusId, params);
 
     const sql = `
       WITH pagos AS (
@@ -1076,11 +1090,7 @@ export class OiSvInvoiceService implements OnModuleInit {
   }>> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
-    let campusFilter = '';
-    if (campusId != null) {
-      params.push(campusId);
-      campusFilter = ` AND ch.campus = $${params.length}`;
-    }
+    const campusFilter = cerradorasCampusSqlFilter(campusId, params);
 
     const sql = `
       WITH pagos_mes AS (
@@ -1272,7 +1282,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       );
       const map = new Map<string, number>();
       for (const row of result.rows) {
-        map.set(String(row.billing_login), Number(row.campus_id));
+        map.set(String(row.billing_login), normalizeCerradorasCampusId(Number(row.campus_id)));
       }
       return map;
     } finally {
