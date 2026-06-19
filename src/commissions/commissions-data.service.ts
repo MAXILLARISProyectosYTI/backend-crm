@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, IsNull, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, In, IsNull, Repository } from 'typeorm';
 import { CommissionPeriod } from './commission-period.entity';
 import { CommissionRecord } from './commission-record.entity';
 import { CommissionType } from './commission-type.entity';
@@ -4562,10 +4562,15 @@ export class CommissionsDataService {
       : records;
 
     const filteredRecordIds = new Set(filteredRecords.map((r) => r.id));
-    const details = (await this.detailRepo.find({
-      where: { record: { period: { id: periodId } } },
-      relations: ['record', 'commissionType'],
-    })).filter((d) => filteredRecordIds.has(d.record?.id ?? 0));
+    const allRecordIds = records.map((r) => r.id);
+    const details = (
+      allRecordIds.length > 0
+        ? await this.detailRepo.find({
+            where: { record: { id: In(allRecordIds) } },
+            relations: ['record', 'commissionType'],
+          })
+        : []
+    ).filter((d) => filteredRecordIds.has(d.record?.id ?? 0));
 
     const tags = period.area === 'CIERRE_TTO'
       ? await this.tagRepo.find({ where: { period: { id: periodId } } })
