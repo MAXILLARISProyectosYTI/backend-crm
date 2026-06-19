@@ -19,11 +19,12 @@ import {
   type CallCenterExecutivoInput,
   type CallCenterConfig,
 } from './engines/call-center.engine';
-import { calculateCierreTto, type ContractSvRow, type CierreTtoSedeConfig } from './engines/cierre-tto.engine';
+import { calculateCierreTto, previewCierreTtoCommissions, type ContractSvRow, type CierreTtoSedeConfig } from './engines/cierre-tto.engine';
 import {
   buildCrmCommissionDates,
   indexLatestByQuotation,
   mapTratamientoFromCrm,
+  mapTratamientoFromTreatmentCode,
   parseModalidadFromCrmFields,
   resolveCrmContractId,
   type CerradorasCrmPresaveRow,
@@ -46,7 +47,7 @@ const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 const CONTROLES_TEAM_ID = TEAMS_IDS.EQ_EJECUTIVOS_CONTROLES;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 21;
+const CIERRE_TTO_SYNC_VERSION = 22;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Sede principal en catálogo cerradoras (operación regional fija). */
@@ -796,6 +797,12 @@ export class CommissionsDataService {
         cerradoraIds,
       );
       if (fromCerradoraUser) return { userId: fromCerradoraUser, source: 'crm' };
+      // Cotización en CRM con assigned_user aunque no esté en catálogo cerradoras todavía
+      const assignedRaw = assign.assignedUserId?.trim();
+      if (assignedRaw) {
+        const mapped = usernameToCrmId.get(assignedRaw.toLowerCase()) ?? assignedRaw;
+        return { userId: mapped, source: 'crm' };
+      }
     }
     const fromSoOpp = this.resolveCerradoraUserId(
       soAssign?.assignedUserId,
@@ -1838,6 +1845,7 @@ export class CommissionsDataService {
     moldes_date: string | null;
     first_payment_date: string | null;
     amount_usd: number;
+    treatment_code: string;
   }>> {
     // BD SV directa primero (misma fuente que Facturado SV / MTD). HTTP solo respaldo.
     try {
@@ -1856,7 +1864,7 @@ export class CommissionsDataService {
       const httpRows = await this.svServices.getCerradorasContractsFromSv(tokenSv, start, end);
       if (httpRows.length > 0) {
         this.logger.log(`Cerradoras SV-HTTP ${start}→${end}: ${httpRows.length} filas`);
-        return httpRows;
+        return httpRows.map((r) => ({ ...r, treatment_code: (r as { treatment_code?: string }).treatment_code ?? '' }));
       }
     } catch (err) {
       this.logger.warn(
@@ -1866,7 +1874,7 @@ export class CommissionsDataService {
     return [];
   }
 
-  /** Resumen SV por cerradora y sede — misma ventana MTD y total que facturacion-mtd. */
+  /** Resumen SV por cerradora y sede — misma ventana MTD, comisiones calculadas en vivo desde O.S/cotización. */
   async getCerradorasFacturacionResumen(
     year: number,
     month: number,
@@ -1878,35 +1886,103 @@ export class CommissionsDataService {
       campusId: number;
       osCount: number;
       totalUsd: number;
+      comisionTtos: number;
+      comisionBono: number;
+      comisionTotal: number;
+    }>;
+    detalleLineas: Array<{
+      userId: string;
+      userName: string;
+      campusId: number;
+      contractId: number | null;
+      quotationId: number | null;
+      serviceOrderId: number | null;
+      tratamiento: string | null;
+      modalidad: string | null;
+      timing: string | null;
+      modifier: string | null;
+      cuotaNum: number | null;
+      importe: number;
     }>;
     period: { startDate: string; endDate: string; isPartialMonth: boolean };
     totalFacturadoUsd: number;
     totalOs: number;
   }> {
     const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
-    const [catalog, usernameToCrmId, svRows, mtd] = await Promise.all([
+    const [catalog, mtd, invoiceResult, periodRow] = await Promise.all([
       this.listCerradorasEjecutivos(),
-      this.buildCrmUsernameToUserIdMap(),
-      this.fetchCerradorasInvoiceRowsByQuotation(start, end),
       this.oiSvInvoiceService.queryFacturacionMtdSummary('CIERRE_TTO', year, month, campusId ?? null),
+      this.buildCerradorasContractsFromQuotationInvoices(start, end),
+      this.findPeriodForDashboard(year, month, 'CIERRE_TTO'),
     ]);
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
 
+    let contracts = invoiceResult.contracts;
+    if (campusId != null) {
+      contracts = contracts.filter((c) => this.matchesFilterCampus(c.campusId, campusId));
+    }
+
+    let previewEjecutivos: ReturnType<typeof previewCierreTtoCommissions>['ejecutivos'] = [];
+    let previewDetalle: ReturnType<typeof previewCierreTtoCommissions>['detalleLineas'] = [];
+
+    const period = periodRow ?? await this.ensurePeriod(year, month, 'CIERRE_TTO');
+    if (contracts.length > 0) {
+      await this.initPeriodRates(period.id);
+      const [types, tags, rateByCode, sedeConfig] = await Promise.all([
+        this.typeRepo.find({ where: { area: 'CIERRE_TTO', active: true } }),
+        this.tagRepo.find({ where: { period: { id: period.id } } }),
+        this.getPeriodRatesMap(period.id),
+        this.buildCierreTtoSedeConfig(period.id),
+      ]);
+      const tagByContract = new Map(tags.map((t) => [t.contractId, t]));
+      const preview = previewCierreTtoCommissions(
+        period,
+        contracts,
+        types,
+        tagByContract,
+        rateByCode,
+        undefined,
+        sedeConfig,
+      );
+      previewEjecutivos = preview.ejecutivos;
+      previewDetalle = preview.detalleLineas;
+    }
+
+    const agg = new Map<string, {
+      userId: string;
+      userName: string;
+      campusId: number;
+      osCount: number;
+      totalUsd: number;
+      comisionTtos: number;
+      comisionBono: number;
+      comisionTotal: number;
+    }>();
+
+    for (const e of previewEjecutivos) {
+      const key = `${e.userId}-${e.campusId}`;
+      agg.set(key, {
+        userId: e.userId,
+        userName: e.userName,
+        campusId: e.campusId,
+        osCount: e.cantidadCierres,
+        totalUsd: 0,
+        comisionTtos: e.comisionTtos,
+        comisionBono: e.comisionBono,
+        comisionTotal: e.comisionTotal,
+      });
+    }
+
+    // Facturado USD por cerradora+sede (sede = ch.campus de la O.S en SV)
+    const usernameToCrmId = await this.buildCrmUsernameToUserIdMap();
+    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end);
     const quotationIds = svRows.map((r) => Number(r.quotation_id)).filter((id) => id > 0);
     const serviceOrderIds = svRows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
     const [winByQuotation, assignByServiceOrder] = await Promise.all([
       this.loadCerradoraWinAssignmentByQuotation(quotationIds),
       this.loadCerradoraAssignmentByServiceOrder(serviceOrderIds),
     ]);
-
-    const agg = new Map<string, {
-      userId: string;
-      userName: string;
-      campusId: number;
-      osIds: Set<number>;
-      totalUsd: number;
-    }>();
 
     for (const row of svRows) {
       const campus = this.mapCommissionCampusId(row.campus_id);
@@ -1936,13 +2012,43 @@ export class CommissionsDataService {
         userId: attrib.userId,
         userName: cat?.userName ?? cat?.userLogin ?? attrib.userId,
         campusId: campus,
-        osIds: new Set<number>(),
+        osCount: 0,
         totalUsd: 0,
+        comisionTtos: 0,
+        comisionBono: 0,
+        comisionTotal: 0,
       };
-      if (row.service_order_id > 0) prev.osIds.add(row.service_order_id);
+      if (row.service_order_id > 0) prev.osCount += 1;
       prev.totalUsd += Number(row.amount_usd ?? 0);
       agg.set(key, prev);
     }
+
+    // Comisiones del preview prevalecen sobre filas solo-facturación
+    for (const e of previewEjecutivos) {
+      const key = `${e.userId}-${e.campusId}`;
+      const prev = agg.get(key);
+      if (prev) {
+        prev.comisionTtos = e.comisionTtos;
+        prev.comisionBono = e.comisionBono;
+        prev.comisionTotal = e.comisionTotal;
+        prev.osCount = Math.max(prev.osCount, e.cantidadCierres);
+      }
+    }
+
+    const detalleLineas = previewDetalle.map((l) => ({
+      userId: l.userId,
+      userName: l.userName,
+      campusId: l.campusId,
+      contractId: l.contractId,
+      quotationId: l.quotationId,
+      serviceOrderId: l.serviceOrderId ?? null,
+      tratamiento: l.tratamiento,
+      modalidad: l.modalidad,
+      timing: l.timing,
+      modifier: l.modifier,
+      cuotaNum: l.cuotaNum,
+      importe: l.importe,
+    }));
 
     return {
       items: [...agg.values()]
@@ -1950,10 +2056,14 @@ export class CommissionsDataService {
           userId: item.userId,
           userName: item.userName,
           campusId: item.campusId,
-          osCount: item.osIds.size,
+          osCount: item.osCount,
           totalUsd: Math.round(item.totalUsd * 100) / 100,
+          comisionTtos: Math.round(item.comisionTtos * 100) / 100,
+          comisionBono: Math.round(item.comisionBono * 100) / 100,
+          comisionTotal: Math.round(item.comisionTotal * 100) / 100,
         }))
         .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es')),
+      detalleLineas,
       period: { startDate: start, endDate: end, isPartialMonth },
       totalFacturadoUsd: mtd.totalUsd,
       totalOs: mtd.osCount,
@@ -1992,15 +2102,18 @@ export class CommissionsDataService {
         this.loadCerradorasPresaveData(quotationIds),
       ]);
 
-    const seenContracts = new Set<number>();
+    const seenServiceOrders = new Set<number>();
     const contracts: ContractSvRow[] = [];
     let fromCrmAssign = 0;
     let fromOsCreator = 0;
     let fromBilling = 0;
 
     for (const row of svRows) {
+      const serviceOrderId = Number(row.service_order_id);
       const contractId = Number(row.contract_id);
-      if (!contractId || seenContracts.has(contractId)) continue;
+      const dedupeKey = serviceOrderId > 0 ? serviceOrderId : contractId;
+      if (!contractId || seenServiceOrders.has(dedupeKey)) continue;
+      seenServiceOrders.add(dedupeKey);
 
       let quotationId = Number(row.quotation_id) || 0;
       const soAssign = row.service_order_id > 0
@@ -2029,9 +2142,8 @@ export class CommissionsDataService {
       else if (attrib.source === 'os') fromOsCreator += 1;
       else fromBilling += 1;
 
-      seenContracts.add(contractId);
       const campusId = this.mapCommissionCampusId(row.campus_id);
-      const cat = catalogByUserId.get(crmUserId)!;
+      const cat = catalogByUserId.get(crmUserId);
       const subCampaignName = assign?.subCampaignId
         ? SUB_CAMPAIGN_NAMES[assign.subCampaignId] ?? null
         : null;
@@ -2041,6 +2153,7 @@ export class CommissionsDataService {
         paymentsCount: presave?.payments_count,
         paymentMethod: presave?.payment_method,
       }) ?? { modalidad: 'CONTADO' as const, cuotaNum: 1 };
+      const tratamientoFromSv = mapTratamientoFromTreatmentCode(row.treatment_code);
 
       this.logger.debug(
         `Cerradoras cot.${quotationId || '—'} os.${row.service_order_id || '—'}: ` +
@@ -2053,14 +2166,15 @@ export class CommissionsDataService {
       contracts.push({
         contractId,
         quotationId: quotationId || contractId,
-        tratamiento: mapTratamientoFromCrm({
+        serviceOrderId: serviceOrderId > 0 ? serviceOrderId : undefined,
+        tratamiento: tratamientoFromSv ?? mapTratamientoFromCrm({
           subCampaignName,
           contractType: presave?.contract_type ?? solicitud?.tipo_contrato,
         }),
         modalidad: modalidadParsed.modalidad,
         cuotaNum: modalidadParsed.cuotaNum,
         ejecutivo: crmUserId,
-        ejecutivoNombre: cat.userName ?? cat.userLogin ?? crmUserId,
+        ejecutivoNombre: cat?.userName ?? cat?.userLogin ?? crmUserId,
         campusId,
         campusNombre: this.commissionCampusNombre(campusId),
         contractDate: String(row.contract_date ?? start).slice(0, 10),
