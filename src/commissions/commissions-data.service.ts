@@ -1838,6 +1838,89 @@ export class CommissionsDataService {
     }
   }
 
+  /** Resumen SV por cerradora y sede — misma ventana MTD y total que facturacion-mtd. */
+  async getCerradorasFacturacionResumen(
+    year: number,
+    month: number,
+    campusId?: number,
+  ): Promise<{
+    items: Array<{
+      userId: string;
+      userName: string;
+      campusId: number;
+      osCount: number;
+      totalUsd: number;
+    }>;
+    period: { startDate: string; endDate: string; isPartialMonth: boolean };
+    totalFacturadoUsd: number;
+    totalOs: number;
+  }> {
+    const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
+    const [catalog, usernameToCrmId, svRows, mtd] = await Promise.all([
+      this.listCerradorasEjecutivos(),
+      this.buildCrmUsernameToUserIdMap(),
+      this.fetchCerradorasInvoiceRowsByQuotation(start, end),
+      this.oiSvInvoiceService.queryFacturacionMtdSummary('CIERRE_TTO', year, month, campusId ?? null),
+    ]);
+    const cerradoraIds = new Set(catalog.map((c) => c.userId));
+    const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
+
+    const quotationIds = svRows.map((r) => Number(r.quotation_id)).filter((id) => id > 0);
+    const winByQuotation = await this.loadCerradoraWinAssignmentByQuotation(quotationIds);
+
+    const agg = new Map<string, {
+      userId: string;
+      userName: string;
+      campusId: number;
+      osIds: Set<number>;
+      totalUsd: number;
+    }>();
+
+    for (const row of svRows) {
+      const campus = this.mapCommissionCampusId(row.campus_id);
+      if (campusId != null && !this.matchesFilterCampus(campus, campusId)) continue;
+
+      const quotationId = Number(row.quotation_id) || 0;
+      const assign = quotationId > 0 ? winByQuotation.get(quotationId) : undefined;
+      const attrib = this.resolveCerradoraFromInvoiceAttribution(
+        assign,
+        row.os_creator_username,
+        row.billing_username,
+        usernameToCrmId,
+        cerradoraIds,
+      );
+      if (!attrib) continue;
+
+      const cat = catalogByUserId.get(attrib.userId);
+      const key = `${attrib.userId}-${campus}`;
+      const prev = agg.get(key) ?? {
+        userId: attrib.userId,
+        userName: cat?.userName ?? cat?.userLogin ?? attrib.userId,
+        campusId: campus,
+        osIds: new Set<number>(),
+        totalUsd: 0,
+      };
+      if (row.service_order_id > 0) prev.osIds.add(row.service_order_id);
+      prev.totalUsd += Number(row.amount_usd ?? 0);
+      agg.set(key, prev);
+    }
+
+    return {
+      items: [...agg.values()]
+        .map((item) => ({
+          userId: item.userId,
+          userName: item.userName,
+          campusId: item.campusId,
+          osCount: item.osIds.size,
+          totalUsd: Math.round(item.totalUsd * 100) / 100,
+        }))
+        .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es')),
+      period: { startDate: start, endDate: end, isPartialMonth },
+      totalFacturadoUsd: mtd.totalUsd,
+      totalOs: mtd.osCount,
+    };
+  }
+
   /**
    * Fuente principal: cotización + factura SV (+ O.S creada por cerradora).
    * Atribución: CRM win+factura → creador O.S (irh.service_order_creator_id) → facturador recepción.

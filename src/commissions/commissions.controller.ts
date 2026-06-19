@@ -31,6 +31,16 @@ export class CommissionsController {
     return this.service.listCerradorasEjecutivos();
   }
 
+  @Get('cerradoras/facturacion-resumen')
+  getCerradorasFacturacionResumen(
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
+  ) {
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.getCerradorasFacturacionResumen(year, month, campus);
+  }
+
   @Get('ventas/staff-catalog')
   listVentasStaffCatalog(
     @Query('area') area?: 'CALL_CENTER' | 'OI' | 'ALL',

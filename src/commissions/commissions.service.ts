@@ -350,6 +350,10 @@ export class CommissionsService {
     return this.dataService.listCerradorasEjecutivos();
   }
 
+  getCerradorasFacturacionResumen(year: number, month: number, campusId?: number) {
+    return this.dataService.getCerradorasFacturacionResumen(year, month, campusId);
+  }
+
   listVentasStaffCatalog(area?: 'CALL_CENTER' | 'OI' | 'ALL') {
     return this.dataService.listVentasStaffCatalog(area ?? 'ALL');
   }
