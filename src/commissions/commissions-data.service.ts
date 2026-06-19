@@ -40,6 +40,7 @@ import {
   type OiCrmUserMetrics,
 } from './utils/oi-crm-metrics.util';
 import { OiSvInvoiceService } from './services/oi-sv-invoice.service';
+import { isCrmProductionEnv } from '../config/sv-database.config';
 
 const CERRADORAS_TEAM_ID = TEAMS_IDS.CERRADORAS;
 const OI_TEAM_ID = TEAMS_IDS.EJ_COMERCIAL_OI;
@@ -1971,9 +1972,35 @@ export class CommissionsDataService {
     return { modalidad: 'CONTADO', cuotaNum: 1 };
   }
 
-  private async fetchCerradorasInvoiceRowsByQuotation(
+  private mapCerradorasHttpRows(
+    rows: Awaited<ReturnType<SvServices['getCerradorasContractsFromSv']>>,
+  ): Array<{
+    contract_id: number;
+    quotation_id: number;
+    contract_date: string;
+    contract_num: string;
+    campus_id: number;
+    billing_username: string;
+    os_creator_username: string;
+    service_order_id: number;
+    service_order_creator_id: number;
+    payment_date: string;
+    moldes_date: string | null;
+    first_payment_date: string | null;
+    amount_usd: number;
+    treatment_code: string;
+  }> {
+    return rows.map((r) => ({
+      ...r,
+      os_creator_username: r.os_creator_username || r.billing_username || 'sin_asignar',
+      treatment_code: (r as { treatment_code?: string }).treatment_code ?? '',
+    }));
+  }
+
+  private async fetchCerradorasSvHttpRows(
     start: string,
     end: string,
+    campusId?: number,
   ): Promise<Array<{
     contract_id: number;
     quotation_id: number;
@@ -1990,31 +2017,112 @@ export class CommissionsDataService {
     amount_usd: number;
     treatment_code: string;
   }>> {
-    // BD SV directa — misma query que total MTD (queryCerradorasFacturacionRows).
-    try {
-      const dbRows = await this.oiSvInvoiceService.queryCerradorasFacturacionRows(start, end);
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    const httpRows = await this.svServices.getCerradorasContractsFromSv(
+      tokenSv,
+      start,
+      end,
+      campusId,
+    );
+    return this.mapCerradorasHttpRows(httpRows);
+  }
+
+  private async fetchCerradorasInvoiceRowsByQuotation(
+    start: string,
+    end: string,
+    campusId?: number,
+  ): Promise<Array<{
+    contract_id: number;
+    quotation_id: number;
+    contract_date: string;
+    contract_num: string;
+    campus_id: number;
+    billing_username: string;
+    os_creator_username: string;
+    service_order_id: number;
+    service_order_creator_id: number;
+    payment_date: string;
+    moldes_date: string | null;
+    first_payment_date: string | null;
+    amount_usd: number;
+    treatment_code: string;
+  }>> {
+    const tryDb = async () => {
+      const dbRows = await this.oiSvInvoiceService.queryCerradorasFacturacionRows(
+        start,
+        end,
+        campusId ?? null,
+      );
       if (dbRows.length > 0) {
         this.logger.log(`Cerradoras SV-DB ${start}→${end}: ${dbRows.length} filas`);
-        return dbRows;
       }
-    } catch (dbErr) {
-      this.logger.warn(
-        `Cerradoras SV-DB ${start}→${end}: ${dbErr instanceof Error ? dbErr.message : dbErr}`,
-      );
-    }
-    try {
-      const { tokenSv } = await this.svServices.getTokenSvAdmin();
-      const httpRows = await this.svServices.getCerradorasContractsFromSv(tokenSv, start, end);
+      return dbRows;
+    };
+    const tryHttp = async () => {
+      const httpRows = await this.fetchCerradorasSvHttpRows(start, end, campusId);
       if (httpRows.length > 0) {
         this.logger.log(`Cerradoras SV-HTTP ${start}→${end}: ${httpRows.length} filas`);
-        return httpRows.map((r) => ({ ...r, treatment_code: (r as { treatment_code?: string }).treatment_code ?? '' }));
       }
-    } catch (err) {
-      this.logger.warn(
-        `Cerradoras SV-HTTP ${start}→${end}: ${err instanceof Error ? err.message : err}`,
-      );
+      return httpRows;
+    };
+
+    const order = isCrmProductionEnv()
+      ? ([tryHttp, tryDb] as const)
+      : ([tryDb, tryHttp] as const);
+
+    for (const attempt of order) {
+      try {
+        const rows = await attempt();
+        if (rows.length > 0) return rows;
+      } catch (err) {
+        this.logger.warn(
+          `Cerradoras SV ${start}→${end}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
     return [];
+  }
+
+  /** SV para facturacion-resumen — prod: HTTP SV primero (sin depender de SV_DB_*). */
+  private async fetchCerradorasSvForFacturacionResumen(
+    year: number,
+    month: number,
+    start: string,
+    end: string,
+    campusId?: number,
+  ): Promise<{
+    totalFacturadoUsd: number;
+    totalOs: number;
+    svRows: Awaited<ReturnType<OiSvInvoiceService['queryCerradorasFacturacionRows']>>;
+    svError: string | null;
+  }> {
+    type SvRow = Awaited<ReturnType<OiSvInvoiceService['queryCerradorasFacturacionRows']>>[number];
+    const summarize = (rows: SvRow[]) => {
+      const osIds = new Set<number>();
+      let totalUsd = 0;
+      for (const row of rows) {
+        totalUsd += Number(row.amount_usd ?? 0);
+        if (row.service_order_id > 0) osIds.add(row.service_order_id);
+      }
+      return {
+        totalFacturadoUsd: Math.round(totalUsd * 100) / 100,
+        totalOs: osIds.size,
+      };
+    };
+
+    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end, campusId);
+    if (svRows.length > 0) {
+      return { ...summarize(svRows), svRows, svError: null };
+    }
+
+    return {
+      totalFacturadoUsd: 0,
+      totalOs: 0,
+      svRows: [],
+      svError: isCrmProductionEnv()
+        ? 'Sin filas SV (HTTP api7 y BD maxi_dev)'
+        : 'Sin filas en SV (BD y HTTP)',
+    };
   }
 
   /** Resumen SV — misma query que total MTD; comisiones en vivo por O.S/cotización/tarifa. */
@@ -2050,14 +2158,15 @@ export class CommissionsDataService {
     period: { startDate: string; endDate: string; isPartialMonth: boolean };
     totalFacturadoUsd: number;
     totalOs: number;
+    svError?: string | null;
   }> {
     const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
-    const [catalog, mtd, svRows, periodRow] = await Promise.all([
+    const [catalog, svData, periodRow] = await Promise.all([
       this.listCerradorasEjecutivos(),
-      this.oiSvInvoiceService.queryFacturacionMtdSummary('CIERRE_TTO', year, month, campusId ?? null),
-      this.oiSvInvoiceService.queryCerradorasFacturacionRows(start, end, campusId ?? null),
+      this.fetchCerradorasSvForFacturacionResumen(year, month, start, end, campusId),
       this.findPeriodForDashboard(year, month, 'CIERRE_TTO'),
     ]);
+    const { totalFacturadoUsd, totalOs, svRows, svError } = svData;
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
 
@@ -2193,8 +2302,9 @@ export class CommissionsDataService {
         .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es')),
       detalleLineas,
       period: { startDate: start, endDate: end, isPartialMonth },
-      totalFacturadoUsd: mtd.totalUsd,
-      totalOs: mtd.osCount,
+      totalFacturadoUsd,
+      totalOs,
+      svError: svError ?? null,
     };
   }
 
@@ -2211,7 +2321,7 @@ export class CommissionsDataService {
     fromOsCreator: number;
     fromBilling: number;
   }> {
-    const svRows = await this.oiSvInvoiceService.queryCerradorasFacturacionRows(start, end);
+    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end);
     const contracts = await this.buildCerradorasContractsFromSvRows(start, svRows);
     return {
       contracts,
@@ -4712,6 +4822,36 @@ export class CommissionsDataService {
     month: number,
     campusId?: number,
   ) {
+    if (area === 'CIERRE_TTO') {
+      const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
+      const sv = await this.fetchCerradorasSvForFacturacionResumen(
+        year,
+        month,
+        start,
+        end,
+        campusId,
+      );
+      return {
+        area,
+        year,
+        month,
+        startDate: start,
+        endDate: end,
+        isPartialMonth,
+        campusId: campusId ?? null,
+        totalPrincipal: sv.totalFacturadoUsd,
+        totalUsd: sv.totalFacturadoUsd,
+        totalPenConIgv: 0,
+        totalPenSinIgv: 0,
+        osCount: sv.totalOs,
+        paymentCount: sv.svRows.length,
+        lineCount: sv.svRows.length,
+        currencyLabel: 'USD' as const,
+        asOf: new Date().toISOString(),
+        supported: true,
+        message: sv.svError ?? undefined,
+      };
+    }
     return this.oiSvInvoiceService.queryFacturacionMtdSummary(
       area,
       year,
