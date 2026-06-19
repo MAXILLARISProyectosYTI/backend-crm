@@ -46,7 +46,7 @@ const TEAM_AREQUIPA_ID = TEAMS_IDS.TEAM_AREQUIPA;
 const TEAM_TRUJILLO_ID = TEAMS_IDS.TEAM_TRUJILLO;
 const CONTROLES_TEAM_ID = TEAMS_IDS.EQ_EJECUTIVOS_CONTROLES;
 /** Incrementar cuando cambie la lógica de sync CRM/SV para recalcular períodos ya sincronizados. */
-const CIERRE_TTO_SYNC_VERSION = 20;
+const CIERRE_TTO_SYNC_VERSION = 21;
 const CERRADORAS_OI_PORCENTAJE_DEFAULT = 0.02;
 
 /** Sede principal en catálogo cerradoras (operación regional fija). */
@@ -1839,23 +1839,31 @@ export class CommissionsDataService {
     first_payment_date: string | null;
     amount_usd: number;
   }>> {
+    // BD SV directa primero (misma fuente que Facturado SV / MTD). HTTP solo respaldo.
+    try {
+      const dbRows = await this.oiSvInvoiceService.queryCerradorasFacturacionRows(start, end);
+      if (dbRows.length > 0) {
+        this.logger.log(`Cerradoras SV-DB ${start}→${end}: ${dbRows.length} filas`);
+        return dbRows;
+      }
+    } catch (dbErr) {
+      this.logger.warn(
+        `Cerradoras SV-DB ${start}→${end}: ${dbErr instanceof Error ? dbErr.message : dbErr}`,
+      );
+    }
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
       const httpRows = await this.svServices.getCerradorasContractsFromSv(tokenSv, start, end);
-      if (httpRows.length > 0) return httpRows;
+      if (httpRows.length > 0) {
+        this.logger.log(`Cerradoras SV-HTTP ${start}→${end}: ${httpRows.length} filas`);
+        return httpRows;
+      }
     } catch (err) {
       this.logger.warn(
         `Cerradoras SV-HTTP ${start}→${end}: ${err instanceof Error ? err.message : err}`,
       );
     }
-    try {
-      return await this.oiSvInvoiceService.queryCerradorasFacturacionRows(start, end);
-    } catch (dbErr) {
-      this.logger.warn(
-        `Cerradoras SV-DB ${start}→${end}: ${dbErr instanceof Error ? dbErr.message : dbErr}`,
-      );
-      return [];
-    }
+    return [];
   }
 
   /** Resumen SV por cerradora y sede — misma ventana MTD y total que facturacion-mtd. */
