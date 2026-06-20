@@ -2019,10 +2019,34 @@ export class CommissionsDataService {
     return this.mapCerradorasHttpRows(httpRows);
   }
 
+  /**
+   * Carga los service_order_id de SV vinculados a oportunidades cerradoras en CRM.
+   * Fuente de verdad: opportunity_service_order → c_oportunidad_cerradora.
+   * Solo O.S. con cerradora asignada → excluye evaluaciones y O.S. sin oportunidad CRM.
+   */
+  private async loadCerradoraServiceOrderIdsForPeriod(
+    campusId?: number,
+  ): Promise<number[]> {
+    const rows: Array<{ service_order_id: number }> = await this.dataSource.query(
+      `
+      SELECT DISTINCT oso.service_order_id
+      FROM opportunity_service_order oso
+      INNER JOIN c_oportunidad_cerradora oc
+        ON oc.opportunity_id = oso.opportunity_id
+        AND COALESCE(oc.deleted, false) = false
+        AND oc.assigned_user_id IS NOT NULL
+      WHERE oso.service_order_id IS NOT NULL
+        AND oso.service_order_id > 0
+      `,
+    );
+    return rows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
+  }
+
   private async fetchCerradorasInvoiceRowsByQuotation(
     start: string,
     end: string,
     campusId?: number,
+    allowedServiceOrderIds?: number[],
   ): Promise<Array<{
     contract_id: number;
     quotation_id: number;
@@ -2044,6 +2068,7 @@ export class CommissionsDataService {
         start,
         end,
         campusId ?? null,
+        allowedServiceOrderIds,
       );
       if (dbRows.length > 0) {
         this.logger.log(`Cerradoras SV-DB ${start}→${end}: ${dbRows.length} filas`);
@@ -2075,13 +2100,15 @@ export class CommissionsDataService {
     return [];
   }
 
-  /** SV para facturacion-resumen — BD maxi_dev directa (sin depender de api7). */
+  /** SV para facturacion-resumen — BD maxi_dev directa (sin depender de api7).
+   *  Solo incluye O.S. vinculadas a oportunidades cerradoras en CRM. */
   private async fetchCerradorasSvForFacturacionResumen(
     year: number,
     month: number,
     start: string,
     end: string,
     campusId?: number,
+    allowedServiceOrderIds?: number[],
   ): Promise<{
     totalFacturadoUsd: number;
     totalOs: number;
@@ -2103,7 +2130,9 @@ export class CommissionsDataService {
     };
 
     try {
-      const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end, campusId);
+      const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(
+        start, end, campusId, allowedServiceOrderIds,
+      );
       if (svRows.length > 0) {
         return { ...summarize(svRows), svRows, svError: null };
       }
@@ -2162,9 +2191,14 @@ export class CommissionsDataService {
     svError?: string | null;
   }> {
     const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
+
+    // 1. Cargar primero los service_order_ids de oportunidades cerradoras desde CRM.
+    //    Esto filtra en origen: solo O.S. con cerradora asignada en CRM pasan a SV.
+    const cerradoraSoIds = await this.loadCerradoraServiceOrderIdsForPeriod(campusId);
+
     const [catalog, svData, periodRow] = await Promise.all([
       this.listCerradorasEjecutivos(),
-      this.fetchCerradorasSvForFacturacionResumen(year, month, start, end, campusId),
+      this.fetchCerradorasSvForFacturacionResumen(year, month, start, end, campusId, cerradoraSoIds),
       this.findPeriodForDashboard(year, month, 'CIERRE_TTO'),
     ]);
     const { totalFacturadoUsd, totalOs, svRows, svError } = svData;
