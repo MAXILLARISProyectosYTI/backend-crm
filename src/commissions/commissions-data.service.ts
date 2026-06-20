@@ -798,12 +798,6 @@ export class CommissionsDataService {
         cerradoraIds,
       );
       if (fromCerradoraUser) return { userId: fromCerradoraUser, source: 'crm' };
-      // Cotización en CRM con assigned_user aunque no esté en catálogo cerradoras todavía
-      const assignedRaw = assign.assignedUserId?.trim();
-      if (assignedRaw) {
-        const mapped = usernameToCrmId.get(assignedRaw.toLowerCase()) ?? assignedRaw;
-        return { userId: mapped, source: 'crm' };
-      }
     }
     const fromSoOpp = this.resolveCerradoraUserId(
       soAssign?.assignedUserId,
@@ -824,7 +818,7 @@ export class CommissionsDataService {
     return null;
   }
 
-  /** Usuario cerradora: CRM (cotización) → login SV (creador O.S / facturador). Nunca null. */
+  /** Usuario cerradora: cotización CRM → login SV solo si está en equipo Cerradoras. */
   private resolveCerradoraUserFromSvRow(
     row: {
       os_creator_username: string;
@@ -844,7 +838,7 @@ export class CommissionsDataService {
     usernameToCrmId: Map<string, string>,
     cerradoraIds: Set<string>,
     catalogByUserId: Map<string, { userName?: string; userLogin?: string | null }>,
-  ): { userId: string; userName: string } {
+  ): { userId: string; userName: string } | null {
     const fromCrm = this.resolveCerradoraFromInvoiceAttribution(
       assign,
       row.os_creator_username,
@@ -860,13 +854,7 @@ export class CommissionsDataService {
         userName: cat?.userName ?? cat?.userLogin ?? fromCrm.userId,
       };
     }
-    const svLogin = (row.os_creator_username || row.billing_username || 'sin_asignar').trim().toLowerCase();
-    const userId = usernameToCrmId.get(svLogin) ?? svLogin;
-    const cat = catalogByUserId.get(userId);
-    return {
-      userId,
-      userName: cat?.userName ?? cat?.userLogin ?? svLogin,
-    };
+    return null;
   }
 
   /** Construye cierres comisionables desde filas SV (misma fuente que total facturado MTD). */
@@ -907,9 +895,11 @@ export class CommissionsDataService {
 
     for (const row of svRows) {
       const contractId = Number(row.contract_id);
-      if (!contractId) continue;
-
       const serviceOrderId = Number(row.service_order_id);
+      // queryCerradorasFacturacionRows returns 0 as contract_id (it queries by OS).
+      // Use service_order_id as the unique key if contract_id is absent.
+      if (!contractId && !serviceOrderId) continue;
+
       let quotationId = Number(row.quotation_id) || 0;
       const soAssign = serviceOrderId > 0
         ? assignByServiceOrder.get(serviceOrderId)
@@ -922,7 +912,7 @@ export class CommissionsDataService {
       const presave = quotationId > 0 ? presaveByQuotation.get(quotationId) : undefined;
       const solicitud = quotationId > 0 ? solicitudByQuotation.get(quotationId) : undefined;
 
-      const { userId, userName } = this.resolveCerradoraUserFromSvRow(
+      const resolved = this.resolveCerradoraUserFromSvRow(
         row,
         assign,
         soAssign,
@@ -930,6 +920,8 @@ export class CommissionsDataService {
         cerradoraIds,
         catalogByUserId,
       );
+      if (!resolved) continue;
+      const { userId, userName } = resolved;
 
       const campusId = this.mapCommissionCampusId(row.campus_id);
       const subCampaignName = assign?.subCampaignId
@@ -944,8 +936,8 @@ export class CommissionsDataService {
       const tratamientoFromSv = mapTratamientoFromTreatmentCode(row.treatment_code);
 
       contracts.push({
-        contractId,
-        quotationId: quotationId || contractId,
+        contractId: contractId || serviceOrderId,
+        quotationId: quotationId || contractId || serviceOrderId,
         serviceOrderId: serviceOrderId > 0 ? serviceOrderId : undefined,
         tratamiento: tratamientoFromSv ?? mapTratamientoFromCrm({
           subCampaignName,
@@ -2236,7 +2228,7 @@ export class CommissionsDataService {
         quotationId = soAssign.quotationId;
       }
       const assign = quotationId > 0 ? winByQuotation.get(quotationId) : undefined;
-      const { userId, userName } = this.resolveCerradoraUserFromSvRow(
+      const resolved = this.resolveCerradoraUserFromSvRow(
         row,
         assign,
         soAssign,
@@ -2244,6 +2236,8 @@ export class CommissionsDataService {
         cerradoraIds,
         catalogByUserId,
       );
+      if (!resolved) continue;
+      const { userId, userName } = resolved;
 
       const key = `${userId}-${campus}`;
       const prev = agg.get(key) ?? {
@@ -2296,23 +2290,29 @@ export class CommissionsDataService {
       importe: l.importe,
     }));
 
+    const items = [...agg.values()]
+      .map((item) => ({
+        userId: item.userId,
+        userName: item.userName,
+        campusId: item.campusId,
+        osCount: item.osCount,
+        totalUsd: Math.round(item.totalUsd * 100) / 100,
+        comisionTtos: Math.round(item.comisionTtos * 100) / 100,
+        comisionBono: Math.round(item.comisionBono * 100) / 100,
+        comisionTotal: Math.round(item.comisionTotal * 100) / 100,
+      }))
+      .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es'));
+
+    const totalOsFiltrado = items.reduce((s, i) => s + i.osCount, 0);
+
     return {
-      items: [...agg.values()]
-        .map((item) => ({
-          userId: item.userId,
-          userName: item.userName,
-          campusId: item.campusId,
-          osCount: item.osCount,
-          totalUsd: Math.round(item.totalUsd * 100) / 100,
-          comisionTtos: Math.round(item.comisionTtos * 100) / 100,
-          comisionBono: Math.round(item.comisionBono * 100) / 100,
-          comisionTotal: Math.round(item.comisionTotal * 100) / 100,
-        }))
-        .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es')),
+      items,
       detalleLineas,
       period: { startDate: start, endDate: end, isPartialMonth },
-      totalFacturadoUsd,
-      totalOs,
+      // Usar el total SV bruto (todas las O.S facturadas), no solo las que pudieron
+      // atribuirse a una cerradora CRM. Así «Facturado SV» refleja el monto real.
+      totalFacturadoUsd: totalFacturadoUsd,
+      totalOs: totalOs || totalOsFiltrado,
       svError: svError ?? null,
     };
   }
