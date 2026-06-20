@@ -1069,8 +1069,9 @@ export class OiSvInvoiceService implements OnModuleInit {
   }
 
   /**
-   * Detalle por O.S — misma base SQL y deduplicación que queryCerradorasMtdAggregate (total facturado).
-   * Usuario: creador O.S en SV → facturador. Sede: ch.campus de la O.S.
+   * Facturación cerradoras por O.S — consulta directa irh + irb + service_order.
+   * Atribución: irh.service_order_creator_id → users. Sede: ch.campus.
+   * Dedup pagos: operation_number + moneda (igual que reportes SV manuales).
    */
   async queryCerradorasFacturacionRows(
     since: string,
@@ -1104,75 +1105,39 @@ export class OiSvInvoiceService implements OnModuleInit {
           irb.id AS invoice_body_id,
           COALESCE(NULLIF(TRIM(irb.operation_number), ''), 'id-' || irb.id::text) AS op_key,
           irb.id_currency,
-          COALESCE(c_direct.id, c_patient.id) AS contract_id,
-          COALESCE(c_direct.idquotation, c_patient.idquotation, NULLIF(so.idquotation, 0), 0) AS quotation_id,
-          COALESCE(c_direct.date, c_patient.date)::text AS contract_date,
-          COALESCE(c_direct.num, c_patient.num, '') AS contract_num,
-          COALESCE(cs_direct.treatment_code, c_patient.treatment_code, '') AS treatment_code,
           irh.service_order_creator_id AS service_order_creator_id,
+          LOWER(TRIM(COALESCE(u_creator.username, u_so.username, u_bill.username, ''))) AS os_creator_username,
           LOWER(TRIM(COALESCE(u_bill.username, ''))) AS billing_username,
-          LOWER(TRIM(COALESCE(
-            NULLIF(TRIM(u_irh_so.username), ''),
-            NULLIF(TRIM(u_so.username), ''),
-            NULLIF(TRIM(u_bill.username), ''),
-            'sin_asignar'
-          ))) AS os_creator_username,
-          COALESCE(irb.payment_date, irh.invoice_date::date)::text AS payment_date,
+          irb.payment_date::text AS payment_date,
           CASE
             WHEN irb.id_currency = 2 THEN irb.amount
             ELSE irb.amount / NULLIF(COALESCE(
               (SELECT er2.value FROM exchange_rate er2
-               WHERE er2.state = 1
-                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+               WHERE er2.state = 1 AND er2.date <= irb.payment_date
                ORDER BY er2.date DESC LIMIT 1),
               3.5
             ), 0)
-          END AS amount_usd,
-          (SELECT MIN(cd2.date)::text FROM contract_detail cd2
-            WHERE cd2.idcontract = COALESCE(c_direct.id, c_patient.id)
-              AND cd2.state = 1 AND cd2.description ILIKE '%moldes%') AS moldes_date,
-          (SELECT MIN(cd3.date)::text FROM contract_detail cd3
-            WHERE cd3.idcontract = COALESCE(c_direct.id, c_patient.id)
-              AND cd3.state = 1) AS first_payment_date
-        FROM invoice_result_body irb
-        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-          AND irh.status_invoice = 1
-          AND COALESCE(irh.credit_memo_state, false) = false
+          END AS amount_usd
+        FROM invoice_result_head irh
+        INNER JOIN invoice_result_body irb ON irb.idinvoice_result_head = irh.id
         INNER JOIN service_order so ON so.id = irh.id_service_order
         INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-        LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
-        LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
-        LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
-        LEFT JOIN contract_structure cs_direct ON cs_direct.id = c_direct.contract_structure_id
-        LEFT JOIN LATERAL (
-          SELECT c2.id, c2.idquotation, c2.date, c2.num, cs2.treatment_code
-          FROM contract c2
-          INNER JOIN contract_structure cs2 ON cs2.id = c2.contract_structure_id
-          WHERE c2.idclinichistory = ch.id AND c2.state = 1
-            AND (
-              cs2.treatment_code LIKE 'OFM%'
-              OR cs2.treatment_code LIKE 'MARPE%'
-              OR cs2.treatment_code LIKE 'APNEA%'
-            )
-          ORDER BY c2.date DESC NULLS LAST
-          LIMIT 1
-        ) c_patient ON c_direct.id IS NULL
+        LEFT JOIN users u_creator ON u_creator.id = irh.service_order_creator_id
         LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        LEFT JOIN users u_irh_so ON u_irh_so.id = irh.service_order_creator_id
         LEFT JOIN users u_so ON u_so.id = so.user_created
-        WHERE (
-          (irb.payment_date IS NOT NULL
-            AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-          OR (irb.payment_date IS NULL
-            AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-        )
-        ${campusFilter}
+        WHERE irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
+          AND irh.service_order_creator_id IS NOT NULL
+          AND irh.service_order_creator_id > 0
+          AND irb.payment_date IS NOT NULL
+          AND irb.payment_date >= $1::date
+          AND irb.payment_date <= $2::date
+          ${campusFilter}
       ),
       dedup AS (
         SELECT DISTINCT ON (op_key, id_currency)
-          service_order_id, campus_id, contract_id, quotation_id, contract_date, contract_num,
-          treatment_code, service_order_creator_id, billing_username, os_creator_username,
-          payment_date, amount_usd, moldes_date, first_payment_date
+          service_order_id, campus_id, service_order_creator_id, billing_username, os_creator_username,
+          payment_date, amount_usd
         FROM pagos
         ORDER BY op_key, id_currency, invoice_body_id
       ),
@@ -1180,43 +1145,45 @@ export class OiSvInvoiceService implements OnModuleInit {
         SELECT
           service_order_id,
           campus_id,
-          MAX(contract_id)::int AS contract_id,
-          MAX(quotation_id)::int AS quotation_id,
-          MAX(contract_date) AS contract_date,
-          MAX(contract_num) AS contract_num,
-          MAX(treatment_code) AS treatment_code,
           MAX(service_order_creator_id)::int AS service_order_creator_id,
           MAX(billing_username) AS billing_username,
           MAX(os_creator_username) AS os_creator_username,
           MIN(payment_date) AS payment_date,
-          MAX(moldes_date) AS moldes_date,
-          MIN(first_payment_date) AS first_payment_date,
           ROUND(COALESCE(SUM(amount_usd), 0)::numeric, 2) AS amount_usd
         FROM dedup
         GROUP BY service_order_id, campus_id
       )
       SELECT
-        contract_id, quotation_id, contract_date, contract_num, treatment_code,
+        0 AS contract_id,
+        0 AS quotation_id,
+        '' AS contract_date,
+        '' AS contract_num,
+        '' AS treatment_code,
         campus_id, service_order_id, service_order_creator_id,
         billing_username, os_creator_username,
-        payment_date, moldes_date, first_payment_date, amount_usd
+        payment_date,
+        NULL::text AS moldes_date,
+        NULL::text AS first_payment_date,
+        amount_usd
       FROM por_os
-      WHERE service_order_id > 0
-        AND (billing_username <> '' OR os_creator_username NOT IN ('', 'sin_asignar'))
+      WHERE service_order_id > 0 AND service_order_creator_id > 0
       ORDER BY payment_date ASC, service_order_id ASC
     `;
 
     try {
       await client.connect();
       const result = await client.query(sql, params);
+      this.logger.log(
+        `queryCerradorasFacturacionRows ${since}→${until} campus=${campusId ?? 'all'}: ${result.rowCount ?? 0} filas`,
+      );
       return (result.rows as Record<string, unknown>[]).map((r) => ({
-        contract_id: Number(r.contract_id),
+        contract_id: Number(r.contract_id ?? 0),
         quotation_id: Number(r.quotation_id ?? 0),
         contract_date: String(r.contract_date ?? ''),
         contract_num: String(r.contract_num ?? ''),
         campus_id: normalizeCerradorasCampusId(Number(r.campus_id ?? 1)),
         billing_username: String(r.billing_username ?? '').trim().toLowerCase(),
-        os_creator_username: String(r.os_creator_username ?? 'sin_asignar').trim().toLowerCase(),
+        os_creator_username: String(r.os_creator_username ?? '').trim().toLowerCase(),
         service_order_id: Number(r.service_order_id ?? 0),
         service_order_creator_id: Number(r.service_order_creator_id ?? 0),
         payment_date: String(r.payment_date ?? '').slice(0, 10),
@@ -1225,6 +1192,14 @@ export class OiSvInvoiceService implements OnModuleInit {
         amount_usd: Number(r.amount_usd ?? 0),
         treatment_code: String(r.treatment_code ?? ''),
       }));
+    } catch (err) {
+      const cfg = this.svConfig;
+      this.logger.error(
+        `queryCerradorasFacturacionRows fallo (${cfg.host}:${cfg.port}/${cfg.database}): ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+      throw err;
     } finally {
       try {
         await client.end();
