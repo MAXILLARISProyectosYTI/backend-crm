@@ -1077,6 +1077,7 @@ export class OiSvInvoiceService implements OnModuleInit {
     since: string,
     until: string,
     campusId?: number | null,
+    allowedServiceOrderIds?: number[],
   ): Promise<Array<{
     contract_id: number;
     quotation_id: number;
@@ -1097,10 +1098,18 @@ export class OiSvInvoiceService implements OnModuleInit {
     const params: unknown[] = [since, until];
     const campusFilter = cerradorasCampusSqlFilter(campusId, params);
 
+    // Filter to only O.S. linked to cerradora opportunities in CRM.
+    let soFilter = '';
+    if (allowedServiceOrderIds && allowedServiceOrderIds.length > 0) {
+      params.push(allowedServiceOrderIds);
+      soFilter = `AND irh.id_service_order = ANY($${params.length}::int[])`;
+    }
+
     const sql = `
       WITH pagos AS (
         SELECT
           irh.id_service_order AS service_order_id,
+          COALESCE(so.idquotation, 0)::int AS quotation_id,
           ch.campus AS campus_id,
           irb.id AS invoice_body_id,
           COALESCE(NULLIF(TRIM(irb.operation_number), ''), 'id-' || irb.id::text) AS op_key,
@@ -1127,16 +1136,15 @@ export class OiSvInvoiceService implements OnModuleInit {
         LEFT JOIN users u_so ON u_so.id = so.user_created
         WHERE irh.status_invoice = 1
           AND COALESCE(irh.credit_memo_state, false) = false
-          AND irh.service_order_creator_id IS NOT NULL
-          AND irh.service_order_creator_id > 0
           AND irb.payment_date IS NOT NULL
           AND irb.payment_date >= $1::date
           AND irb.payment_date <= $2::date
           ${campusFilter}
+          ${soFilter}
       ),
       dedup AS (
         SELECT DISTINCT ON (op_key, id_currency)
-          service_order_id, campus_id, service_order_creator_id, billing_username, os_creator_username,
+          service_order_id, quotation_id, campus_id, service_order_creator_id, billing_username, os_creator_username,
           payment_date, amount_usd
         FROM pagos
         ORDER BY op_key, id_currency, invoice_body_id
@@ -1144,6 +1152,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       por_os AS (
         SELECT
           service_order_id,
+          MAX(quotation_id)::int AS quotation_id,
           campus_id,
           MAX(service_order_creator_id)::int AS service_order_creator_id,
           MAX(billing_username) AS billing_username,
@@ -1155,7 +1164,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       )
       SELECT
         0 AS contract_id,
-        0 AS quotation_id,
+        quotation_id,
         '' AS contract_date,
         '' AS contract_num,
         '' AS treatment_code,
@@ -1166,13 +1175,14 @@ export class OiSvInvoiceService implements OnModuleInit {
         NULL::text AS first_payment_date,
         amount_usd
       FROM por_os
-      WHERE service_order_id > 0 AND service_order_creator_id > 0
+      WHERE service_order_id > 0
       ORDER BY payment_date ASC, service_order_id ASC
     `;
 
     try {
       await client.connect();
       const result = await client.query(sql, params);
+
       this.logger.log(
         `queryCerradorasFacturacionRows ${since}→${until} campus=${campusId ?? 'all'}: ${result.rowCount ?? 0} filas`,
       );
