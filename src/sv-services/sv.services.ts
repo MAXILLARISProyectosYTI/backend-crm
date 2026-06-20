@@ -1766,7 +1766,7 @@ export class SvServices {
         moldes_date: r.moldes_date ? String(r.moldes_date).slice(0, 10) : null,
         first_payment_date: r.first_payment_date ? String(r.first_payment_date).slice(0, 10) : null,
         amount_usd: Number(r.amount_usd ?? 0),
-      })).filter((r) => r.contract_id > 0 && (r.billing_username || r.os_creator_username));
+      })).filter((r) => r.billing_username || r.os_creator_username);
     } catch (error) {
       console.error('Error getCerradorasContractsFromSv', url, error);
       throw new BadRequestException(`Error al obtener contratos cerradoras desde SV — url: ${url}`);

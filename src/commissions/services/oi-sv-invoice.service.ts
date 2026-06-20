@@ -1166,7 +1166,6 @@ export class OiSvInvoiceService implements OnModuleInit {
           OR (irb.payment_date IS NULL
             AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
         )
-        AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
         ${campusFilter}
       ),
       dedup AS (
@@ -1202,7 +1201,8 @@ export class OiSvInvoiceService implements OnModuleInit {
         billing_username, os_creator_username,
         payment_date, moldes_date, first_payment_date, amount_usd
       FROM por_os
-      WHERE service_order_id > 0 AND contract_id > 0
+      WHERE service_order_id > 0
+        AND (billing_username <> '' OR os_creator_username NOT IN ('', 'sin_asignar'))
       ORDER BY payment_date ASC, service_order_id ASC
     `;
 
@@ -1291,7 +1291,6 @@ export class OiSvInvoiceService implements OnModuleInit {
              (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date)
              OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date)
            )
-             AND COALESCE(c_direct.id, c_patient.id) IS NOT NULL
              AND LOWER(TRIM(COALESCE(
                NULLIF(TRIM(u_irh_so.username), ''),
                NULLIF(TRIM(u_so.username), ''),
