@@ -2066,24 +2066,24 @@ export class CommissionsDataService {
       return httpRows;
     };
 
-    const order = isCrmProductionEnv()
-      ? ([tryHttp, tryDb] as const)
-      : ([tryDb, tryHttp] as const);
-
-    for (const attempt of order) {
+    const errors: string[] = [];
+    for (const attempt of [tryDb, tryHttp] as const) {
       try {
         const rows = await attempt();
         if (rows.length > 0) return rows;
       } catch (err) {
-        this.logger.warn(
-          `Cerradoras SV ${start}→${end}: ${err instanceof Error ? err.message : err}`,
-        );
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(msg);
+        this.logger.warn(`Cerradoras SV ${start}→${end}: ${msg}`);
       }
+    }
+    if (errors.length > 0) {
+      throw new Error(errors.join(' | '));
     }
     return [];
   }
 
-  /** SV para facturacion-resumen — prod: HTTP SV primero (sin depender de SV_DB_*). */
+  /** SV para facturacion-resumen — BD maxi_dev directa (sin depender de api7). */
   private async fetchCerradorasSvForFacturacionResumen(
     year: number,
     month: number,
@@ -2110,19 +2110,28 @@ export class CommissionsDataService {
       };
     };
 
-    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end, campusId);
-    if (svRows.length > 0) {
-      return { ...summarize(svRows), svRows, svError: null };
+    try {
+      const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end, campusId);
+      if (svRows.length > 0) {
+        return { ...summarize(svRows), svRows, svError: null };
+      }
+      const cfg = this.oiSvInvoiceService.getSvConfig();
+      return {
+        totalFacturadoUsd: 0,
+        totalOs: 0,
+        svRows: [],
+        svError: `Sin pagos SV en ${start}→${end} (${cfg.host}/${cfg.database})`,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`fetchCerradorasSvForFacturacionResumen ${year}-${month}: ${msg}`);
+      return {
+        totalFacturadoUsd: 0,
+        totalOs: 0,
+        svRows: [],
+        svError: msg,
+      };
     }
-
-    return {
-      totalFacturadoUsd: 0,
-      totalOs: 0,
-      svRows: [],
-      svError: isCrmProductionEnv()
-        ? 'Sin filas SV (HTTP api7 y BD maxi_dev)'
-        : 'Sin filas en SV (BD y HTTP)',
-    };
   }
 
   /** Resumen SV — misma query que total MTD; comisiones en vivo por O.S/cotización/tarifa. */
