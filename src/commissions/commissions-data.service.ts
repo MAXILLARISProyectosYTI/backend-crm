@@ -90,6 +90,7 @@ export interface CerradorasEjecutivoCatalogItem {
   userId: string;
   userName: string;
   userLogin: string | null;
+  svLogin: string | null;
   campusId: number;
   campusNombre: string;
 }
@@ -818,7 +819,21 @@ export class CommissionsDataService {
     return null;
   }
 
-  /** Usuario cerradora: cotización CRM → login SV solo si está en equipo Cerradoras. */
+  /** Mapa login SV/CRM → userId solo para miembros del equipo Cerradoras. */
+  private buildCerradoraLoginToUserId(
+    catalog: CerradorasEjecutivoCatalogItem[],
+  ): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const c of catalog) {
+      for (const raw of [c.userLogin, c.svLogin, c.userId]) {
+        const key = raw?.trim().toLowerCase();
+        if (key) map.set(key, c.userId);
+      }
+    }
+    return map;
+  }
+
+  /** Usuario cerradora: cotización CRM → creador O.S SV del catálogo Cerradoras. */
   private resolveCerradoraUserFromSvRow(
     row: {
       os_creator_username: string;
@@ -838,6 +853,7 @@ export class CommissionsDataService {
     usernameToCrmId: Map<string, string>,
     cerradoraIds: Set<string>,
     catalogByUserId: Map<string, { userName?: string; userLogin?: string | null }>,
+    cerradoraLoginToUserId: Map<string, string>,
   ): { userId: string; userName: string } | null {
     const fromCrm = this.resolveCerradoraFromInvoiceAttribution(
       assign,
@@ -853,6 +869,19 @@ export class CommissionsDataService {
         userId: fromCrm.userId,
         userName: cat?.userName ?? cat?.userLogin ?? fromCrm.userId,
       };
+    }
+    for (const login of [row.os_creator_username, row.billing_username]) {
+      const key = login?.trim().toLowerCase();
+      if (!key) continue;
+      const userId = cerradoraLoginToUserId.get(key)
+        ?? this.resolveCerradoraUserId(key, usernameToCrmId, cerradoraIds);
+      if (userId) {
+        const cat = catalogByUserId.get(userId);
+        return {
+          userId,
+          userName: cat?.userName ?? cat?.userLogin ?? key,
+        };
+      }
     }
     return null;
   }
@@ -881,6 +910,7 @@ export class CommissionsDataService {
     ]);
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
+    const cerradoraLoginToUserId = this.buildCerradoraLoginToUserId(catalog);
 
     const quotationIds = svRows.map((r) => Number(r.quotation_id)).filter((id) => id > 0);
     const serviceOrderIds = svRows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
@@ -919,6 +949,7 @@ export class CommissionsDataService {
         usernameToCrmId,
         cerradoraIds,
         catalogByUserId,
+        cerradoraLoginToUserId,
       );
       if (!resolved) continue;
       const { userId, userName } = resolved;
@@ -2100,8 +2131,7 @@ export class CommissionsDataService {
     return [];
   }
 
-  /** SV para facturacion-resumen — BD maxi_dev directa (sin depender de api7).
-   *  Solo incluye O.S. vinculadas a oportunidades cerradoras en CRM. */
+  /** SV para facturacion-resumen — BD directa; atribución por catálogo equipo Cerradoras. */
   private async fetchCerradorasSvForFacturacionResumen(
     year: number,
     month: number,
@@ -2192,8 +2222,6 @@ export class CommissionsDataService {
   }> {
     const { start, end, isPartialMonth } = this.oiSvInvoiceService.resolveMtdRange(year, month);
 
-    // 1. Cargar primero los service_order_ids de oportunidades cerradoras desde CRM.
-    //    Esto filtra en origen: solo O.S. con cerradora asignada en CRM pasan a SV.
     const cerradoraSoIds = await this.loadCerradoraServiceOrderIdsForPeriod(campusId);
 
     const [catalog, svData, periodRow] = await Promise.all([
@@ -2201,9 +2229,18 @@ export class CommissionsDataService {
       this.fetchCerradorasSvForFacturacionResumen(year, month, start, end, campusId, cerradoraSoIds),
       this.findPeriodForDashboard(year, month, 'CIERRE_TTO'),
     ]);
-    const { totalFacturadoUsd, totalOs, svRows, svError } = svData;
+    const { totalFacturadoUsd, totalOs, svRows: allSvRows, svError } = svData;
     const cerradoraIds = new Set(catalog.map((c) => c.userId));
     const catalogByUserId = new Map(catalog.map((c) => [c.userId, c]));
+    const cerradoraLoginToUserId = this.buildCerradoraLoginToUserId(catalog);
+
+    const allServiceOrderIds = allSvRows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
+    const [usernameToCrmId, assignByServiceOrder] = await Promise.all([
+      this.buildCrmUsernameToUserIdMap(),
+      this.loadCerradoraAssignmentByServiceOrder(allServiceOrderIds),
+    ]);
+
+    const svRows = allSvRows;
 
     const contracts = await this.buildCerradorasContractsFromSvRows(start, svRows);
 
@@ -2233,13 +2270,8 @@ export class CommissionsDataService {
       previewDetalle = preview.detalleLineas;
     }
 
-    const usernameToCrmId = await this.buildCrmUsernameToUserIdMap();
     const quotationIds = svRows.map((r) => Number(r.quotation_id)).filter((id) => id > 0);
-    const serviceOrderIds = svRows.map((r) => Number(r.service_order_id)).filter((id) => id > 0);
-    const [winByQuotation, assignByServiceOrder] = await Promise.all([
-      this.loadCerradoraWinAssignmentByQuotation(quotationIds),
-      this.loadCerradoraAssignmentByServiceOrder(serviceOrderIds),
-    ]);
+    const winByQuotation = await this.loadCerradoraWinAssignmentByQuotation(quotationIds);
 
     const agg = new Map<string, {
       userId: string;
@@ -2269,6 +2301,7 @@ export class CommissionsDataService {
         usernameToCrmId,
         cerradoraIds,
         catalogByUserId,
+        cerradoraLoginToUserId,
       );
       if (!resolved) continue;
       const { userId, userName } = resolved;
@@ -2343,8 +2376,6 @@ export class CommissionsDataService {
       items,
       detalleLineas,
       period: { startDate: start, endDate: end, isPartialMonth },
-      // Usar el total SV bruto (todas las O.S facturadas), no solo las que pudieron
-      // atribuirse a una cerradora CRM. Así «Facturado SV» refleja el monto real.
       totalFacturadoUsd: totalFacturadoUsd,
       totalOs: totalOs || totalOsFiltrado,
       svError: svError ?? null,
@@ -2364,7 +2395,13 @@ export class CommissionsDataService {
     fromOsCreator: number;
     fromBilling: number;
   }> {
-    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(start, end);
+    const cerradoraSoIds = await this.loadCerradoraServiceOrderIdsForPeriod();
+    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(
+      start,
+      end,
+      undefined,
+      cerradoraSoIds,
+    );
     const contracts = await this.buildCerradorasContractsFromSvRows(start, svRows);
     return {
       contracts,
@@ -3009,6 +3046,7 @@ export class CommissionsDataService {
         userId: r.user_id,
         userName: r.display_name ?? r.user_login ?? r.user_id,
         userLogin: r.user_login,
+        svLogin: r.sv_login,
         campusId,
         campusNombre: this.commissionCampusNombre(campusId),
       };
@@ -3139,6 +3177,7 @@ export class CommissionsDataService {
     metaMontoSinIgv?: number;
     dbAsignada?: number;
     factorEspecial?: number;
+    notas?: string;
   }>): Promise<void> {
     const resolvedKeys: string[] = [];
     const keepKeys = new Set<string>();
@@ -3167,6 +3206,7 @@ export class CommissionsDataService {
       if (eje.dbAsignada != null) record.dbAsignada = eje.dbAsignada;
       if (eje.factorEspecial != null) record.factorEspecial = eje.factorEspecial;
       if (eje.metaMontoSinIgv != null) record.metaMontoIndividual = eje.metaMontoSinIgv;
+      if (eje.notas !== undefined) record.notas = eje.notas;
       record.estado = record.estado === 'CALCULADO' ? record.estado : 'PENDIENTE';
       await this.recordRepo.save(record);
     }
@@ -4423,10 +4463,35 @@ export class CommissionsDataService {
       const { all: catalogAll } = await this.listVentasStaffCatalog('CALL_CENTER');
       config.teamLeaderByTeamId = this.resolveCallCenterTeamLeaders(catalogAll, config);
 
+      const periodRecords = await this.recordRepo.find({
+        where: { period: { id: periodId } },
+      });
+      const recordByKey = new Map<string, any>();
+      for (const rec of periodRecords) {
+        const key = `${rec.userId.trim().toLowerCase()}::${rec.campusId ?? 'all'}`;
+        recordByKey.set(key, rec);
+      }
+
       const ejecutivosInput = this.enrichCallCenterInputsWithTeams(
         this.buildCallCenterInputsPerCampus(team, metricsByKey, aliasSets),
         catalogAll,
-      );
+      ).map((eje) => {
+        const key = `${eje.userId.trim().toLowerCase()}::${eje.campusId ?? 'all'}`;
+        const record = recordByKey.get(key) ?? recordByKey.get(`${eje.userId.trim().toLowerCase()}::all`);
+        let minGateObj: number | null = null;
+        if (record?.notas) {
+          try {
+            const parsed = JSON.parse(record.notas);
+            if (parsed && parsed.minGateObj != null) {
+              minGateObj = Number(parsed.minGateObj);
+            }
+          } catch { /* ignore */ }
+        }
+        return {
+          ...eje,
+          minGateObj: minGateObj ?? eje.minGateObj,
+        };
+      });
 
       const totalVend = ejecutivosInput.reduce((s, e) => s + e.evaVendidasOfm + e.evaVendidasApnea, 0);
       const totalAsist = ejecutivosInput.reduce((s, e) => s + e.evaAsistidas, 0);
@@ -4960,5 +5025,23 @@ export class CommissionsDataService {
       );
       throw err;
     }
+  }
+
+  async getCallCenterDiagnostics(period: CommissionPeriod) {
+    const { rows, source, svError } = await this.fetchCallCenterMetricsFromSv(
+      period.year,
+      period.month,
+      period.campusId,
+    );
+    return {
+      periodId: period.id,
+      year: period.year,
+      month: period.month,
+      campusId: period.campusId,
+      source,
+      svError,
+      rowCount: rows.length,
+      rows,
+    };
   }
 }

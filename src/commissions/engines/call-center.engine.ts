@@ -35,6 +35,12 @@ export interface CallCenterTeamBonoConfig {
   metaAsistenciasEquipo: number;
 }
 
+export interface CallCenterTeamBonoTtoConfig {
+  meta: number;
+  bono100: number;
+  bono90: number;
+}
+
 export interface CallCenterConfig {
   minEvaVendidas: number;
   minEvaAsistidas: number;
@@ -43,6 +49,7 @@ export interface CallCenterConfig {
   /** Sedes donde aplica bono individual por asistencias (Lima=1, Arequipa=15). */
   bonoAsistenciasCampusIds: number[];
   bonoTeamLeader: CallCenterTeamBonoConfig;
+  bonoEquipoTto: CallCenterTeamBonoTtoConfig;
   /** teamId CRM → login SV del team leader que recibe el bono de equipo. */
   teamLeaderByTeamId: Record<string, string>;
 }
@@ -67,6 +74,11 @@ export const DEFAULT_CALL_CENTER_CONFIG: CallCenterConfig = {
   bonoTeamLeader: {
     poolMonto: 450,
     metaAsistenciasEquipo: 128,
+  },
+  bonoEquipoTto: {
+    meta: 25,
+    bono100: 300,
+    bono90: 150,
   },
   teamLeaderByTeamId: { ...DEFAULT_CALL_CENTER_TEAM_LEADERS },
 };
@@ -119,6 +131,10 @@ export function parseCallCenterConfig(period: CommissionPeriod): CallCenterConfi
       bonoTeamLeader: {
         ...DEFAULT_CALL_CENTER_CONFIG.bonoTeamLeader,
         ...(cfg.bonoTeamLeader ?? {}),
+      },
+      bonoEquipoTto: {
+        ...DEFAULT_CALL_CENTER_CONFIG.bonoEquipoTto,
+        ...(cfg.bonoEquipoTto ?? {}),
       },
       teamLeaderByTeamId: {
         ...DEFAULT_CALL_CENTER_CONFIG.teamLeaderByTeamId,
@@ -226,6 +242,7 @@ export async function calculateCallCenter(
     comisionTotal: number;
     bonoIndividual: number;
     bonoTeamLeader: number;
+    bonoEquipo: number;
     crmTeamId: string | null;
   }> = [];
 
@@ -298,6 +315,15 @@ export async function calculateCallCenter(
     if (bono > 0) bonoIndividualByUser.set(uid, bono);
   }
 
+  // Sum treatments per team
+  const teamTreatmentsAgg = new Map<string, number>();
+  for (const eje of ejecutivos) {
+    const teamId = eje.crmTeamId?.trim();
+    if (!teamId) continue;
+    const totalTtos = eje.ttoOfmContado + eje.ttoOfmCuotas + eje.ttoApneaContado + eje.ttoApneaCuotas;
+    teamTreatmentsAgg.set(teamId, (teamTreatmentsAgg.get(teamId) ?? 0) + totalTtos);
+  }
+
   for (const eje of ejecutivos) {
     const uid = eje.userId.trim().toLowerCase();
     const agg = userAgg.get(uid)!;
@@ -321,6 +347,18 @@ export async function calculateCallCenter(
       : 0;
     const comisionEvaluaciones = aplicaGate ? eje.evaAsistidas * rateEva : 0;
 
+    let bonoEquipo = 0;
+    const teamId = eje.crmTeamId?.trim();
+    if (aplicaGate && teamId) {
+      const teamTtos = teamTreatmentsAgg.get(teamId) ?? 0;
+      const meta = config.bonoEquipoTto?.meta ?? 25;
+      if (teamTtos >= meta) {
+        bonoEquipo = config.bonoEquipoTto?.bono100 ?? 300;
+      } else if (teamTtos >= meta * 0.9) {
+        bonoEquipo = config.bonoEquipoTto?.bono90 ?? 150;
+      }
+    }
+
     pendingRows.push({
       eje,
       evaVendidas: evaVendidasRow,
@@ -332,6 +370,7 @@ export async function calculateCallCenter(
       comisionTotal: 0,
       bonoIndividual: 0,
       bonoTeamLeader: 0,
+      bonoEquipo,
       crmTeamId: eje.crmTeamId ?? null,
     });
   }
@@ -339,7 +378,6 @@ export async function calculateCallCenter(
   for (const [uid, agg] of userAgg.entries()) {
     const bonoInd = bonoIndividualByUser.get(uid) ?? 0;
     const bonoLead = teamLeaderBonusByUser.get(uid) ?? 0;
-    if (bonoInd <= 0 && bonoLead <= 0) continue;
 
     const primaryIdx = pickPrimaryCampusRecordIndex(
       agg.rowIndexes.map((i) => ({
@@ -350,10 +388,10 @@ export async function calculateCallCenter(
     const globalIdx = agg.rowIndexes[primaryIdx];
     pendingRows[globalIdx].bonoIndividual = bonoInd;
     pendingRows[globalIdx].bonoTeamLeader = bonoLead;
-    pendingRows[globalIdx].comisionBono = round2(bonoInd + bonoLead);
   }
 
   for (const row of pendingRows) {
+    row.comisionBono = round2(row.bonoIndividual + row.bonoTeamLeader + row.bonoEquipo);
     row.comisionTotal = round2(row.comisionTtos + row.comisionEvaluaciones + row.comisionBono);
   }
 
@@ -415,6 +453,7 @@ export async function calculateCallCenter(
       aplicaGateIndividual: row.aplicaGate,
       bonoIndividual: row.bonoIndividual,
       bonoTeamLeader: row.bonoTeamLeader,
+      bonoEquipo: row.bonoEquipo,
       crmTeamId: eje.crmTeamId ?? null,
       crmTeamName: eje.crmTeamName ?? null,
     });
