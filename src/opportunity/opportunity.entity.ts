@@ -274,4 +274,12 @@ export class Opportunity {
    */
   @Column({ type: 'varchar', length: 60, nullable: true, name: 'c_facturacion_sub_estado' })
   cFacturacionSubEstado?: string;
+
+  /** TRUE cuando el ejecutivo solicitó apnea de cortesía desde manager_leads */
+  @Column({ type: 'boolean', nullable: false, default: false, name: 'c_apnea_cortesia_tomada' })
+  cApneaCortesiaTomada?: boolean;
+
+  /** TRUE cuando la apnea de cortesía ya fue entregada físicamente */
+  @Column({ type: 'boolean', nullable: false, default: false, name: 'c_apnea_cortesia_entregada' })
+  cApneaCortesiaEntregada?: boolean;
 }

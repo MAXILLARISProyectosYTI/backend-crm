@@ -9,12 +9,14 @@ import { CommissionClosureTag } from './commission-closure-tag.entity';
 import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpsertRecordDto } from './dto/upsert-record.dto';
 import { UpsertPeriodRatesDto } from './dto/upsert-period-rates.dto';
+import { UpdatePeriodDto } from './dto/update-period.dto';
 import type { UpsertSedeApoyoDto } from './dto/upsert-sede-apoyo.dto';
 import { TagClosureDto } from './dto/tag-closure.dto';
 import { calculateCierreTto, type ContractSvRow } from './engines/cierre-tto.engine';
 import { calculateOi, OI_PORCENTAJE_COMISION_TTOS, type OiExecutivoInput, type OiPeriodInput } from './engines/oi.engine';
 import { calculateControles, type ControlesEjecutivoInput, type ControlesPeriodInput } from './engines/controles.engine';
 import { CommissionsDataService } from './commissions-data.service';
+import { OiSvInvoiceService } from './services/oi-sv-invoice.service';
 
 @Injectable()
 export class CommissionsService {
@@ -32,6 +34,7 @@ export class CommissionsService {
     @InjectRepository(CommissionClosureTag)
     private readonly tagRepo: Repository<CommissionClosureTag>,
     private readonly dataService: CommissionsDataService,
+    private readonly oiSvInvoiceService: OiSvInvoiceService,
   ) {}
 
   // ── Catálogo ──────────────────────────────────────────────────────────────
@@ -44,6 +47,23 @@ export class CommissionsService {
   // ── Períodos ──────────────────────────────────────────────────────────────
 
   async createPeriod(dto: CreatePeriodDto): Promise<CommissionPeriod> {
+    try {
+      return await this.createPeriodInternal(dto);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('commission_period_area_check') || msg.includes('CALL_CENTER')) {
+        this.logger.error(
+          `createPeriod ${dto.area} ${dto.year}-${dto.month}: falta migración CALL_CENTER. Ejecuta: npm run migration:run`,
+        );
+        throw new Error(
+          'El área CALL_CENTER no está habilitada en la base de datos. Ejecuta la migración 1749420000000-CommissionCallCenterArea en el backend CRM.',
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async createPeriodInternal(dto: CreatePeriodDto): Promise<CommissionPeriod> {
     const existing = await this.periodRepo.findOne({
       where: {
         year: dto.year,
@@ -84,8 +104,10 @@ export class CommissionsService {
       nEjecutivas: dto.nEjecutivas ?? null,
       porcentajeComision: dto.area === 'OI' ? OI_PORCENTAJE_COMISION_TTOS : null,
       dbTotal: dto.dbTotal ?? null,
-      objEvaluaciones: dto.objEvaluaciones ?? (dto.area === 'OI' ? 20 : null),
-      notas: dto.notas ?? null,
+      objEvaluaciones: dto.objEvaluaciones ?? (dto.area === 'OI' ? 20 : dto.area === 'CALL_CENTER' ? 25 : null),
+      notas: dto.notas ?? (dto.area === 'CALL_CENTER'
+        ? JSON.stringify({ config: { minEvaVendidas: 25, minEvaAsistidas: 25 } })
+        : null),
     });
     const saved = await this.periodRepo.save(period);
 
@@ -271,41 +293,104 @@ export class CommissionsService {
 
   // ── Dashboard KPI (meta + cálculo automático) ─────────────────────────────
 
-  getDashboard(area: 'CIERRE_TTO' | 'OI' | 'CONTROLES', year: number, month: number, campusId?: number) {
+  getDashboard(area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER', year: number, month: number, campusId?: number) {
     return this.dataService.getDashboardByAreaMonth(area, year, month, campusId);
+  }
+
+  getFacturacionMtd(
+    area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
+    year: number,
+    month: number,
+    campusId?: number,
+  ) {
+    return this.dataService.getFacturacionMtd(area, year, month, campusId);
   }
 
   syncControlesPeriod(periodId: number) {
     return this.dataService.syncAndCalculateControles(periodId, true);
   }
 
+  syncOiPeriod(periodId: number) {
+    return this.dataService.syncAndCalculateOi(periodId);
+  }
+
+  syncCallCenterPeriod(periodId: number) {
+    return this.dataService.syncAndCalculateCallCenter(periodId);
+  }
+
+  pingOiSvDatabase(year: number, month: number, campusId?: number) {
+    return this.dataService.diagnoseOiSv(year, month, campusId ?? null);
+  }
+
   async getDashboardByPeriodId(periodId: number) {
     const period = await this.getPeriodById(periodId);
-    if (period.area === 'CONTROLES') {
-      return this.dataService.getControlesDashboard(periodId);
+    try {
+      if (period.area === 'CONTROLES') {
+        return await this.dataService.getControlesDashboard(periodId);
+      }
+      if (period.area === 'OI') {
+        return await this.dataService.getOiDashboard(periodId);
+      }
+      if (period.area === 'CALL_CENTER') {
+        return await this.dataService.getCallCenterDashboard(periodId);
+      }
+      if (period.area === 'CIERRE_TTO') {
+        return await this.dataService.getCierreTtoDashboard(periodId);
+      }
+      return await this.dataService.buildDashboard(periodId);
+    } catch (err) {
+      this.logger.error(
+        `getDashboardByPeriodId ${periodId} (${period.area}): ${err instanceof Error ? err.message : err}`,
+      );
+      return this.dataService.buildDashboard(periodId);
     }
-    if (period.area === 'OI') {
-      return this.dataService.getOiDashboard(periodId);
-    }
-    if (period.area === 'CIERRE_TTO') {
-      return this.dataService.getCierreTtoDashboard(periodId);
-    }
-    return this.dataService.buildDashboard(periodId);
   }
 
   listCerradorasEjecutivos() {
     return this.dataService.listCerradorasEjecutivos();
   }
 
-  listSedeApoyo() {
-    return this.dataService.listSedeApoyo();
+  getCerradorasFacturacionResumen(year: number, month: number, campusId?: number) {
+    return this.dataService.getCerradorasFacturacionResumen(year, month, campusId);
   }
 
-  upsertSedeApoyo(items: UpsertSedeApoyoDto['items']) {
-    return this.dataService.upsertSedeApoyo(items);
+  listVentasStaffCatalog(area?: 'CALL_CENTER' | 'OI' | 'ALL') {
+    return this.dataService.listVentasStaffCatalog(area ?? 'ALL');
+  }
+
+  getExportDetail(periodId: number) {
+    return this.dataService.getExportDetail(periodId);
+  }
+
+  async listSedeApoyo(periodId?: number) {
+    try {
+      return await this.dataService.listSedeApoyo(periodId);
+    } catch (err) {
+      this.logger.error(
+        `listSedeApoyo periodId=${periodId ?? 'all'}: ${err instanceof Error ? err.message : err}`,
+      );
+      return [];
+    }
+  }
+
+  upsertSedeApoyo(items: UpsertSedeApoyoDto['items'], periodId?: number) {
+    return this.dataService.upsertSedeApoyo(items, periodId);
   }
 
   deleteSedeApoyo(id: number) {
     return this.dataService.deleteSedeApoyo(id);
+  }
+
+  updatePeriod(id: number, dto: UpdatePeriodDto) {
+    return this.dataService.updatePeriodMeta(id, dto);
+  }
+
+  deletePeriod(id: number) {
+    return this.dataService.deletePeriod(id);
+  }
+
+  async getCallCenterDiagnostics(periodId: number) {
+    const period = await this.getPeriodById(periodId);
+    return this.dataService.getCallCenterDiagnostics(period);
   }
 }

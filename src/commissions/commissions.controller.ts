@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Body, Param, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Body, Param, ParseIntPipe,
   Query, Request, UseGuards,
 } from '@nestjs/common';
 import { CommissionsService } from './commissions.service';
@@ -7,6 +7,7 @@ import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpsertRecordDto } from './dto/upsert-record.dto';
 import { TagClosureDto } from './dto/tag-closure.dto';
 import { UpsertPeriodRatesDto } from './dto/upsert-period-rates.dto';
+import { UpdatePeriodDto } from './dto/update-period.dto';
 import { UpsertSedeApoyoDto } from './dto/upsert-sede-apoyo.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import type { OiExecutivoInput, OiPeriodInput } from './engines/oi.engine';
@@ -30,17 +31,39 @@ export class CommissionsController {
     return this.service.listCerradorasEjecutivos();
   }
 
+  @Get('cerradoras/facturacion-resumen')
+  getCerradorasFacturacionResumen(
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
+  ) {
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.getCerradorasFacturacionResumen(year, month, campus);
+  }
+
+  @Get('ventas/staff-catalog')
+  listVentasStaffCatalog(
+    @Query('area') area?: 'CALL_CENTER' | 'OI' | 'ALL',
+  ) {
+    return this.service.listVentasStaffCatalog(area ?? 'ALL');
+  }
+
   @Get('cerradoras/sede-apoyo')
-  listSedeApoyo() {
-    return this.service.listSedeApoyo();
+  listSedeApoyo(@Query('periodId') periodId?: string) {
+    const pid = periodId != null && periodId !== '' ? Number(periodId) : undefined;
+    return this.service.listSedeApoyo(Number.isFinite(pid) ? pid : undefined);
   }
 
   @Patch('cerradoras/sede-apoyo')
-  upsertSedeApoyo(@Body() dto: UpsertSedeApoyoDto) {
-    return this.service.upsertSedeApoyo(dto.items);
+  upsertSedeApoyo(
+    @Body() dto: UpsertSedeApoyoDto,
+    @Query('periodId') periodId?: string,
+  ) {
+    const pid = periodId != null && periodId !== '' ? Number(periodId) : undefined;
+    return this.service.upsertSedeApoyo(dto.items, Number.isFinite(pid) ? pid : undefined);
   }
 
-  @Patch('cerradoras/sede-apoyo/:id/deactivate')
+  @Delete('cerradoras/sede-apoyo/:id')
   deactivateSedeApoyo(@Param('id', ParseIntPipe) id: number) {
     return this.service.deleteSedeApoyo(id);
   }
@@ -60,6 +83,19 @@ export class CommissionsController {
   @Get('periods/:id')
   getPeriod(@Param('id', ParseIntPipe) id: number) {
     return this.service.getPeriodById(id);
+  }
+
+  @Patch('periods/:id')
+  updatePeriod(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePeriodDto,
+  ) {
+    return this.service.updatePeriod(id, dto);
+  }
+
+  @Delete('periods/:id')
+  deletePeriod(@Param('id', ParseIntPipe) id: number) {
+    return this.service.deletePeriod(id);
   }
 
   @Patch('periods/:id/close')
@@ -123,6 +159,16 @@ export class CommissionsController {
 
   // ── Resumen KPI ───────────────────────────────────────────────────────────
 
+  @Get('periods/:id/export-detail')
+  getExportDetail(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getExportDetail(id);
+  }
+
+  @Get('periods/:id/diagnostico-cc')
+  getCallCenterDiagnostics(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getCallCenterDiagnostics(id);
+  }
+
   @Get('periods/:id/summary')
   getSummary(@Param('id', ParseIntPipe) id: number) {
     return this.service.getSummaryByPeriod(id);
@@ -130,13 +176,25 @@ export class CommissionsController {
 
   @Get('dashboard')
   getDashboard(
-    @Query('area') area: 'CIERRE_TTO' | 'OI' | 'CONTROLES',
+    @Query('area') area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
     @Query('year', ParseIntPipe) year: number,
     @Query('month', ParseIntPipe) month: number,
     @Query('campusId') campusId?: string,
   ) {
     const campus = campusId ? parseInt(campusId, 10) : undefined;
     return this.service.getDashboard(area, year, month, campus);
+  }
+
+  /** Total facturado MTD en vivo desde SV (filtrable por sede). */
+  @Get('facturacion-mtd')
+  getFacturacionMtd(
+    @Query('area') area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER',
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
+  ) {
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.getFacturacionMtd(area, year, month, campus);
   }
 
   @Get('periods/:id/dashboard')
@@ -165,6 +223,27 @@ export class CommissionsController {
   @Post('periods/:id/sync/controles')
   syncControles(@Param('id', ParseIntPipe) id: number) {
     return this.service.syncControlesPeriod(id);
+  }
+
+  @Post('periods/:id/sync/oi')
+  syncOi(@Param('id', ParseIntPipe) id: number) {
+    return this.service.syncOiPeriod(id);
+  }
+
+  @Post('periods/:id/sync/call-center')
+  syncCallCenter(@Param('id', ParseIntPipe) id: number) {
+    return this.service.syncCallCenterPeriod(id);
+  }
+
+  /** Diagnóstico: prueba conexión BD SV invoice (prod vs dev). */
+  @Get('oi/sv-ping')
+  pingOiSv(
+    @Query('year', ParseIntPipe) year: number,
+    @Query('month', ParseIntPipe) month: number,
+    @Query('campusId') campusId?: string,
+  ) {
+    const campus = campusId ? parseInt(campusId, 10) : undefined;
+    return this.service.pingOiSvDatabase(year, month, campus);
   }
 
   @Get('summary')

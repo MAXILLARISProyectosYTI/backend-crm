@@ -78,6 +78,12 @@ export class OpportunityController {
     const redirectResponse = await this.opportunityService.redirectToManager(usuario, uuidOpportunity, oiDerived);
     let response = redirectResponse;
 
+    const opportunityRecord = await this.opportunityService.findOne(uuidOpportunity);
+    const apneaCortesiaFlags = {
+      cApneaCortesiaTomada: opportunityRecord?.cApneaCortesiaTomada ?? false,
+      cApneaCortesiaEntregada: opportunityRecord?.cApneaCortesiaEntregada ?? false,
+    };
+
     try {
       const alreadyInvoiced = await this.opportunityPresaveService.checkIfAlreadyInvoiced(uuidOpportunity);
       const isComplete = await this.opportunityService.isCompleteForRedirect(uuidOpportunity);
@@ -176,7 +182,7 @@ export class OpportunityController {
     }
 
     console.log('[GET /opportunity/redirect] Respuesta', JSON.stringify(response, null, 2));
-    return response;
+    return { ...response, ...apneaCortesiaFlags };
   }
 
   @Public()
@@ -247,6 +253,33 @@ export class OpportunityController {
         success: false,
         message: 'Error al obtener los datos del contrato: ' + error.message,
         data: null
+      };
+    }
+  }
+
+  @Public()
+  @Get('contract-presave/:quotationId/audit')
+  async getContractPresaveAudit(
+    @Param('quotationId') quotationId: string,
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const parsedLimit = limit ? parseInt(limit, 10) : 50;
+      const rows = await this.contractPresaveService.findAuditByQuotationId(
+        parseInt(quotationId, 10),
+        Number.isFinite(parsedLimit) ? parsedLimit : 50,
+      );
+      return {
+        success: true,
+        message: 'Historial de auditoría del presave',
+        data: rows,
+      };
+    } catch (error) {
+      console.error('❌ Error al obtener audit contract presave:', error.message);
+      return {
+        success: false,
+        message: 'Error al obtener auditoría: ' + error.message,
+        data: [],
       };
     }
   }
@@ -448,6 +481,14 @@ export class OpportunityController {
     @Body() body: UpdateSedeAtencionDto,
   ): Promise<Opportunity> {
     return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null, body.campusName);
+  }
+
+  /** Registra solicitud de apnea de cortesía (promoción 16–30/06/2026, hora Lima). */
+  @Patch(':id/apnea-cortesia/tomar')
+  async marcarApneaCortesiaTomada(
+    @Param('id') id: string,
+  ): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
+    return this.opportunityService.marcarApneaCortesiaTomada(id);
   }
 
   @Patch(':id')

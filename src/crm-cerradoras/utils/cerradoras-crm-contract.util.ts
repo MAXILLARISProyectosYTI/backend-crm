@@ -16,6 +16,8 @@ export interface CerradorasCrmSolicitudRow {
   quotation_id: number;
   tipo_contrato: string | null;
   fecha_contrato: string | null;
+  firma_contrato?: string | null;
+  facturado?: boolean | null;
 }
 
 export function parseModalidadFromCrmFields(input: {
@@ -62,6 +64,16 @@ export function mapTratamientoFromCrm(input: {
   if (fromContract === 'APNEA') return 'APNEA';
   if (fromContract === 'MARPE') return 'MARPE';
   return 'OFM';
+}
+
+/** Tratamiento desde treatment_code SV (contrato OFM/MARPE/APNEA). */
+export function mapTratamientoFromTreatmentCode(treatmentCode?: string | null): string | null {
+  const code = (treatmentCode ?? '').toUpperCase();
+  if (!code) return null;
+  if (code.includes('APNEA') || code.includes('CAPNEA')) return 'APNEA';
+  if (code.includes('MARPE')) return 'MARPE';
+  if (code.includes('OFM') || code.includes('ALINEADOR')) return 'OFM';
+  return null;
 }
 
 export function resolveCrmContractId(

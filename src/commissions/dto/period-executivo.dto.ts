@@ -30,4 +30,8 @@ export class PeriodExecutivoDto {
   @IsOptional()
   @IsNumber()
   factorEspecial?: number;
+
+  @IsOptional()
+  @IsString()
+  notas?: string;
 }

@@ -17,7 +17,7 @@ export class CommissionPeriod {
   month: number;
 
   @Column({ type: 'varchar', length: 30 })
-  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES';
+  area: 'CIERRE_TTO' | 'OI' | 'CONTROLES' | 'CALL_CENTER';
 
   @Column({ name: 'campus_id', type: 'integer', nullable: true })
   campusId: number | null;

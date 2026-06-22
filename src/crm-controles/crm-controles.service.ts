@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SvServices } from 'src/sv-services/sv.services';
@@ -10,6 +10,7 @@ import type {
   CrmControlesPatientRow,
   CrmControlesPacientesResponse,
 } from './crm-controles.types';
+import { OiSvInvoiceService } from '../commissions/services/oi-sv-invoice.service';
 
 @Injectable()
 export class CrmControlesService implements OnModuleInit {
@@ -50,11 +51,21 @@ export class CrmControlesService implements OnModuleInit {
     source: 'sv',
   };
 
+  // ── Cache facturación OI ──────────────────────────────────────────────────
+  private oiFacturacion: Record<string, unknown>[] = [];
+  private oiFacturacionMeta: CrmControlesCacheMeta = {
+    lastSyncAt: null,
+    lastError: null,
+    source: 'sv',
+  };
+
   constructor(
     private readonly svServices: SvServices,
     @InjectRepository(User) private readonly userRepository: Repository<User>,
     @Optional() private readonly notifService: NotificacionesService,
     @Optional() private readonly assignmentService: CrmControlesAssignmentService,
+    @Optional() @Inject(forwardRef(() => OiSvInvoiceService))
+    private readonly oiSvInvoiceService?: OiSvInvoiceService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -71,6 +82,9 @@ export class CrmControlesService implements OnModuleInit {
       );
       void this.syncReprogramacionesFromSv().catch((e) =>
         this.logger.warn(`Sync inicial Reprogramaciones: ${e instanceof Error ? e.message : e}`),
+      );
+      void this.syncOiFacturacionFromSv().catch((e) =>
+        this.logger.warn(`Sync inicial Facturación OI: ${e instanceof Error ? e.message : e}`),
       );
     }, delay);
   }
@@ -355,6 +369,60 @@ export class CrmControlesService implements OnModuleInit {
       this.facturacionMeta = { ...this.facturacionMeta, lastError: msg };
       this.logger.error(`CRM Controles: error sync facturación — ${msg}`);
       throw err;
+    }
+  }
+
+  // ── Facturación OI ───────────────────────────────────────────────────────
+
+  getOiFacturacionSnapshot(): { data: Record<string, unknown>[]; meta: CrmControlesCacheMeta } {
+    return { data: this.oiFacturacion, meta: { ...this.oiFacturacionMeta } };
+  }
+
+  async syncOiFacturacionFromSv(): Promise<void> {
+    const until = new Date();
+    const since = new Date(until);
+    since.setMonth(since.getMonth() - 18);
+    const sinceStr = since.toISOString().slice(0, 10);
+    const untilStr = until.toISOString().slice(0, 10);
+
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const rows = await this.svServices.getFacturacionOiFromSv(tokenSv, sinceStr, untilStr);
+      this.oiFacturacion = Array.isArray(rows) ? rows : [];
+      this.oiFacturacionMeta = {
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        source: 'sv-http',
+      };
+      this.logger.log(
+        `CRM OI facturación (HTTP): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`,
+      );
+      return;
+    } catch (httpErr) {
+      const httpMsg = httpErr instanceof Error ? httpErr.message : String(httpErr);
+      this.logger.warn(`CRM OI: HTTP falló (${httpMsg}), intento BD`);
+    }
+
+    try {
+      if (!this.oiSvInvoiceService) {
+        throw new Error('OiSvInvoiceService no disponible');
+      }
+      const rows = await this.oiSvInvoiceService.queryFacturacionRows(sinceStr, untilStr);
+      this.oiFacturacion = rows;
+      this.oiFacturacionMeta = {
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        source: 'sv-invoice-db',
+      };
+      this.logger.log(
+        `CRM OI facturación (SV-DB): ${this.oiFacturacion.length} registros (${sinceStr} → ${untilStr})`,
+      );
+      return;
+    } catch (dbErr) {
+      const dbMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+      this.logger.warn(`CRM OI: BD SV falló (${dbMsg})`);
+      this.oiFacturacionMeta = { ...this.oiFacturacionMeta, lastError: dbMsg };
+      throw dbErr;
     }
   }
 

@@ -9,6 +9,7 @@ import { CommissionClosureTag } from '../commission-closure-tag.entity';
 export interface ContractSvRow {
   contractId: number;
   quotationId: number;
+  serviceOrderId?: number;
   tratamiento: string;
   modalidad: string;
   cuotaNum: number;
@@ -28,7 +29,7 @@ export interface CierreTtoBonusConfig {
 }
 
 export interface CierreTtoSedeConfig {
-  /** userId → sede principal (equipo cerradoras) */
+  /** userId → sede principal (facturación SV de cierres) */
   homeCampusByUser: Map<string, number>;
   /** `${userId}__${campusId}` → factor (0.20 = 20% en sede de apoyo) */
   apoyoFactorByUserCampus: Map<string, number>;
@@ -117,6 +118,168 @@ export function resolveSedeApoyoFactor(
   const apoyo = sedeConfig.apoyoFactorByUserCampus.get(apoyoKey);
   if (apoyo != null && apoyo > 0) return apoyo;
   return 1;
+}
+
+export interface CierreTtoPreviewDetalle {
+  userId: string;
+  userName: string;
+  campusId: number;
+  contractId: number;
+  quotationId: number;
+  serviceOrderId?: number;
+  tratamiento: string;
+  modalidad: string;
+  cuotaNum: number;
+  timing: string | null;
+  modifier: string | null;
+  importe: number;
+  commissionTypeCode: string;
+}
+
+export interface CierreTtoPreviewResult {
+  ejecutivos: CierreTtoResult[];
+  detalleLineas: CierreTtoPreviewDetalle[];
+}
+
+/** Calcula comisiones en memoria (sin persistir) — misma lógica que calculateCierreTto. */
+export function previewCierreTtoCommissions(
+  period: CommissionPeriod,
+  contracts: ContractSvRow[],
+  types: CommissionType[],
+  tagByContract: Map<number, CommissionClosureTag>,
+  rateByCode: Map<string, number> = new Map(),
+  bonusConfig?: CierreTtoBonusConfig,
+  sedeConfig?: CierreTtoSedeConfig,
+  allowedUserIds?: Set<string>,
+): CierreTtoPreviewResult {
+  const typeByCode = new Map(types.map((t) => [t.code, t]));
+
+  const byExecutive = new Map<string, ContractSvRow[]>();
+  for (const c of contracts) {
+    const key = `${c.ejecutivo}__${c.campusId}`;
+    if (!byExecutive.has(key)) byExecutive.set(key, []);
+    byExecutive.get(key)!.push(c);
+  }
+
+  const bonus = bonusConfig ?? {
+    personalThreshold: Number(period.bonoPersonalTtosThreshold ?? 45),
+    personalAmount: Number(period.bonoPersonalAmount ?? 500),
+    teamThreshold: Number(period.bonoEquipoTtosThreshold ?? 75),
+    teamAmount: Number(period.bonoEquipoAmount ?? 1000),
+  };
+
+  const results: CierreTtoResult[] = [];
+  const detalleLineas: CierreTtoPreviewDetalle[] = [];
+  const ttosByCampus = new Map<number, number>();
+
+  for (const [key, rows] of byExecutive) {
+    const [userId, campusIdStr] = key.split('__');
+    if (allowedUserIds && !allowedUserIds.has(userId)) continue;
+    const campusId = parseInt(campusIdStr, 10);
+    const campusNombre = rows[0].campusNombre;
+    const userName = rows[0].ejecutivoNombre ?? userId;
+    const sedeFactor = resolveSedeApoyoFactor(userId, campusId, sedeConfig);
+
+    let comisionTtos = 0;
+    let pendingTagCount = 0;
+    const details: CierreTtoResult['details'] = [];
+
+    for (const contract of rows) {
+      if (contract.tratamiento?.toUpperCase() === 'CAMBIO') {
+        const cambioType = typeByCode.get('CAMBIO_TTO');
+        const importeBase = resolveAmount('CAMBIO_TTO', cambioType, rateByCode);
+        const importe = Math.round(importeBase * sedeFactor * 100) / 100;
+        if (importe > 0 && cambioType) {
+          comisionTtos += importe;
+          details.push({ contractId: contract.contractId, commissionTypeCode: 'CAMBIO_TTO', importe, timing: 'N/A', modifier: null });
+          detalleLineas.push({
+            userId,
+            userName,
+            campusId,
+            contractId: contract.contractId,
+            quotationId: contract.quotationId,
+            serviceOrderId: contract.serviceOrderId,
+            tratamiento: contract.tratamiento,
+            modalidad: contract.modalidad,
+            cuotaNum: contract.cuotaNum,
+            timing: 'N/A',
+            modifier: null,
+            importe,
+            commissionTypeCode: 'CAMBIO_TTO',
+          });
+        }
+        continue;
+      }
+
+      const tag = tagByContract.get(contract.contractId);
+      const paymentRef = contract.firstPaymentDate ?? contract.contractDate;
+      const timing = tag?.timing ?? deriveTiming(contract.contractDate, paymentRef);
+      const modifier = tag?.modifier ?? null;
+
+      if (!timing) {
+        pendingTagCount++;
+        continue;
+      }
+
+      const code = buildTypeCode(contract.tratamiento, contract.modalidad, timing, modifier, contract.cuotaNum);
+      const commType = typeByCode.get(code);
+      const importeBase = resolveAmount(code, commType, rateByCode);
+      const importe = Math.round(importeBase * sedeFactor * 100) / 100;
+
+      if (importe <= 0 || !commType) {
+        pendingTagCount++;
+        continue;
+      }
+
+      comisionTtos += importe;
+      details.push({ contractId: contract.contractId, commissionTypeCode: code, importe, timing, modifier });
+      detalleLineas.push({
+        userId,
+        userName,
+        campusId,
+        contractId: contract.contractId,
+        quotationId: contract.quotationId,
+        serviceOrderId: contract.serviceOrderId,
+        tratamiento: commType.tratamiento ?? contract.tratamiento,
+        modalidad: commType.modalidad ?? contract.modalidad,
+        cuotaNum: contract.cuotaNum,
+        timing,
+        modifier,
+        importe,
+        commissionTypeCode: code,
+      });
+    }
+
+    const cantidadCierres = details.length;
+    ttosByCampus.set(campusId, (ttosByCampus.get(campusId) ?? 0) + cantidadCierres);
+
+    const personalBonus = cantidadCierres >= bonus.personalThreshold ? bonus.personalAmount : 0;
+    const comisionBono = personalBonus;
+    const comisionTotal = Math.round((comisionTtos + comisionBono) * 100) / 100;
+
+    results.push({
+      userId,
+      userName,
+      campusId,
+      campusNombre,
+      comisionTtos: Math.round(comisionTtos * 100) / 100,
+      comisionBono,
+      comisionTotal,
+      cantidadCierres,
+      details,
+      pendingTagCount,
+    });
+  }
+
+  for (const r of results) {
+    const teamTotal = ttosByCampus.get(r.campusId) ?? 0;
+    if (teamTotal >= bonus.teamThreshold && bonus.teamAmount > 0) {
+      r.comisionBono = Math.round((r.comisionBono + bonus.teamAmount) * 100) / 100;
+      r.comisionTotal = Math.round((r.comisionTtos + r.comisionBono) * 100) / 100;
+    }
+  }
+
+  return { ejecutivos: results, detalleLineas };
 }
 
 export async function calculateCierreTto(
