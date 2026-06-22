@@ -164,6 +164,11 @@ export class CommissionsController {
     return this.service.getExportDetail(id);
   }
 
+  @Get('periods/:id/diagnostico-cc')
+  getCallCenterDiagnostics(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getCallCenterDiagnostics(id);
+  }
+
   @Get('periods/:id/summary')
   getSummary(@Param('id', ParseIntPipe) id: number) {
     return this.service.getSummaryByPeriod(id);

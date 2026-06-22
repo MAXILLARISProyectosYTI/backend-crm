@@ -422,14 +422,14 @@ export class OiSvInvoiceService implements OnModuleInit {
 
     const sql = `
       WITH ejecutivo AS (
-        SELECT DISTINCT ON (udp2.id_clinic_history)
-          udp2.id_clinic_history,
+        SELECT DISTINCT ON (r2.patient_id)
+          r2.patient_id AS id_clinic_history,
           LOWER(TRIM(u2.username)) AS ejecutivo_oi
-        FROM union_doctor_patient udp2
-        INNER JOIN users u2 ON u2.id = udp2.id_sales_executive
-        WHERE udp2.id_status_borrado = 2
-          AND udp2.id_sales_executive IS NOT NULL
-        ORDER BY udp2.id_clinic_history, udp2.id DESC
+        FROM reservation r2
+        INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
+        INNER JOIN users u2 ON u2.id = a2.iduser
+        WHERE r2.state NOT IN (0)
+        ORDER BY r2.patient_id, a2.idaudit DESC
       )
       SELECT
         irb.id                        AS invoice_body_id,
@@ -510,14 +510,14 @@ export class OiSvInvoiceService implements OnModuleInit {
     // Evaluaciones OI COMPLETAS: pago completo vía clinic_history_crm.id_payment (no parciales).
     const sql = `
       WITH ejecutivo AS (
-        SELECT DISTINCT ON (udp2.id_clinic_history)
-          udp2.id_clinic_history,
+        SELECT DISTINCT ON (r2.patient_id)
+          r2.patient_id AS id_clinic_history,
           LOWER(TRIM(u2.username)) AS ejecutivo_oi
-        FROM union_doctor_patient udp2
-        INNER JOIN users u2 ON u2.id = udp2.id_sales_executive
-        WHERE udp2.id_status_borrado = 2
-          AND udp2.id_sales_executive IS NOT NULL
-        ORDER BY udp2.id_clinic_history, udp2.id DESC
+        FROM reservation r2
+        INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
+        INNER JOIN users u2 ON u2.id = a2.iduser
+        WHERE r2.state NOT IN (0)
+        ORDER BY r2.patient_id, a2.idaudit DESC
       )
       SELECT
         ${OI_EJECUTIVO_LOGIN_EXPR} AS ejecutivo_oi,
@@ -762,13 +762,14 @@ export class OiSvInvoiceService implements OnModuleInit {
 
     const sql = `
       WITH ejecutivo AS (
-        SELECT DISTINCT ON (udp2.id_clinic_history)
-          udp2.id_clinic_history,
+        SELECT DISTINCT ON (r2.patient_id)
+          r2.patient_id AS id_clinic_history,
           LOWER(TRIM(u2.username)) AS ejecutivo
-        FROM union_doctor_patient udp2
-        INNER JOIN users u2 ON u2.id = udp2.id_sales_executive
-        WHERE udp2.id_status_borrado = 2 AND udp2.id_sales_executive IS NOT NULL
-        ORDER BY udp2.id_clinic_history, udp2.id DESC
+        FROM reservation r2
+        INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
+        INNER JOIN users u2 ON u2.id = a2.iduser
+        WHERE r2.state NOT IN (0)
+        ORDER BY r2.patient_id, a2.idaudit DESC
       ),
       pagos_mes AS (
         SELECT
@@ -1098,91 +1099,148 @@ export class OiSvInvoiceService implements OnModuleInit {
     const params: unknown[] = [since, until];
     const campusFilter = cerradorasCampusSqlFilter(campusId, params);
 
-    // Filter to only O.S. linked to cerradora opportunities in CRM.
     let soFilter = '';
     if (allowedServiceOrderIds && allowedServiceOrderIds.length > 0) {
       params.push(allowedServiceOrderIds);
-      soFilter = `AND irh.id_service_order = ANY($${params.length}::int[])`;
+      soFilter = `OR so.id = ANY($${params.length}::int[])`;
     }
 
     const sql = `
       WITH pagos AS (
         SELECT
-          irh.id_service_order AS service_order_id,
-          COALESCE(so.idquotation, 0)::int AS quotation_id,
+          COALESCE(c_direct.id, c_patient.id) AS contract_id,
+          COALESCE(c_direct.idquotation, c_patient.idquotation, 0) AS quotation_id,
+          COALESCE(c_direct.date, c_patient.date)::text AS contract_date,
+          COALESCE(c_direct.num, c_patient.num, '') AS contract_num,
           ch.campus AS campus_id,
-          irb.id AS invoice_body_id,
-          COALESCE(NULLIF(TRIM(irb.operation_number), ''), 'id-' || irb.id::text) AS op_key,
-          irb.id_currency,
+          irh.id_service_order AS service_order_id,
           irh.service_order_creator_id AS service_order_creator_id,
-          LOWER(TRIM(COALESCE(u_creator.username, u_so.username, u_bill.username, ''))) AS os_creator_username,
           LOWER(TRIM(COALESCE(u_bill.username, ''))) AS billing_username,
-          irb.payment_date::text AS payment_date,
+          LOWER(TRIM(COALESCE(
+            NULLIF(TRIM(u_creator.username), ''),
+            NULLIF(TRIM(u_so.username), ''),
+            NULLIF(TRIM(u_bill.username), ''),
+            ''
+          ))) AS os_creator_username,
+          COALESCE(irb.payment_date, irh.invoice_date::date)::text AS payment_date,
           CASE
             WHEN irb.id_currency = 2 THEN irb.amount
             ELSE irb.amount / NULLIF(COALESCE(
               (SELECT er2.value FROM exchange_rate er2
-               WHERE er2.state = 1 AND er2.date <= irb.payment_date
+               WHERE er2.state = 1
+                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
                ORDER BY er2.date DESC LIMIT 1),
               3.5
             ), 0)
-          END AS amount_usd
-        FROM invoice_result_head irh
-        INNER JOIN invoice_result_body irb ON irb.idinvoice_result_head = irh.id
+          END AS amount_usd,
+          (SELECT MIN(cd2.date)::text FROM contract_detail cd2
+            WHERE cd2.idcontract = COALESCE(c_direct.id, c_patient.id)
+              AND cd2.state = 1 AND cd2.description ILIKE '%moldes%') AS moldes_date,
+          (SELECT MIN(cd3.date)::text FROM contract_detail cd3
+            WHERE cd3.idcontract = COALESCE(c_direct.id, c_patient.id)
+              AND cd3.state = 1) AS first_payment_date,
+          CASE
+            WHEN cd.description ILIKE '%moldes%' THEN 0
+            WHEN cd.description ILIKE '%inicial%' THEN 1
+            ELSE 2
+          END AS quota_priority,
+          COALESCE(cs_direct.treatment_code, cs_patient.treatment_code, '') AS treatment_code,
+          irb.id AS invoice_body_id,
+          COALESCE(NULLIF(TRIM(irb.operation_number), ''), 'id-' || irb.id::text) AS op_key,
+          irb.id_currency
+        FROM invoice_result_body irb
+        INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
         INNER JOIN service_order so ON so.id = irh.id_service_order
         INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+        LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+        LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+        LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+        LEFT JOIN contract_structure cs_direct ON cs_direct.id = c_direct.contract_structure_id
+        LEFT JOIN LATERAL (
+          SELECT c2.id, c2.idquotation, c2.date, c2.num
+          FROM contract c2
+          INNER JOIN contract_structure cs ON cs.id = c2.contract_structure_id
+          WHERE c2.idclinichistory = ch.id AND c2.state = 1
+            AND (
+              cs.treatment_code LIKE 'OFM%'
+              OR cs.treatment_code LIKE 'MARPE%'
+              OR cs.treatment_code LIKE 'APNEA%'
+            )
+          ORDER BY c2.date DESC NULLS LAST
+          LIMIT 1
+        ) c_patient ON c_direct.id IS NULL
+        LEFT JOIN contract_structure cs_patient ON cs_patient.id = c_patient.id
         LEFT JOIN users u_creator ON u_creator.id = irh.service_order_creator_id
         LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
         LEFT JOIN users u_so ON u_so.id = so.user_created
         WHERE irh.status_invoice = 1
           AND COALESCE(irh.credit_memo_state, false) = false
-          AND irb.payment_date IS NOT NULL
-          AND irb.payment_date >= $1::date
-          AND irb.payment_date <= $2::date
+          AND irh.service_order_creator_id IS NOT NULL
+          AND irh.service_order_creator_id > 0
+          AND (
+            (irb.payment_date IS NOT NULL
+              AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+            OR (irb.payment_date IS NULL
+              AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+          )
+          AND (
+            COALESCE(cs_direct.treatment_code, cs_patient.treatment_code) LIKE 'OFM%'
+            OR COALESCE(cs_direct.treatment_code, cs_patient.treatment_code) LIKE 'MARPE%'
+            OR COALESCE(cs_direct.treatment_code, cs_patient.treatment_code) LIKE 'APNEA%'
+            ${soFilter}
+          )
           ${campusFilter}
-          ${soFilter}
       ),
       dedup AS (
         SELECT DISTINCT ON (op_key, id_currency)
-          service_order_id, quotation_id, campus_id, service_order_creator_id, billing_username, os_creator_username,
-          payment_date, amount_usd
+          service_order_id, contract_id, quotation_id, contract_date, contract_num,
+          campus_id, service_order_creator_id, billing_username, os_creator_username,
+          payment_date, moldes_date, first_payment_date, amount_usd, treatment_code,
+          quota_priority
         FROM pagos
         ORDER BY op_key, id_currency, invoice_body_id
       ),
       por_os AS (
         SELECT
           service_order_id,
+          MAX(contract_id)::int AS contract_id,
           MAX(quotation_id)::int AS quotation_id,
+          MAX(contract_date) AS contract_date,
+          MAX(contract_num) AS contract_num,
           campus_id,
           MAX(service_order_creator_id)::int AS service_order_creator_id,
           MAX(billing_username) AS billing_username,
           MAX(os_creator_username) AS os_creator_username,
           MIN(payment_date) AS payment_date,
-          ROUND(COALESCE(SUM(amount_usd), 0)::numeric, 2) AS amount_usd
+          MAX(moldes_date) AS moldes_date,
+          MAX(first_payment_date) AS first_payment_date,
+          ROUND(COALESCE(SUM(amount_usd), 0)::numeric, 2) AS amount_usd,
+          MAX(treatment_code) AS treatment_code,
+          MIN(quota_priority) AS min_priority
         FROM dedup
         GROUP BY service_order_id, campus_id
       )
       SELECT
-        0 AS contract_id,
+        contract_id,
         quotation_id,
-        '' AS contract_date,
-        '' AS contract_num,
-        '' AS treatment_code,
+        contract_date,
+        contract_num,
+        treatment_code,
         campus_id, service_order_id, service_order_creator_id,
         billing_username, os_creator_username,
         payment_date,
-        NULL::text AS moldes_date,
-        NULL::text AS first_payment_date,
+        moldes_date,
+        first_payment_date,
         amount_usd
       FROM por_os
       WHERE service_order_id > 0
-      ORDER BY payment_date ASC, service_order_id ASC
+        AND (billing_username <> '' OR os_creator_username NOT IN ('', 'sin_asignar'))
+      ORDER BY payment_date ASC, min_priority ASC, service_order_id ASC
     `;
 
     try {
       await client.connect();
       const result = await client.query(sql, params);
-
       this.logger.log(
         `queryCerradorasFacturacionRows ${since}→${until} campus=${campusId ?? 'all'}: ${result.rowCount ?? 0} filas`,
       );

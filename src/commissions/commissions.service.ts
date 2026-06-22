@@ -388,4 +388,9 @@ export class CommissionsService {
   deletePeriod(id: number) {
     return this.dataService.deletePeriod(id);
   }
+
+  async getCallCenterDiagnostics(periodId: number) {
+    const period = await this.getPeriodById(periodId);
+    return this.dataService.getCallCenterDiagnostics(period);
+  }
 }
