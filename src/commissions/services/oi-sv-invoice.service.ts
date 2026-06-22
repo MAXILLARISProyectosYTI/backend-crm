@@ -428,8 +428,11 @@ export class OiSvInvoiceService implements OnModuleInit {
         FROM reservation r2
         INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
         INNER JOIN users u2 ON u2.id = a2.iduser
+        INNER JOIN tariff t2 ON t2.id = r2.tariff_id
         WHERE r2.state NOT IN (0)
-        ORDER BY r2.patient_id, a2.idaudit DESC
+          AND COALESCE(t2.name, '') ILIKE '%Evalu%'
+          AND COALESCE(r2.tariff_id, 0) NOT IN (58, 192, 198)
+        ORDER BY r2.patient_id, r2.id DESC, a2.idaudit ASC
       )
       SELECT
         irb.id                        AS invoice_body_id,
@@ -516,8 +519,11 @@ export class OiSvInvoiceService implements OnModuleInit {
         FROM reservation r2
         INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
         INNER JOIN users u2 ON u2.id = a2.iduser
+        INNER JOIN tariff t2 ON t2.id = r2.tariff_id
         WHERE r2.state NOT IN (0)
-        ORDER BY r2.patient_id, a2.idaudit DESC
+          AND COALESCE(t2.name, '') ILIKE '%Evalu%'
+          AND COALESCE(r2.tariff_id, 0) NOT IN (58, 192, 198)
+        ORDER BY r2.patient_id, r2.id DESC, a2.idaudit ASC
       )
       SELECT
         ${OI_EJECUTIVO_LOGIN_EXPR} AS ejecutivo_oi,
@@ -768,8 +774,11 @@ export class OiSvInvoiceService implements OnModuleInit {
         FROM reservation r2
         INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
         INNER JOIN users u2 ON u2.id = a2.iduser
+        INNER JOIN tariff t2 ON t2.id = r2.tariff_id
         WHERE r2.state NOT IN (0)
-        ORDER BY r2.patient_id, a2.idaudit DESC
+          AND COALESCE(t2.name, '') ILIKE '%Evalu%'
+          AND COALESCE(r2.tariff_id, 0) NOT IN (58, 192, 198)
+        ORDER BY r2.patient_id, r2.id DESC, a2.idaudit ASC
       ),
       pagos_mes AS (
         SELECT
@@ -852,73 +861,37 @@ export class OiSvInvoiceService implements OnModuleInit {
         HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, ''))) <> ''
       ),
       eva_asist AS (
-        SELECT ejecutivo, campus_id, SUM(cnt)::int AS eva_asistidas
-        FROM (
+        SELECT
+          LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) AS ejecutivo,
+          COALESCE(r.id_campus, ch.campus) AS campus_id,
+          COUNT(DISTINCT r.id)::int AS eva_asistidas
+        FROM reservation r
+        INNER JOIN clinic_history ch ON ch.id = r.patient_id
+        LEFT JOIN tariff t ON t.id = r.tariff_id
+        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+        LEFT JOIN LATERAL (
           SELECT
-            LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) AS ejecutivo,
-            COALESCE(r.id_campus, ch.campus) AS campus_id,
-            COUNT(DISTINCT irb.id)::int AS cnt
-          FROM invoice_result_body irb
-          INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-            AND irh.status_invoice = 1 AND COALESCE(irh.credit_memo_state, false) = false
-          INNER JOIN service_order so ON so.id = irh.id_service_order
-          INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-          INNER JOIN clinic_history_crm chc ON chc.patient_id = ch.id
-            AND chc.id_reservation IS NOT NULL
-          INNER JOIN reservation r ON r.id = chc.id_reservation
-            AND r.patient_id = ch.id
-            AND r.state IN (3, 4, 5)
-          LEFT JOIN tariff t ON t.id = irb.tariff_id
-          LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-          LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-          LEFT JOIN users u_so ON u_so.id = so.user_created
-          WHERE t."name" ILIKE '%Evalu%'
-            AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
-            AND (
-              (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
-              OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
-            )
-            ${campusFilterAsist}
-          GROUP BY 1, 2
-          HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) <> ''
-          UNION ALL
-          SELECT
-            LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) AS ejecutivo,
-            COALESCE(r.id_campus, ch.campus) AS campus_id,
-            COUNT(DISTINCT r.id)::int AS cnt
-          FROM reservation r
-          INNER JOIN clinic_history ch ON ch.id = r.patient_id
-          LEFT JOIN tariff t ON t.id = r.tariff_id
-          LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-          LEFT JOIN LATERAL (
-            SELECT
-              LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
-              LOWER(TRIM(COALESCE(u_so2.username, ''))) AS so_creator
-            FROM invoice_result_body irb2
-            INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
-              AND irh2.status_invoice = 1 AND COALESCE(irh2.credit_memo_state, false) = false
-            INNER JOIN service_order so2 ON so2.id = irh2.id_service_order
-            LEFT JOIN tariff t2 ON t2.id = irb2.tariff_id
-            LEFT JOIN users u_bill2 ON u_bill2.id = irh2.billing_user_id
-            LEFT JOIN users u_so2 ON u_so2.id = so2.user_created
-            WHERE so2.idclinichistory = ch.id
-              AND COALESCE(t2."name", '') ILIKE '%Evalu%'
-              AND COALESCE(irb2.tariff_id, 0) NOT IN (58, 192, 198)
-            ORDER BY irh2.invoice_date DESC NULLS LAST LIMIT 1
-          ) iv ON true
-          WHERE r.state IN (3, 4, 5)
-            AND COALESCE(t."name", '') ILIKE '%Evalu%'
-            AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
-            AND r.date >= $1::date AND r.date <= $2::date
-            AND NOT EXISTS (
-              SELECT 1 FROM clinic_history_crm chc2
-              WHERE chc2.id_reservation = r.id AND chc2.patient_id = ch.id
-            )
-            ${campusFilterAsist}
-          GROUP BY 1, 2
-          HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) <> ''
-        ) eva_asist_union
-        GROUP BY ejecutivo, campus_id
+            LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
+            LOWER(TRIM(COALESCE(u_so2.username, ''))) AS so_creator
+          FROM invoice_result_body irb2
+          INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
+            AND irh2.status_invoice = 1 AND COALESCE(irh2.credit_memo_state, false) = false
+          INNER JOIN service_order so2 ON so2.id = irh2.id_service_order
+          LEFT JOIN tariff t2 ON t2.id = irb2.tariff_id
+          LEFT JOIN users u_bill2 ON u_bill2.id = irh2.billing_user_id
+          LEFT JOIN users u_so2 ON u_so2.id = so2.user_created
+          WHERE so2.idclinichistory = ch.id
+            AND COALESCE(t2."name", '') ILIKE '%Evalu%'
+            AND COALESCE(irb2.tariff_id, 0) NOT IN (58, 192, 198)
+          ORDER BY irh2.invoice_date DESC NULLS LAST LIMIT 1
+        ) iv ON true
+        WHERE r.state IN (3, 4, 5)
+          AND COALESCE(t."name", '') ILIKE '%Evalu%'
+          AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
+          AND r.date >= $1::date AND r.date <= $2::date
+          ${campusFilterAsist}
+        GROUP BY 1, 2
+        HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, iv.billing_user, iv.so_creator, ''))) <> ''
       ),
       keys AS (
         SELECT ejecutivo, campus_id FROM tto_agg
