@@ -70,7 +70,7 @@ const CONTROLES_EJECUTIVO_TEMPLATE: Record<
 > = {
   1: [
     { userId: 'jenny.aguirre', userName: 'Jenny Aguirre', dbAsignada: 1200, factorEspecial: 0.01, metaMontoIndividual: 50903.5 },
-    { userId: 'priscila.cristina', userName: 'Priscila Cristina', dbAsignada: 1200, factorEspecial: 1, metaMontoIndividual: 50903.5 },
+    { userId: 'priscilla.riera', userName: 'Priscilla Riera', dbAsignada: 1200, factorEspecial: 1, metaMontoIndividual: 50903.5 },
   ],
   15: [
     { userId: 'hermaioni.seijas', userName: 'Hermaioni Seijas', dbAsignada: 210, factorEspecial: 1, metaMontoIndividual: 6000 },
