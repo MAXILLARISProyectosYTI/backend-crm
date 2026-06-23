@@ -492,7 +492,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         SELECT u_c.username
         FROM audit a_c
         INNER JOIN users u_c ON u_c.id = a_c.iduser
-        WHERE a_c.idregister = c.id::text
+        WHERE a_c.idregister = c.id
           AND a_c.title IN ('contract', 'Contract')
         ORDER BY a_c.idaudit ASC LIMIT 1
       ) ej_contract ON true
