@@ -60,8 +60,26 @@ export class ContractPresave {
   @Column({ name: "descuento_campana_activo", type: "boolean", default: false })
   descuentoCampanaActivo: boolean;
 
+  @Column({
+    name: "monto_descuento_campana",
+    type: "decimal",
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
+  montoDescuentoCampana: number;
+
   @Column({ name: "descuento_hoy_activo", type: "boolean", default: false })
   descuentoHoyActivo: boolean;
+
+  @Column({
+    name: "monto_descuento_hoy",
+    type: "decimal",
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
+  montoDescuentoHoy: number;
 
   @Column({ name: "descuento_discrecional_activo", type: "boolean", default: false })
   descuentoDiscrecionalActivo: boolean;
