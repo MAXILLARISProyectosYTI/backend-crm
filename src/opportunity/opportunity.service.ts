@@ -1609,14 +1609,15 @@ export class OpportunityService {
       }
     }
 
-    const campusBypassIds =
-      effectiveViewMode === 'mine' ? derivedOpportunityIds : [];
-    this.commercialScopeService.applyOpportunityCampusFilter(
-      queryBuilder,
-      'opportunity',
-      accessCtx.campusScope,
-      campusBypassIds,
-    );
+    // Filtro por sede solo en "Ver todos"; en "Ver mías" basta assigned_user (+ derivaciones OI)
+    if (effectiveViewMode === 'browse') {
+      this.commercialScopeService.applyOpportunityCampusFilter(
+        queryBuilder,
+        'opportunity',
+        accessCtx.campusScope,
+        [],
+      );
+    }
 
     if (search && search.trim()) {
       // Si hay búsqueda, agregar condiciones OR para búsqueda en múltiples campos
