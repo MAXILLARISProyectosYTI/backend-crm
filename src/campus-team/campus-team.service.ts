@@ -36,6 +36,16 @@ export class CampusTeamService {
     return rows.map((r) => r.teamId);
   }
 
+  /** Devuelve team_id de varias sedes (sin duplicados). */
+  async getTeamIdsByCampusIds(campusIds: number[]): Promise<string[]> {
+    if (campusIds.length === 0) return [];
+    const rows = await this.campusTeamRepository.find({
+      where: { campusId: In(campusIds) },
+      select: ['teamId'],
+    });
+    return [...new Set(rows.map((r) => r.teamId).filter(Boolean))];
+  }
+
   /** Lista de campus_id que tienen equipos configurados (para listar sedes). Si la tabla está vacía, devuelve [1] por defecto. */
   async getAllCampusIds(): Promise<number[]> {
     const rows = await this.campusTeamRepository
