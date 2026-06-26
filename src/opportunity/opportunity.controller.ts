@@ -449,11 +449,10 @@ export class OpportunityController {
   @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string, viewMode?: 'mine' | 'browse' }
-  ): Promise<{ opportunities: (Opportunity & { canManage?: boolean })[], total: number, page: number, totalPages: number, viewMode?: 'mine' | 'browse' }> {
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string }
+  ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
     const userSearch = (typeof body?.userSearch === 'string' && body.userSearch.trim()) ? body.userSearch.trim() : undefined;
-    const viewMode = body?.viewMode === 'browse' ? 'browse' : 'mine';
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter, viewMode);
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
   } 
 
   /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
