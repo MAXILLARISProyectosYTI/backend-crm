@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
@@ -13,6 +13,7 @@ import { timeToAssing } from './utils/timeToAssing';
 import { OpportunityWithUser } from './dto/opportunity-with-user';
 import { User } from 'src/user/user.entity';
 import { UserService } from 'src/user/user.service';
+import { CommercialScopeService, type CommercialAccessContext, type OpportunityViewMode } from 'src/user/commercial-scope.service';
 import { Enum_Following, Enum_Stage } from './dto/enums';
 import { Contact } from 'src/contact/contact.entity';
 import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from 'src/globals/ids';
@@ -58,6 +59,7 @@ export class OpportunityService {
     private readonly contactService: ContactService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    private readonly commercialScopeService: CommercialScopeService,
     private readonly meetingService: MeetingService,
     private readonly svServices: SvServices,
     private readonly idGeneratorService: IdGeneratorService,
@@ -620,7 +622,9 @@ export class OpportunityService {
 
       if(!opportunity){
         throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
-      }      
+      }
+
+      await this.assertCanManageOpportunity(userId, opportunity);
 
       const user = await this.userService.findOne(userId);
 
@@ -725,6 +729,8 @@ export class OpportunityService {
     if(!opportunity){
       throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
     }
+
+    await this.assertCanManageOpportunity(userId, opportunity);
 
     const user = await this.userService.findOne(assignedUserId);
 
@@ -1059,7 +1065,11 @@ export class OpportunityService {
     });
   }
 
-  async findOneWithDetails(id: string, userId: string) {
+  async findOneWithDetails(
+    id: string,
+    userId: string,
+    commercialViewMode: OpportunityViewMode = 'mine',
+  ) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['assignedUserId'],
@@ -1167,7 +1177,76 @@ export class OpportunityService {
       return historyWithFile;
     });
 
-    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files };
+    return { ...opportunity, dataMeeting: {...meeting}, userAssigned: userAssigned?.userName, campainName: campainName, subCampaignName: subCampaignName, teams: teams, actionHistory: actionHistoryWithFiles, statusClient: statusClient, files: files, canManage: await this.resolveCanManageForUser(userId, opportunity, { viewMode: commercialViewMode }) };
+  }
+
+  /** Punto 1: puede gestionar (no solo ver) la oportunidad. */
+  async resolveCanManageForUser(
+    userId: string,
+    opportunity: Opportunity,
+    options?: {
+      viewMode?: OpportunityViewMode;
+      allowTeamLeaderCampusScope?: boolean;
+    },
+  ): Promise<boolean> {
+    const ctx = await this.buildCommercialAccessContext(userId);
+    return this.commercialScopeService.resolveCanManageOpportunity(ctx, {
+      id: opportunity.id,
+      assignedUserId: opportunity.assignedUserId ?? null,
+      cCampusId: opportunity.cCampusId ?? null,
+      cCampusAtencionId: opportunity.cCampusAtencionId ?? null,
+    }, options);
+  }
+
+  private async assertCanManageOpportunity(userId: string | undefined, opportunity: Opportunity): Promise<void> {
+    if (!userId) return;
+    const canManage = await this.resolveCanManageForUser(userId, opportunity, {
+      allowTeamLeaderCampusScope: true,
+    });
+    if (!canManage) {
+      throw new ForbiddenException('No tienes permiso para gestionar esta oportunidad');
+    }
+  }
+
+  private async buildCommercialAccessContext(userId: string): Promise<CommercialAccessContext> {
+    const teamsUser = await this.userService.getAllTeamsByUser(userId);
+    const isAdmin = await this.userService.isAdmin(userId);
+    const isAssistent = teamsUser.some(
+      (team) => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES,
+    );
+    const isTIorOwner = teamsUser.some(
+      (team) => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER,
+    );
+    const { isTeamLeader, teamUserIds } =
+      await this.commercialScopeService.resolveTeamLeaderUserIds(userId);
+    const derivedOpportunityIds = await this.opportunityDerivationRepository
+      .find({
+        where: { assignedUserId: userId, status: 'active' as any },
+        select: ['opportunityId'],
+      })
+      .then((rows) => rows.map((r) => r.opportunityId));
+    const campusScope = await this.commercialScopeService.resolveCampusViewScope(userId);
+    const campusTeamUserIds =
+      !campusScope.unrestricted && campusScope.campusIds.length > 0
+        ? await this.commercialScopeService.resolveCampusTeamUserIds(
+            campusScope.campusIds,
+          )
+        : [];
+    const canManageAll =
+      isTIorOwner ||
+      isAdmin ||
+      isAssistent ||
+      (await this.commercialScopeService.canSeeAllNational(userId));
+
+    return {
+      userId,
+      canManageAll,
+      isTeamLeader,
+      teamUserIds,
+      derivedOpportunityIds,
+      campusScope,
+      campusTeamUserIds,
+    };
   }
 
   /** Actualiza solo la sede de atención (campus de atención) de la oportunidad.
@@ -1177,8 +1256,10 @@ export class OpportunityService {
     id: string,
     campusAtencionId: number | null,
     campusName?: string,
+    userId?: string,
   ): Promise<Opportunity> {
     const existing = await this.getOneWithEntity(id);
+    await this.assertCanManageOpportunity(userId, existing);
     const value = campusAtencionId ?? null;
 
     const updatePayload: Partial<Opportunity> = {
@@ -1309,6 +1390,7 @@ export class OpportunityService {
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, userId?: string): Promise<Opportunity> {
 
     const opportunity = await this.getOneWithEntity(id);
+    await this.assertCanManageOpportunity(userId, opportunity);
 
     const previousStage = opportunity.stage; // Guardar etapa anterior para comparación
 
@@ -1442,11 +1524,10 @@ export class OpportunityService {
   }
 
   async remove(id: string, userId: string): Promise<void> {
-    // Obtener la oportunidad antes de eliminar para notificar
-    const opportunity = await this.opportunityRepository.findOne({
-      where: { id },
-      select: ['assignedUserId'],
-    });
+    const opportunity = await this.getOneWithEntity(id);
+    await this.assertCanManageOpportunity(userId, opportunity);
+
+    const assignedUserId = opportunity.assignedUserId?.id ?? (typeof opportunity.assignedUserId === 'string' ? opportunity.assignedUserId : undefined);
     
     const result = await this.opportunityRepository.delete(id);
     
@@ -1455,8 +1536,8 @@ export class OpportunityService {
     }
     
     // Notificar por WebSocket si tenía assignedUserId
-    if (opportunity?.assignedUserId) {
-      await this.websocketService.notifyOpportunityDeleted(opportunity.assignedUserId.id, id);
+    if (assignedUserId) {
+      await this.websocketService.notifyOpportunityDeleted(assignedUserId, id);
     }
 
     await this.actionHistoryService.addRecord({
@@ -1492,86 +1573,50 @@ export class OpportunityService {
     isPresaved?: boolean,
     dateFrom?: string,
     dateTo?: string,
-    campaignFilter?: string
-  ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
+    campaignFilter?: string,
+    viewMode: OpportunityViewMode = 'mine',
+  ): Promise<{ opportunities: (Opportunity & { canManage?: boolean; tipoTratamiento?: string | null; isDerivedToMe?: boolean; oiAssignedUser?: string | null })[], total: number, page: number, totalPages: number, viewMode: OpportunityViewMode }> {
+
+    const effectiveViewMode: OpportunityViewMode = viewMode === 'browse' ? 'browse' : 'mine';
+    const accessCtx = await this.buildCommercialAccessContext(userRequest);
+    const derivedOpportunityIds = accessCtx.derivedOpportunityIds;
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
 
-    const isAdmin = await this.userService.isAdmin(userRequest);
-
     const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
-
-    const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
-    
-    const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
-    let team: string = '';
-    let users: UserWithTeam[] = [];
-
-    // Team leader Arequipa: está en TEAM_AREQUIPA y tiene rol Team Leader Comercial
-    const userWithRoles = await this.userService.findOne(userRequest);
-    const roles = (userWithRoles as { roles?: { roleId?: string }[] }).roles ?? [];
-    const hasTeamLeaderRole = roles.some(r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
-    const isTeamLeaderArequipa = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
-    const isTeamLeaderTrujillo = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_TRUJILLO) && hasTeamLeaderRole;
-    
-    if (isTeamLeader) {
-      if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA)) {
-        team = TEAMS_IDS.TEAM_FIORELLA;
-      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_MICHELL)) {
-        team = TEAMS_IDS.TEAM_MICHELL;
-      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_VERONICA)) {
-        team = TEAMS_IDS.TEAM_VERONICA;
-      }
-      if (team) {
-        users = await this.userService.getUserByAllTeams([team]);
-      }
-    } else if (isTeamLeaderArequipa) {
-      team = TEAMS_IDS.TEAM_AREQUIPA;
-      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
-    } else if (isTeamLeaderTrujillo) {
-      team = TEAMS_IDS.TEAM_TRUJILLO;
-      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_TRUJILLO]);
-    }
-
 
     const queryBuilder = this.opportunityRepository
       .createQueryBuilder('opportunity')
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos
-    if (userSearch && userSearch.trim()) {
-      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', { userSearch: userSearch.trim() });
+    if (effectiveViewMode === 'browse' && userSearch && userSearch.trim()) {
+      // Ver todos + filtro explícito por ejecutivo en el dropdown
+      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', {
+        userSearch: userSearch.trim(),
+      });
+    } else if (effectiveViewMode === 'browse') {
+      // Ver todos: toda la sede visible (sin filtro por ejecutivo)
     } else {
-      // Solo aplicar filtros de permisos si no hay userSearch
-      if (isTIorOwner || isAdmin || isAssistent) {
-        // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
-        // Solo mantiene el filtro de deleted = false que ya está aplicado
-      } else if (isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo) {
-        // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
-        const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
-        if (!userIds.includes(userRequest)) {
-          userIds.push(userRequest);
-        }
-        if (userIds.length > 0) {
-          queryBuilder.andWhere('opportunity.assigned_user_id IN (:...userIds)', { userIds });
-        }
+      // Ver mías: siempre solo lo del usuario logueado (+ derivaciones OI activas)
+      if (derivedOpportunityIds.length > 0) {
+        queryBuilder.andWhere(
+          '(opportunity.assigned_user_id = :userRequest OR opportunity.id IN (:...derivedIds))',
+          { userRequest, derivedIds: derivedOpportunityIds },
+        );
       } else {
-        // Ver propias oportunidades + las derivadas a OI asignadas a este ejecutivo
-        const derivedOpportunityIds = await this.opportunityDerivationRepository
-          .find({ where: { assignedUserId: userRequest, status: 'active' as any }, select: ['opportunityId'] })
-          .then((rows) => rows.map((r) => r.opportunityId));
-
-        if (derivedOpportunityIds.length > 0) {
-          queryBuilder.andWhere(
-            '(opportunity.assigned_user_id = :userRequest OR opportunity.id IN (:...derivedIds))',
-            { userRequest, derivedIds: derivedOpportunityIds },
-          );
-        } else {
-          queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
-        }
+        queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
       }
     }
+
+    const campusBypassIds =
+      effectiveViewMode === 'mine' ? derivedOpportunityIds : [];
+    this.commercialScopeService.applyOpportunityCampusFilter(
+      queryBuilder,
+      'opportunity',
+      accessCtx.campusScope,
+      campusBypassIds,
+    );
 
     if (search && search.trim()) {
       // Si hay búsqueda, agregar condiciones OR para búsqueda en múltiples campos
@@ -1682,7 +1727,13 @@ export class OpportunityService {
       const oiAssignedUser = oiUser
         ? `${oiUser.firstName ?? ''} ${oiUser.lastName ?? ''}`.trim() || oiUser.userName || null
         : null;
-      return { ...opp, tipoTratamiento, isDerivedToMe, oiAssignedUser };
+      const canManage = this.commercialScopeService.resolveCanManageOpportunity(accessCtx, {
+        id: opp.id,
+        assignedUserId: opp.assignedUserId ?? null,
+        cCampusId: opp.cCampusId ?? null,
+        cCampusAtencionId: opp.cCampusAtencionId ?? null,
+      }, { viewMode: effectiveViewMode });
+      return { ...opp, tipoTratamiento, isDerivedToMe, oiAssignedUser, canManage };
     });
 
     return {
@@ -1690,6 +1741,7 @@ export class OpportunityService {
       total,
       page,
       totalPages,
+      viewMode: effectiveViewMode,
     };
   }
 
@@ -1700,8 +1752,9 @@ export class OpportunityService {
     });
   }
 
-  async softDelete(id: string): Promise<Opportunity> {
+  async softDelete(id: string, userId?: string): Promise<Opportunity> {
     const opportunity = await this.getOneWithEntity(id);
+    await this.assertCanManageOpportunity(userId, opportunity);
     opportunity.deleted = true;
     opportunity.modifiedAt = new Date();
     return await this.opportunityRepository.save(opportunity);
@@ -2766,17 +2819,16 @@ export class OpportunityService {
     return redirectResponse;
   }
 
-  async marcarApneaCortesiaTomada(opportunityId: string): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
+  async marcarApneaCortesiaTomada(
+    opportunityId: string,
+    userId?: string,
+  ): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
     if (!isApneaCourtesyWindowActive()) {
       throw new BadRequestException('La promoción de apnea de cortesía no está activa en este momento');
     }
 
-    const opportunity = await this.opportunityRepository.findOne({
-      where: { id: opportunityId, deleted: false },
-    });
-    if (!opportunity) {
-      throw new NotFoundException('No se encontró la oportunidad');
-    }
+    const opportunity = await this.getOneWithEntity(opportunityId);
+    await this.assertCanManageOpportunity(userId, opportunity);
 
     if (opportunity.cSubCampaignId !== CAMPAIGNS_IDS.APNEA && opportunity.cSubCampaignId !== CAMPAIGNS_IDS.OFM) {
       throw new BadRequestException('La promoción de apnea de cortesía solo aplica a oportunidades OFM o APNEA');
