@@ -1573,51 +1573,92 @@ export class OpportunityService {
     isPresaved?: boolean,
     dateFrom?: string,
     dateTo?: string,
-    campaignFilter?: string,
-    viewMode: OpportunityViewMode = 'mine',
-  ): Promise<{ opportunities: (Opportunity & { canManage?: boolean; tipoTratamiento?: string | null; isDerivedToMe?: boolean; oiAssignedUser?: string | null })[], total: number, page: number, totalPages: number, viewMode: OpportunityViewMode }> {
-
-    const effectiveViewMode: OpportunityViewMode = viewMode === 'browse' ? 'browse' : 'mine';
-    const accessCtx = await this.buildCommercialAccessContext(userRequest);
-    const derivedOpportunityIds = accessCtx.derivedOpportunityIds;
+    campaignFilter?: string
+  ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
 
+    const isAdmin = await this.userService.isAdmin(userRequest);
+
     const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
+
+    const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
+    
+    const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
+    let team: string = '';
+    let users: UserWithTeam[] = [];
+
+    // Team leader Arequipa: está en TEAM_AREQUIPA y tiene rol Team Leader Comercial
+    const userWithRoles = await this.userService.findOne(userRequest);
+    const roles = (userWithRoles as { roles?: { roleId?: string }[] }).roles ?? [];
+    const hasTeamLeaderRole = roles.some(r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
+    const isTeamLeaderArequipa = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
+    const isTeamLeaderTrujillo = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_TRUJILLO) && hasTeamLeaderRole;
+    
+    if (isTeamLeader) {
+      if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA)) {
+        team = TEAMS_IDS.TEAM_FIORELLA;
+      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_MICHELL)) {
+        team = TEAMS_IDS.TEAM_MICHELL;
+      } else if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_VERONICA)) {
+        team = TEAMS_IDS.TEAM_VERONICA;
+      }
+      if (team) {
+        users = await this.userService.getUserByAllTeams([team]);
+      }
+    } else if (isTeamLeaderArequipa) {
+      team = TEAMS_IDS.TEAM_AREQUIPA;
+      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
+    } else if (isTeamLeaderTrujillo) {
+      team = TEAMS_IDS.TEAM_TRUJILLO;
+      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_TRUJILLO]);
+    }
+
 
     const queryBuilder = this.opportunityRepository
       .createQueryBuilder('opportunity')
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    if (effectiveViewMode === 'browse' && userSearch && userSearch.trim()) {
-      // Ver todos + filtro explícito por ejecutivo en el dropdown
-      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', {
-        userSearch: userSearch.trim(),
-      });
-    } else if (effectiveViewMode === 'browse') {
-      // Ver todos: toda la sede visible (sin filtro por ejecutivo)
-    } else {
-      // Ver mías: siempre solo lo del usuario logueado (+ derivaciones OI activas)
-      if (derivedOpportunityIds.length > 0) {
-        queryBuilder.andWhere(
-          '(opportunity.assigned_user_id = :userRequest OR opportunity.id IN (:...derivedIds))',
-          { userRequest, derivedIds: derivedOpportunityIds },
-        );
-      } else {
-        queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
-      }
-    }
+    // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos,
+    // salvo admin/asistente/TI/Owner filtrando solo por su propio id (Ver mías → ven todo).
+    const privilegedViewer = isTIorOwner || isAdmin || isAssistent;
+    const isAnyTeamLeader = isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo;
+    const trimmedUserSearch = userSearch?.trim() ?? '';
+    const filterByAssignedUser =
+      trimmedUserSearch.length > 0 &&
+      (!privilegedViewer || trimmedUserSearch !== userRequest);
 
-    // Filtro por sede solo en "Ver todos"; en "Ver mías" basta assigned_user (+ derivaciones OI)
-    if (effectiveViewMode === 'browse') {
-      this.commercialScopeService.applyOpportunityCampusFilter(
-        queryBuilder,
-        'opportunity',
-        accessCtx.campusScope,
-        [],
-      );
-    }
+    if (filterByAssignedUser) {
+      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', {
+        userSearch: trimmedUserSearch,
+      });
+    } else if (privilegedViewer) {
+      // Admin, asistente, TI/Owner → todas las oportunidades (sin filtro por ejecutivo)
+    } else if (isAnyTeamLeader) {
+        // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
+        const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
+        if (!userIds.includes(userRequest)) {
+          userIds.push(userRequest);
+        }
+        if (userIds.length > 0) {
+          queryBuilder.andWhere('opportunity.assigned_user_id IN (:...userIds)', { userIds });
+        }
+      } else {
+        // Ver propias oportunidades + las derivadas a OI asignadas a este ejecutivo
+        const derivedOpportunityIds = await this.opportunityDerivationRepository
+          .find({ where: { assignedUserId: userRequest, status: 'active' as any }, select: ['opportunityId'] })
+          .then((rows) => rows.map((r) => r.opportunityId));
+
+        if (derivedOpportunityIds.length > 0) {
+          queryBuilder.andWhere(
+            '(opportunity.assigned_user_id = :userRequest OR opportunity.id IN (:...derivedIds))',
+            { userRequest, derivedIds: derivedOpportunityIds },
+          );
+        } else {
+          queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
+        }
+      }
 
     if (search && search.trim()) {
       // Si hay búsqueda, agregar condiciones OR para búsqueda en múltiples campos
@@ -1728,13 +1769,7 @@ export class OpportunityService {
       const oiAssignedUser = oiUser
         ? `${oiUser.firstName ?? ''} ${oiUser.lastName ?? ''}`.trim() || oiUser.userName || null
         : null;
-      const canManage = this.commercialScopeService.resolveCanManageOpportunity(accessCtx, {
-        id: opp.id,
-        assignedUserId: opp.assignedUserId ?? null,
-        cCampusId: opp.cCampusId ?? null,
-        cCampusAtencionId: opp.cCampusAtencionId ?? null,
-      }, { viewMode: effectiveViewMode });
-      return { ...opp, tipoTratamiento, isDerivedToMe, oiAssignedUser, canManage };
+      return { ...opp, tipoTratamiento, isDerivedToMe, oiAssignedUser };
     });
 
     return {
@@ -1742,9 +1777,9 @@ export class OpportunityService {
       total,
       page,
       totalPages,
-      viewMode: effectiveViewMode,
     };
   }
+
 
   async findActiveOpportunities(): Promise<Opportunity[]> {
     return await this.opportunityRepository.find({
