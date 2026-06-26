@@ -103,10 +103,21 @@ export class CommercialScopeService {
     return { unrestricted: false, campusIds: [] };
   }
 
+  /** Equipos asignados a varias sedes (usa API existente del CRM). */
+  private async fetchTeamIdsByCampusIds(campusIds: number[]): Promise<string[]> {
+    if (campusIds.length === 0) return [];
+    const batches = await Promise.all(
+      campusIds.map((campusId) =>
+        this.campusTeamService.getTeamIdsByCampusId(campusId),
+      ),
+    );
+    return [...new Set(batches.flat())];
+  }
+
   /** Usuarios activos en equipos comerciales de las sedes indicadas. */
   async resolveCampusTeamUserIds(campusIds: number[]): Promise<string[]> {
     if (campusIds.length === 0) return [];
-    const teamIds = await this.campusTeamService.getTeamIdsByCampusIds(campusIds);
+    const teamIds = await this.fetchTeamIdsByCampusIds(campusIds);
     const commercialTeamIds = teamIds.filter(
       (tid) =>
         FILTERED_USERS_TEAM_IDS.includes(tid) &&
@@ -301,13 +312,11 @@ export class CommercialScopeService {
     const campusIds = await this.userService.getCampusIdsByUser(userId);
     if (campusIds.length === 0) return [];
 
-    const teamIds = await this.campusTeamService.getTeamIdsByCampusIds(campusIds);
-    return [...new Set(
-      teamIds.filter(
-        (tid) =>
-          FILTERED_USERS_TEAM_IDS.includes(tid) &&
-          !META_COMMERCIAL_TEAM_IDS.has(tid),
-      ),
-    )];
+    const teamIds = await this.fetchTeamIdsByCampusIds(campusIds);
+    return teamIds.filter(
+      (tid) =>
+        FILTERED_USERS_TEAM_IDS.includes(tid) &&
+        !META_COMMERCIAL_TEAM_IDS.has(tid),
+    );
   }
 }
