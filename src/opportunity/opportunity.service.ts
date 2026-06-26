@@ -1623,6 +1623,7 @@ export class OpportunityService {
     // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos,
     // salvo admin/asistente/TI/Owner filtrando solo por su propio id (Ver mías → ven todo).
     const privilegedViewer = isTIorOwner || isAdmin || isAssistent;
+    const isAnyTeamLeader = isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo;
     const trimmedUserSearch = userSearch?.trim() ?? '';
     const filterByAssignedUser =
       trimmedUserSearch.length > 0 &&
@@ -1634,7 +1635,7 @@ export class OpportunityService {
       });
     } else if (privilegedViewer) {
       // Admin, asistente, TI/Owner → todas las oportunidades (sin filtro por ejecutivo)
-    } else if (isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo) {
+    } else if (isAnyTeamLeader) {
         // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
         const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
         if (!userIds.includes(userRequest)) {
