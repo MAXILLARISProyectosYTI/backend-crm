@@ -456,7 +456,22 @@ export class OiSvInvoiceService implements OnModuleInit {
         NULLIF(LOWER(TRIM(ej.ejecutivo_oi)), '') AS asignado_oi,
         NULLIF(LOWER(TRIM(u_so.username)), '') AS os_creator_username,
         NULLIF(LOWER(TRIM(u_bill.username)), '') AS facturador_username,
-        ${OI_EJECUTIVO_LOGIN_EXPR}       AS ejecutivo_oi,
+        CASE
+          WHEN COALESCE(t.name, '') ILIKE '%Evalu%' THEN
+            LOWER(TRIM(COALESCE(
+              NULLIF(TRIM(ej.ejecutivo_oi), ''),
+              NULLIF(TRIM(u_so.username), ''),
+              NULLIF(TRIM(u_bill.username), ''),
+              'sin_asignar'
+            )))
+          ELSE
+            LOWER(TRIM(COALESCE(
+              NULLIF(TRIM(ej_contract.username), ''),
+              NULLIF(TRIM(ej.ejecutivo_oi), ''),
+              NULLIF(TRIM(u_so.username), ''),
+              'sin_asignar'
+            )))
+        END                            AS ejecutivo_oi,
         irb.tariff_id,
         t.name                         AS tipo_arancel
       FROM invoice_result_body irb
@@ -470,6 +485,17 @@ export class OiSvInvoiceService implements OnModuleInit {
       LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
       LEFT JOIN users u_so ON u_so.id = so.user_created
       LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+      LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+      LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+      LEFT JOIN contract c ON c.id = cd.idcontract AND c.state = 1
+      LEFT JOIN LATERAL (
+        SELECT u_c.username
+        FROM audit a_c
+        INNER JOIN users u_c ON u_c.id = a_c.iduser
+        WHERE a_c.idregister = c.id
+          AND a_c.title IN ('contract', 'Contract')
+        ORDER BY a_c.idaudit ASC LIMIT 1
+      ) ej_contract ON true
       WHERE COALESCE(t."name", '') NOT ILIKE '%Control OFM%'
         AND COALESCE(t."name", '') NOT ILIKE '%Control Marpe%'
         AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
@@ -510,7 +536,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       campusFilter = ` AND COALESCE(r.id_campus, ch.campus) = $${params.length}`;
     }
 
-    // Evaluaciones OI COMPLETAS: pago completo vía clinic_history_crm.id_payment (no parciales).
+    // Evaluaciones OI asistidas (state 3, 4, 5) desde la tabla reservation.
     const sql = `
       WITH ejecutivo AS (
         SELECT DISTINCT ON (r2.patient_id)
@@ -526,25 +552,29 @@ export class OiSvInvoiceService implements OnModuleInit {
         ORDER BY r2.patient_id, r2.id DESC, a2.idaudit ASC
       )
       SELECT
-        ${OI_EJECUTIVO_LOGIN_EXPR} AS ejecutivo_oi,
+        LOWER(TRIM(COALESCE(
+          NULLIF(TRIM(ej_res.username), ''),
+          NULLIF(TRIM(ej.ejecutivo_oi), ''),
+          'sin_asignar'
+        ))) AS ejecutivo_oi,
         COALESCE(r.id_campus, ch.campus) AS campus_id,
-        COUNT(DISTINCT chc.id)::int  AS evaluaciones
-      FROM clinic_history_crm chc
-      INNER JOIN clinic_history ch ON ch.id = chc.patient_id
-      INNER JOIN reservation r ON r.id = chc.id_reservation AND r.patient_id = ch.id
+        COUNT(DISTINCT r.id)::int  AS evaluaciones
+      FROM reservation r
+      INNER JOIN clinic_history ch ON ch.id = r.patient_id
       LEFT JOIN tariff t ON t.id = r.tariff_id
       LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-      INNER JOIN invoice_result_head irh ON irh.id = chc.id_payment
-        AND irh.status_invoice = 1
-        AND COALESCE(irh.credit_memo_state, false) = false
-      INNER JOIN service_order so ON so.id = irh.id_service_order
-      LEFT JOIN users u_so ON u_so.id = so.user_created
-      LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-      WHERE chc.id_payment IS NOT NULL
-        AND chc.id_reservation IS NOT NULL
+      LEFT JOIN LATERAL (
+        SELECT u_r.username
+        FROM audit a_r
+        INNER JOIN users u_r ON u_r.id = a_r.iduser
+        WHERE a_r.idregister = r.id
+          AND a_r.title ILIKE '%Reservation%'
+        ORDER BY a_r.idaudit ASC LIMIT 1
+      ) ej_res ON true
+      WHERE r.state IN (3, 4, 5)
         AND ${OI_EVAL_TARIFF_WHERE}
-        AND irh.invoice_date::date >= $1::date
-        AND irh.invoice_date::date <= $2::date
+        AND r.date >= $1::date
+        AND r.date <= $2::date
         ${campusFilter}
       GROUP BY 1, 2
     `;

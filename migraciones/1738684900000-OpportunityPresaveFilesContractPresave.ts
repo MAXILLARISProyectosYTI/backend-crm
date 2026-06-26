@@ -2,7 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
  * Tablas de documentación: opportunity_presave, files, contract_presave.
- * documentation/opportunity_presave.sql, files.sql, contract_presave.sql
+ * contract_presave: migraciones/schemas/contract-presave.schema.ts
  */
 export class OpportunityPresaveFilesContractPresave1738684900000
   implements MigrationInterface

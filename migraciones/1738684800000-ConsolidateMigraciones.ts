@@ -8,7 +8,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * - 2025-02-04_opportunity_campus_atencion.sql
  * - documentation/opportunity_presave.sql
  * - documentation/files.sql
- * - documentation/contract_presave.sql
+ * - migraciones/schemas/contract-presave.schema.ts
  */
 export class ConsolidateMigraciones1738684800000 implements MigrationInterface {
   name = 'ConsolidateMigraciones1738684800000';
@@ -181,7 +181,7 @@ export class ConsolidateMigraciones1738684800000 implements MigrationInterface {
       )
     `);
 
-    // —— 7. contract_presave (documentation/contract_presave.sql) ——
+    // —— 7. contract_presave (schemas/contract-presave.schema.ts) ——
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS contract_presave (
         id SERIAL PRIMARY KEY,

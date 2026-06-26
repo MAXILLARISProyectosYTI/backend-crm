@@ -69,8 +69,16 @@ export class CreateContractPresaveDto {
   descuentoCampanaActivo?: boolean;
 
   @IsOptional()
+  @IsNumber()
+  montoDescuentoCampana?: number;
+
+  @IsOptional()
   @IsBoolean()
   descuentoHoyActivo?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  montoDescuentoHoy?: number;
 
   @IsOptional()
   @IsBoolean()
