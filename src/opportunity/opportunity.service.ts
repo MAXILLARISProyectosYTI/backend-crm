@@ -1454,6 +1454,14 @@ export class OpportunityService {
     // Actualizar la entidad directamente y guardar para asegurar que los cambios se reflejen
     Object.assign(opportunity, updateData);
     const savedOpportunity = await this.opportunityRepository.save(opportunity);
+
+    if (updateOpportunityDto.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL') {
+      try {
+        await this.resetFlowLinksForGestionInicial(id);
+      } catch (err) {
+        console.warn('[update] resetFlowLinksForGestionInicial falló', err);
+      }
+    }
     
     // Obtener la oportunidad actualizada con relaciones
     const updatedOpportunity = await this.getOneWithEntity(id);
@@ -2170,6 +2178,50 @@ export class OpportunityService {
       { id: opportunityId, cSeTrasfOtroServi: 'FORCE_INITIAL' },
       { cSeTrasfOtroServi: null, modifiedAt: new Date() } as unknown as Partial<Opportunity>,
     );
+  }
+
+  /**
+   * Al restablecer a Gestión Inicial (FORCE_INITIAL): desvincula pago/reserva del flujo anterior
+   * para que el redirect y la agenda no reutilicen comprobantes anulados o viejos.
+   */
+  async resetFlowLinksForGestionInicial(opportunityId: string): Promise<void> {
+    await this.opportunityServiceOrderRepository.update(
+      { opportunityId },
+      {
+        facturado: false,
+        invoiceResultHeadId: null,
+        urlSoles: null,
+        urlDolares: null,
+      },
+    );
+
+    await this.opportunityRepository.update(
+      { id: opportunityId },
+      {
+        isPresaved: true,
+        cDateReservation: null,
+        cAppointment: null,
+        cDoctor: null,
+        cEnvironment: null,
+        cSpecialty: null,
+        cTariff: null,
+        cFacturacionSubEstado: null,
+        modifiedAt: new Date(),
+      } as unknown as Partial<Opportunity>,
+    );
+
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, {
+        id_payment: null,
+        id_reservation: null,
+      });
+    } catch (err) {
+      console.warn(
+        '[resetFlowLinksForGestionInicial] No se pudo limpiar clinic_history_crm en SV',
+        err,
+      );
+    }
   }
 
   /**
