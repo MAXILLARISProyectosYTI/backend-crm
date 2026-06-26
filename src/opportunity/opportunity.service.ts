@@ -1620,15 +1620,21 @@ export class OpportunityService {
       .leftJoinAndSelect('opportunity.assignedUserId', 'user')
       .andWhere('opportunity.deleted = :deleted', { deleted: false });
 
-    // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos
-    if (userSearch && userSearch.trim()) {
-      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', { userSearch: userSearch.trim() });
-    } else {
-      // Solo aplicar filtros de permisos si no hay userSearch
-      if (isTIorOwner || isAdmin || isAssistent) {
-        // Si es TI, Owner o Asistente, no aplicar ningún filtro de usuario (ve todas las oportunidades)
-        // Solo mantiene el filtro de deleted = false que ya está aplicado
-      } else if (isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo) {
+    // Si se proporciona userSearch, tiene prioridad sobre los filtros de permisos,
+    // salvo admin/asistente/TI/Owner filtrando solo por su propio id (Ver mías → ven todo).
+    const privilegedViewer = isTIorOwner || isAdmin || isAssistent;
+    const trimmedUserSearch = userSearch?.trim() ?? '';
+    const filterByAssignedUser =
+      trimmedUserSearch.length > 0 &&
+      (!privilegedViewer || trimmedUserSearch !== userRequest);
+
+    if (filterByAssignedUser) {
+      queryBuilder.andWhere('opportunity.assigned_user_id = :userSearch', {
+        userSearch: trimmedUserSearch,
+      });
+    } else if (privilegedViewer) {
+      // Admin, asistente, TI/Owner → todas las oportunidades (sin filtro por ejecutivo)
+    } else if (isTeamLeader || isTeamLeaderArequipa || isTeamLeaderTrujillo) {
         // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
         const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
         if (!userIds.includes(userRequest)) {
@@ -1652,7 +1658,6 @@ export class OpportunityService {
           queryBuilder.andWhere('opportunity.assigned_user_id = :userRequest', { userRequest });
         }
       }
-    }
 
     if (search && search.trim()) {
       // Si hay búsqueda, agregar condiciones OR para búsqueda en múltiples campos
