@@ -456,10 +456,10 @@ export class OpportunityController {
   @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string }
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string, excludeReferrals?: boolean }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
     const userSearch = (typeof body?.userSearch === 'string' && body.userSearch.trim()) ? body.userSearch.trim() : undefined;
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter, body.excludeReferrals === true);
   } 
 
   /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
