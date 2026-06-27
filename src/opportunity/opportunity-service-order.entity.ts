@@ -42,13 +42,13 @@ export class OpportunityServiceOrder {
   facturado?: boolean;
 
   @Column({ type: 'integer', nullable: true, name: 'invoice_result_head_id' })
-  invoiceResultHeadId?: number;
+  invoiceResultHeadId?: number | null;
 
   @Column({ type: 'text', nullable: true, name: 'url_soles' })
-  urlSoles?: string;
+  urlSoles?: string | null;
 
   @Column({ type: 'text', nullable: true, name: 'url_dolares' })
-  urlDolares?: string;
+  urlDolares?: string | null;
 
   @Column({ type: 'timestamp with time zone', nullable: true, name: 'last_checked_at' })
   lastCheckedAt?: Date;
