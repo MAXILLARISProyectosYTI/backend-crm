@@ -665,6 +665,8 @@ export class OpportunityService {
       }
 
       const today = new Date();
+      const parentCampusId =
+        opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? undefined;
 
       const payloadOpportunity: Partial<Opportunity> = {
         id: this.idGeneratorService.generateId(),
@@ -672,20 +674,21 @@ export class OpportunityService {
         closeDate: today,
         createdAt: today,
         cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
-        stage: Enum_Stage.CIERRE_GANADO,
+        stage: Enum_Stage.GESTION_INICIAL,
         campaignId: opportunity.campaignId,
         cSubCampaignId: opportunity.cSubCampaignId,
         cCanal: opportunity.cCanal,
         contactId: opportunity.contactId,
-        cSeguimientocliente: Enum_Following.EN_SEGUIMIENTO,
+        cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
         assignedUserId: opportunity.assignedUserId,
         // Marca explícita: esta oportunidad es un "referido" (otro paciente
         // con el mismo teléfono). Sin este flag el SV precarga al paciente
         // original al inferir por número de teléfono. Ver
         // sv-backend-main/.../clinic-history-crm.service.ts#getRedirectByOpportunityId
         cIsReferralCreation: true,
-        // Sede de atención debe elegirse en CRM (Gestiona) o en la tarjeta de referido; no copiar del titular.
-        cCampusAtencionId: undefined,
+        cCampusId: parentCampusId,
+        cCampusAtencionId: parentCampusId,
+        cMetadata: opportunity.cMetadata ?? undefined,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
@@ -1573,7 +1576,8 @@ export class OpportunityService {
     isPresaved?: boolean,
     dateFrom?: string,
     dateTo?: string,
-    campaignFilter?: string
+    campaignFilter?: string,
+    excludeReferrals?: boolean,
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
 
     const teamsUser = await this.userService.getAllTeamsByUser(userRequest);
@@ -1703,6 +1707,13 @@ export class OpportunityService {
       if (subCampaignId) {
         queryBuilder.andWhere('opportunity.c_sub_campaign_id = :campaignFilterId', { campaignFilterId: subCampaignId });
       }
+    }
+
+    // manager_leads (Oportunidades Recientes): solo principales; excluir referidos REF-N
+    if (excludeReferrals === true) {
+      queryBuilder
+        .andWhere('(opportunity.c_is_referral_creation IS NOT TRUE)')
+        .andWhere('opportunity.name NOT ILIKE :refNameSuffix', { refNameSuffix: '%REF-%' });
     }
 
     // Usar ordenamiento diferente según el tipo de usuario
