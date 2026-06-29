@@ -49,6 +49,7 @@ import { OpportunityPresaveService } from './opportunity-presave.service';
 import { CreateOpportunityPresaveDto } from './dto/opportunity-presave.dto';
 import { ContractPresaveService } from './contract-presave.service';
 import { CreateContractPresaveDto } from './dto/contract-presave.dto';
+import type { OpportunityViewMode } from 'src/user/commercial-scope.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -455,10 +456,10 @@ export class OpportunityController {
   @Post('assigned/:userRequest')
   async findByAssignedUser(
     @Param('userRequest') userRequest: string,
-    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string }
+    @Body() body: { page: number, limit: number, search?: string, userSearch?: string, stage?: Enum_Stage, isPresaved?: boolean, dateFrom?: string, dateTo?: string, campaignFilter?: string, excludeReferrals?: boolean }
   ): Promise<{ opportunities: Opportunity[], total: number, page: number, totalPages: number }> {
     const userSearch = (typeof body?.userSearch === 'string' && body.userSearch.trim()) ? body.userSearch.trim() : undefined;
-    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter);
+    return await this.opportunityService.findByAssignedUser(userRequest, body.page, body.limit, body.search, userSearch, body.stage, body.isPresaved, body.dateFrom, body.dateTo, body.campaignFilter, body.excludeReferrals === true);
   } 
 
   /** Compara sede CRM vs SV y devuelve si provino de otra campaña (cSeTrasfOtroServi). */
@@ -475,10 +476,13 @@ export class OpportunityController {
   @Get(':id')
   async findOne(
     @Param('id') id: string,
+    @Query('commercialViewMode') commercialViewMode: string | undefined,
     @Req() req: Request & { user: { userId: string; userName: string } }
   ): Promise<Opportunity> {
     const userId = req.user.userId;
-    return await this.opportunityService.findOneWithDetails(id, userId);
+    const viewMode: OpportunityViewMode =
+      commercialViewMode === 'browse' ? 'browse' : 'mine';
+    return await this.opportunityService.findOneWithDetails(id, userId, viewMode);
   }
 
   /** Actualiza solo la sede de atención (campus de atención) de la oportunidad. Body: { campusAtencionId?: number | null }. */
@@ -486,16 +490,23 @@ export class OpportunityController {
   async updateSedeAtencion(
     @Param('id') id: string,
     @Body() body: UpdateSedeAtencionDto,
+    @Req() req: Request & { user: { userId: string; userName: string } },
   ): Promise<Opportunity> {
-    return this.opportunityService.updateSedeAtencion(id, body.campusAtencionId ?? null, body.campusName);
+    return this.opportunityService.updateSedeAtencion(
+      id,
+      body.campusAtencionId ?? null,
+      body.campusName,
+      req.user.userId,
+    );
   }
 
   /** Registra solicitud de apnea de cortesía (promoción 16–30/06/2026, hora Lima). */
   @Patch(':id/apnea-cortesia/tomar')
   async marcarApneaCortesiaTomada(
     @Param('id') id: string,
+    @Req() req: Request & { user: { userId: string; userName: string } },
   ): Promise<{ ok: boolean; cApneaCortesiaTomada: boolean }> {
-    return this.opportunityService.marcarApneaCortesiaTomada(id);
+    return this.opportunityService.marcarApneaCortesiaTomada(id, req.user.userId);
   }
 
   @Patch(':id')
@@ -516,8 +527,11 @@ export class OpportunityController {
   }
 
   @Patch(':id/soft-delete')
-  async softDelete(@Param('id') id: string): Promise<Opportunity> {
-    return await this.opportunityService.softDelete(id);
+  async softDelete(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { userId: string; userName: string } },
+  ): Promise<Opportunity> {
+    return await this.opportunityService.softDelete(id, req.user.userId);
   }
 
   @Get('websocket/stats')
