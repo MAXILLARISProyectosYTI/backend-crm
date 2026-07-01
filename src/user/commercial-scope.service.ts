@@ -215,6 +215,17 @@ export class CommercialScopeService {
 
     if (assignedId && assignedId === ctx.userId) return true;
     if (ctx.derivedOpportunityIds.includes(opportunity.id)) return true;
+
+    // TL puede gestionar/reasignar oportunidades de ejecutivos de su equipo
+    // (misma lógica que findByAssignedUser en el modal Reasignar).
+    if (
+      ctx.isTeamLeader &&
+      assignedId &&
+      ctx.teamUserIds.includes(assignedId)
+    ) {
+      return true;
+    }
+
     return false;
   }
 
