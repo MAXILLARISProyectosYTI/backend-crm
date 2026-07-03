@@ -166,6 +166,8 @@ export class CrmCerradoresService {
       data = data.filter((p) => p.contractChannel === contractType);
     }
 
+    data = await this.enrichPacientesWithSvClinicHistoryIds(data);
+
     const total = stats.totalPacientes;
     const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -233,6 +235,70 @@ export class CrmCerradoresService {
     });
   }
 
+  /**
+   * Resuelve clinic_history.id real en SV a partir del código HC (ej. LMX126-008575).
+   * No usar dígitos del código como id — AMX126-001250 ≠ id 126001250.
+   */
+  private async enrichPacientesWithSvClinicHistoryIds(
+    rows: PacienteCerradora[],
+  ): Promise<PacienteCerradora[]> {
+    const codes = [
+      ...new Set(
+        rows
+          .map((p) => p.hCPatient?.trim())
+          .filter((c): c is string => !!c),
+      ),
+    ];
+    if (codes.length === 0) return rows;
+
+    const idByHistory = await this.resolveSvClinicHistoryIdsByCodes(codes);
+    return rows.map((p) => {
+      const code = p.hCPatient?.trim();
+      const svId = code ? idByHistory.get(code) ?? null : null;
+      return svId != null ? { ...p, clinicHistoryId: svId } : { ...p, clinicHistoryId: null };
+    });
+  }
+
+  private async resolveSvClinicHistoryIdsByCodes(
+    historyCodes: string[],
+  ): Promise<Map<string, number>> {
+    const unique = [...new Set(historyCodes.map((c) => c.trim()).filter(Boolean))];
+    const map = new Map<string, number>();
+    if (unique.length === 0) return map;
+
+    const svClient = new Client({
+      host: process.env.SV_DB_HOST || '161.132.211.235',
+      port: parseInt(process.env.SV_DB_PORT || '5501', 10),
+      user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
+      database: process.env.SV_DB_DATABASE || 'sv_dev',
+      password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
+    });
+
+    try {
+      await svClient.connect();
+      const res = await svClient.query<{ id: number; history: string }>(
+        `SELECT id, history
+         FROM clinic_history
+         WHERE history = ANY($1::varchar[]) AND state = 1`,
+        [unique],
+      );
+      for (const row of res.rows) {
+        if (row.history) map.set(row.history.trim(), row.id);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`No se pudieron resolver IDs SV por HC: ${msg}`);
+    } finally {
+      try {
+        await svClient.end();
+      } catch {
+        // ignore
+      }
+    }
+
+    return map;
+  }
+
   private mapOpportunityToPaciente(op: {
     id: string;
     name?: string;
@@ -284,9 +350,8 @@ export class CrmCerradoresService {
     return {
       opportunityId: op.id,
       pacienteNombre: op.name || '',
-      clinicHistoryId: op.hCPatient
-        ? parseInt(op.hCPatient.replace(/\D/g, ''), 10) || null
-        : null,
+      // id numérico SV: se resuelve en enrichPacientesWithSvClinicHistoryIds por código HC
+      clinicHistoryId: null,
       hCPatient: op.hCPatient ?? null,
       quotationId: op.cotizacionId ? parseInt(op.cotizacionId, 10) || null : null,
       contractId: op.contractId ?? null,
