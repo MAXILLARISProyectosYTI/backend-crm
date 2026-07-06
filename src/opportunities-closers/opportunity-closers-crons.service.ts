@@ -11,19 +11,14 @@ import { TEAMS_IDS } from "src/globals/ids";
 import { UpdateOpCloserDto } from "./dto/update-op-closer.dto";
 import { CampusTeamService } from "src/campus-team/campus-team.service";
 
-const MAX_QUOTATIONS_PER_RUN = 500;
+import { getManagerLeadsBaseUrl } from '../common/utils/manager-leads-base-url';
 
-/** Base URL para manager_leads; nunca localhost. Por defecto https://crm.maxillaris.pe/ */
-function getManagerLeadsBase(envUrl?: string): string {
-  const base = (envUrl || 'https://crm.maxillaris.pe/').trim();
-  if (base.includes('localhost')) return 'https://crm.maxillaris.pe/';
-  return base.endsWith('/') ? base : `${base}/`;
-}
+const MAX_QUOTATIONS_PER_RUN = 500;
 
 @Injectable()
 export class OpportunitiesClosersCronsService {
 
-  private readonly URL_FRONT = getManagerLeadsBase(process.env.URL_FRONT_MANAGER_LEADS);
+  private readonly URL_FRONT = getManagerLeadsBaseUrl(process.env.URL_FRONT_MANAGER_LEADS);
 
   constructor(
     private readonly svServices: SvServices,
@@ -57,16 +52,18 @@ export class OpportunitiesClosersCronsService {
     }
 
     for (const quotation of quotationsToAdd) {
-      const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(quotation.history);
-      if (oportunidades.length === 0) continue;
+      const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
+        quotation.history,
+        'system',
+      );
+      if (!gestiónOpp) continue;
 
-      const first = oportunidades[0];
       await this.addOpportunityToQueue({
         name: quotation.name,
         history: quotation.history,
-        opportunityId: first.id,
+        opportunityId: gestiónOpp.id,
         quotationId: typeof quotation.id === 'number' ? quotation.id : parseInt(String(quotation.id), 10) || 0,
-        campusAtencionId: first.cCampusAtencionId ?? undefined,
+        campusAtencionId: gestiónOpp.cCampusAtencionId ?? undefined,
       });
     }
   }

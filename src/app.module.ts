@@ -32,6 +32,7 @@ import { PatientSegmentationModule } from './patient-segmentation/patient-segmen
 import { OpportunityDerivationModule } from './opportunity-derivation/opportunity-derivation.module';
 import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
 import { CommissionsModule } from './commissions/commissions.module';
+import { ReferralCashbackModule } from './referral-cashback/referral-cashback.module';
 
 @Module({
   imports: [
@@ -77,6 +78,7 @@ import { CommissionsModule } from './commissions/commissions.module';
     OpportunityDerivationModule,
     CrmCerradoresModule,
     CommissionsModule,
+    ReferralCashbackModule,
   ],
   controllers: [AppController],
   providers: [AppService],
