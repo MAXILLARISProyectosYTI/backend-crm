@@ -23,6 +23,7 @@ import { ContractPresaveService } from './contract-presave.service';
 import { AssignmentQueueStateModule } from '../assignment-queue-state/assignment-queue-state.module';
 import { CampusCoordinatesModule } from '../campus-coordinates/campus-coordinates.module';
 import { OpportunityDerivation } from '../opportunity-derivation/opportunity-derivation.entity';
+import { ReferralLineageModule } from '../referral-lineage/referral-lineage.module';
 import { User } from '../user/user.entity';
 
 @Module({
@@ -37,6 +38,7 @@ import { User } from '../user/user.entity';
     ActionHistoryModule,
     FilesModule,
     CampaignModule,
+    ReferralLineageModule,
   ],
   controllers: [OpportunityController],  
   providers: [

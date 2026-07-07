@@ -235,6 +235,17 @@ export class Opportunity {
   @Column({ type: 'boolean', nullable: true, default: false, name: 'c_is_referral_creation' })
   cIsReferralCreation?: boolean;
 
+  /**
+   * Referidor directo (quien trajo a este paciente). Puede ser una opp REF elegible.
+   * Cashback y herencia de ejecutivo usan este vínculo inmediato.
+   */
+  @Column({ type: 'varchar', length: 17, nullable: true, name: 'c_primary_opportunity_id' })
+  cPrimaryOpportunityId?: string;
+
+  /** Titular raíz del núcleo familiar (opp no-REF). Trazabilidad y contactId compartido. */
+  @Column({ type: 'varchar', length: 17, nullable: true, name: 'c_referral_root_opportunity_id' })
+  cReferralRootOpportunityId?: string;
+
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'c_c_patientsname' })
   cCPatientsname?: string;
 

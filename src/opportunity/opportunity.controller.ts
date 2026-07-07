@@ -138,8 +138,10 @@ export class OpportunityController {
       ordenesServicio,
     };
 
-    // Si no hay payment pero sí O.S facturadas, rellenar payment con la factura de la primera O.S (misma estructura).
-    if (response?.payment == null) {
+    const forceInitial = await this.opportunityService.isForceInitialFlow(uuidOpportunity);
+
+    // Si no hay payment pero sí O.S facturadas, rellenar payment (solo si NO está en gestión inicial forzada).
+    if (!forceInitial && response?.payment == null) {
       const facturasOS = await this.opportunityService.getFacturasOrdenesServicioForRedirect(uuidOpportunity);
       if (facturasOS.length > 0) {
         const primera = facturasOS[0];
@@ -158,7 +160,6 @@ export class OpportunityController {
     // Si el ejecutivo pidió restablecer como Gestión Inicial (sentinel FORCE_INITIAL), NO sobreescribir
     // el code a FLUJO_REALIZADO aunque el flujo técnicamente esté completo (por datos antiguos).
     // El sentinel se limpia cuando el flujo se complete NUEVAMENTE (ver updateOpportunityWithFacturas).
-    const forceInitial = await this.opportunityService.isForceInitialFlow(uuidOpportunity);
 
     // Flujo completado = datos paciente + datos reserva + (facturación O O.S). Entonces code 0 y traer reserva/pago.
     const flowComplete = !forceInitial && await this.opportunityService.isFlowCompleteForRedirect(uuidOpportunity);
@@ -180,6 +181,12 @@ export class OpportunityController {
           ...(response?.payment == null && fullFlow.payment != null && { payment: fullFlow.payment }),
         };
       }
+    }
+
+    // Gestión inicial forzada: no exponer pago/reserva del flujo anterior al frontend.
+    if (forceInitial) {
+      const { payment: _p, reservation: _r, ...rest } = response ?? {};
+      response = { ...rest };
     }
 
     console.log('[GET /opportunity/redirect] Respuesta', JSON.stringify(response, null, 2));

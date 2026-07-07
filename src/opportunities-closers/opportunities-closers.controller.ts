@@ -83,6 +83,21 @@ export class OpportunitiesClosersController {
   }
 
   /**
+   * Crea o enlaza la oportunidad REF-N en CRM Ventas para el paciente de esta cerradora.
+   */
+  @Post(':id/create-referral-opportunity')
+  async createReferralOpportunity(
+    @Param('id') id: string,
+    @Req() req: Request & { user?: { userId: string } },
+  ) {
+    const userId = req?.user?.userId;
+    if (!userId) {
+      throw new NotFoundException('Usuario no identificado');
+    }
+    return this.opportunitiesClosersService.createReferralOpportunityFromCloser(id, userId);
+  }
+
+  /**
    * Agregar a la cola desde un resultado de búsqueda en SV (cuando no había resultados en CRM).
    * Body: quotationId, name, history. Crea la oportunidad cerradora si existe oportunidad en CRM con esa historia clínica.
    */
@@ -94,18 +109,17 @@ export class OpportunitiesClosersController {
     if (exists) {
       throw new ConflictException('Esta cotización ya está en la cola de cerradoras');
     }
-    const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(body.history);
-    if (!oportunidades?.length) {
+    const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(body.history);
+    if (!gestiónOpp) {
       throw new NotFoundException('No hay oportunidad en el CRM con esa historia clínica. Debe existir la oportunidad para agregarla a la cola.');
     }
-    const first = oportunidades[0];
     const quotationId = typeof body.quotationId === 'number' ? body.quotationId : parseInt(String(body.quotationId), 10) || 0;
     return this.opportunitiesClosersCronsService.addOpportunityToQueue({
       name: body.name,
       history: body.history,
-      opportunityId: first.id,
+      opportunityId: gestiónOpp.id,
       quotationId,
-      campusAtencionId: first.cCampusAtencionId ?? undefined,
+      campusAtencionId: gestiónOpp.cCampusAtencionId ?? undefined,
     });
   }
 

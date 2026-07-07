@@ -1,4 +1,4 @@
-import { HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
+import { BadRequestException, HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
@@ -30,19 +30,13 @@ import {
   PACIENTE_PANEL_KEY_SQL,
   type PacientesPanelFilters,
 } from '../crm-cerradoras/utils/pacientes-panel.query';
+import { getManagerLeadsBaseUrl } from '../common/utils/manager-leads-base-url';
 
 @Injectable()
 export class OpportunitiesClosersService implements OnApplicationBootstrap {
   private readonly logger = new Logger(OpportunitiesClosersService.name);
   private readonly URL_DOWNLOAD_FILES = process.env.URL_DOWNLOAD_FILES;
-  /** Base URL para manager_leads; nunca localhost. Por defecto https://crm.maxillaris.pe/ */
-  private readonly URL_FRONT_MANAGER_LEADS = this.normalizeManagerLeadsBase(process.env.URL_FRONT_MANAGER_LEADS);
-
-  private normalizeManagerLeadsBase(envUrl?: string): string {
-    const base = (envUrl || 'https://crm.maxillaris.pe/').trim();
-    if (base.includes('localhost')) return 'https://crm.maxillaris.pe/';
-    return base.endsWith('/') ? base : `${base}/`;
-  }
+  private readonly URL_FRONT_MANAGER_LEADS = getManagerLeadsBaseUrl(process.env.URL_FRONT_MANAGER_LEADS);
 
   constructor(
     @InjectRepository(OpportunitiesClosers)
@@ -276,8 +270,11 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
             this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
             continue;
           }
-          const oportunidades = await this.opportunityService.getOpportunityByClinicHistory(item.history);
-          const opportunityId = oportunidades?.length ? oportunidades[0].id : undefined;
+          const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
+            item.history,
+            assignedToUserId ?? 'system',
+          );
+          const opportunityId = gestiónOpp?.id;
           this.logger.log(`[findAll] Asignación: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
           const payload = {
             assignedUserId: assignedToUserId,
@@ -637,6 +634,17 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
 
     if (!opportunity) {
       throw new NotFoundException(`Oportunidad cerradora con ID ${id} no encontrada`);
+    }
+
+    if (opportunity.hCPatient?.trim() && !opportunity.opportunityId) {
+      const linked = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
+        opportunity.hCPatient.trim(),
+        opportunity.assignedUserId ?? 'system',
+      );
+      if (linked?.id) {
+        opportunity.opportunityId = linked.id;
+        await this.opportunitiesClosersRepository.update({ id }, { opportunityId: linked.id });
+      }
     }
   
       let userAssigned: User | null = null;
@@ -1088,5 +1096,197 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     }
 
     return await this.opportunitiesClosersRepository.save(opportunity);
+  }
+
+  /**
+   * Crea (o enlaza) la oportunidad CRM REF-N para el paciente de esta cerradora.
+   * - Titular raíz: REF-2, REF-3… sin HC propia aún.
+   * - Referido con HC: una opp por paciente; si pagó OFM 100% puede referir más (REF hijo).
+   */
+  async createReferralOpportunityFromCloser(
+    closerId: string,
+    userId: string,
+  ): Promise<{
+    status: 'created' | 'linked' | 'already_exists';
+    message: string;
+    opportunityId: string;
+    opportunityName?: string;
+    assignedUserName?: string | null;
+  }> {
+    const closer = await this.getOneWithEntity(closerId);
+    const hcCode = closer.hCPatient?.trim();
+    if (!hcCode) {
+      throw new BadRequestException('La oportunidad cerradora no tiene historia clínica');
+    }
+
+    const referrerCtx = await this.opportunityService.resolveReferrerForCloser({
+      closerOpportunityId: closer.opportunityId,
+      hcCode,
+    });
+
+    if (!referrerCtx) {
+      throw new BadRequestException(
+        'No se encontró referidor en CRM Ventas. ' +
+          'Enlaza la cerradora a la opp del titular o del referidor habilitado.',
+      );
+    }
+
+    const familyRoot = referrerCtx.familyRoot;
+    const directReferrer = referrerCtx.directReferrer;
+
+    const primaryHc = familyRoot.cClinicHistory?.trim() ?? '';
+    const isTitularOnThisHc = primaryHc === hcCode;
+
+    const existingByHc = await this.opportunityService.getOpportunityByClinicHistory(hcCode);
+    const patientRefOpps = (existingByHc ?? []).filter(
+      (o) => !o.deleted && o.cIsReferralCreation === true,
+    );
+    const patientRef =
+      patientRefOpps.length > 0
+        ? patientRefOpps.sort((a, b) => {
+            const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return tb - ta;
+          })[0]
+        : null;
+
+    const createFamilyRef = async (referrerOppId: string) => {
+      const created = await this.opportunityService.createWithSamePhoneNumber(referrerOppId, userId);
+      await this.opportunityService.clearReferralOpportunitySvFlowLinks(created.id, userId);
+      await this.update(closerId, { opportunityId: created.id }, userId);
+      const assignedName =
+        typeof created.assignedUserId === 'object' && created.assignedUserId
+          ? created.assignedUserId.userName ?? null
+          : null;
+      return {
+        status: 'created' as const,
+        message: 'Nuevo referido creado en CRM Ventas (mismo ejecutivo del referidor)',
+        opportunityId: created.id,
+        opportunityName: created.name,
+        assignedUserName: assignedName,
+      };
+    };
+
+    // Titular raíz en esta HC: REF familiar sin HC propia
+    if (isTitularOnThisHc) {
+      return createFamilyRef(familyRoot.id);
+    }
+
+    // Referido ya registrado en esta HC
+    if (patientRef) {
+      const eligibleAsReferrer = await this.opportunityService.isOpportunityEligibleAsReferrer(
+        patientRef.id,
+      );
+      if (eligibleAsReferrer) {
+        return createFamilyRef(patientRef.id);
+      }
+
+      if (!closer.opportunityId || closer.opportunityId !== patientRef.id) {
+        await this.update(closerId, { opportunityId: patientRef.id }, userId);
+      }
+      const assignedName =
+        typeof patientRef.assignedUserId === 'object' && patientRef.assignedUserId
+          ? patientRef.assignedUserId.userName ?? null
+          : null;
+      return {
+        status: closer.opportunityId === patientRef.id ? 'already_exists' : 'linked',
+        message:
+          closer.opportunityId === patientRef.id
+            ? 'Este paciente ya tiene su oportunidad referida. Para referir a otro, debe tener OFM pagado al 100%.'
+            : 'Oportunidad referida de este paciente enlazada a la cerradora',
+        opportunityId: patientRef.id,
+        opportunityName: patientRef.name,
+        assignedUserName: assignedName,
+      };
+    }
+
+    const primaryOpportunityId = directReferrer.id;
+
+    const phoneNumber =
+      directReferrer.cNumeroDeTelefono?.trim() ||
+      familyRoot.cNumeroDeTelefono?.trim() ||
+      '000000000';
+    const campusId =
+      directReferrer.cCampusAtencionId ??
+      directReferrer.cCampusId ??
+      familyRoot.cCampusAtencionId ??
+      familyRoot.cCampusId ??
+      1;
+
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+    const patient = await this.svServices.getPatientByClinicHistory(hcCode, tokenSv);
+    const fullName =
+      [patient?.name, patient?.lastNameFather, patient?.lastNameMother]
+        .filter(Boolean)
+        .map((s: string) => String(s).trim())
+        .join(' ')
+        .trim() || closer.name || hcCode;
+    const patientId = patient?.id != null ? Number(patient.id) : undefined;
+
+    const createResult = await this.opportunityService.create(
+      {
+        name: fullName,
+        phoneNumber,
+        campaignId: directReferrer.campaignId ?? familyRoot.campaignId!,
+        subCampaignId: directReferrer.cSubCampaignId ?? familyRoot.cSubCampaignId!,
+        channel: 'Cerradoras',
+        campusId: Number(campusId) || 1,
+        isReferral: true,
+        primaryOpportunityId,
+        patientIdOverride: patientId,
+        referredClinicHistoryCode: hcCode,
+        referredPatient: {
+          name: fullName.split(' ')[0] || fullName,
+        },
+        observation: `Referido creado desde cerradoras (${closer.name ?? hcCode})`,
+      },
+      userId,
+      { allowDuplicatePhone: true },
+    );
+
+    if (createResult.status !== 'success' || !createResult.data?.opportunity?.id) {
+      throw new BadRequestException(
+        createResult.message ?? 'No se pudo crear la oportunidad referida',
+      );
+    }
+
+    const newOpp = createResult.data.opportunity;
+
+    // Asignar al mismo ejecutivo del titular (no round-robin).
+    const primaryUserId =
+      directReferrer.assignedUserId?.id ??
+      (typeof directReferrer.assignedUserId === 'object'
+        ? (directReferrer.assignedUserId as { id?: string })?.id
+        : null) ??
+      familyRoot.assignedUserId?.id ??
+      null;
+
+    let finalOpp = newOpp;
+    if (primaryUserId) {
+      finalOpp = await this.opportunityService.assingManual(newOpp.id, primaryUserId, userId);
+    }
+
+    await this.opportunityService.clearReferralOpportunitySvFlowLinks(finalOpp.id, userId);
+
+    await this.update(closerId, { opportunityId: finalOpp.id }, userId);
+
+    const assignedRaw = finalOpp.assignedUserId as { userName?: string } | string | null | undefined;
+    const assignedUserName =
+      assignedRaw && typeof assignedRaw === 'object' ? assignedRaw.userName ?? null : null;
+
+    await this.actionHistoryService.addRecord({
+      targetId: closerId,
+      target_type: ENUM_TARGET_TYPE.OPPORTUNITY_CLOSER,
+      userId,
+      message: `Oportunidad referida ${finalOpp.name} (${finalOpp.id}) creada desde cerradoras`,
+    });
+
+    return {
+      status: 'created',
+      message: 'Oportunidad referida creada en CRM Ventas (mismo ejecutivo del referidor)',
+      opportunityId: finalOpp.id,
+      opportunityName: finalOpp.name,
+      assignedUserName,
+    };
   }
 }
