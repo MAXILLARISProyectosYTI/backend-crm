@@ -15,7 +15,7 @@ import { ResponderSolicitudDto } from './dto/responder-solicitud.dto';
 import { ActualizarFirmaDto } from './dto/actualizar-firma.dto';
 import { UserService } from '../user/user.service';
 import { User } from '../user/user.entity';
-import { ROLES_IDS } from '../globals/ids';
+import { ROLES_IDS, TEAMS_IDS } from '../globals/ids';
 import { OpportunitiesClosersService } from '../opportunities-closers/opportunities-closers.service';
 import type { ContractChannel, ContractTypeFilter } from './utils/contract-channel.util';
 import { getDocusealProductionCutover } from './utils/contract-channel.util';
@@ -186,8 +186,9 @@ export class CrmCerradoresService {
     if (isAdmin) return;
     const roles = await this.userService.getRoleIds(userId);
     if (roles.includes(ROLES_IDS.CERRADORA)) return;
+    if (await this.userService.isMemberOfTeam(userId, TEAMS_IDS.CERRADORAS)) return;
     throw new ForbiddenException(
-      'Solo usuarios cerradoras o administradores pueden acceder a Mis Pacientes',
+      'Solo usuarios cerradoras o administradores pueden acceder a Mis Pacientes y Plan Familiar',
     );
   }
 

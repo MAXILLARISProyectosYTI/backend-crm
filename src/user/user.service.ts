@@ -14,6 +14,7 @@ import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../glob
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 import { TeamUserService } from 'src/team-user/team-user.service';
+import { TeamUser } from 'src/team-user/team-user.entity';
 import type {
   AssignmentQueueByCampusDto,
   AssignmentQueueItem,
@@ -41,7 +42,7 @@ export interface RoleSummary {
   name?: string;
 }
 
-export type UserWithRoles = User & { roles: RoleSummary[] };
+export type UserWithRoles = User & { roles: RoleSummary[]; teams: TeamUser[] };
 
 @Injectable()
 export class UserService {
@@ -336,8 +337,14 @@ export class UserService {
 
     const userWithRoles = user as UserWithRoles;
     userWithRoles.roles = Array.from(rolesMap.values());
+    userWithRoles.teams = await this.teamUserService.getCurrentTeamUsers(user.id);
 
     return userWithRoles;
+  }
+
+  async isMemberOfTeam(userId: string, teamId: string): Promise<boolean> {
+    const teamUsers = await this.teamUserService.getCurrentTeamUsers(userId);
+    return teamUsers.some((teamUser) => teamUser.teamId === teamId);
   }
 
   async findActiveUsers(): Promise<User[]> {

@@ -97,6 +97,28 @@ export class OpportunityService {
     return /[a-zA-Z]/.test(hc.trim());
   }
 
+  /** Resuelve el ID del ejecutivo asignado (relación User o string crudo). */
+  private resolveAssignedUserId(assignedUserId: User | string | null | undefined): string {
+    if (!assignedUserId) return '';
+    if (typeof assignedUserId === 'string') return assignedUserId;
+    return assignedUserId.id ?? '';
+  }
+
+  private buildManagerLeadsUrl(
+    assignedUserId: User | string | null | undefined,
+    opportunityId: string,
+    options?: { isOiFlow?: boolean; sedeId?: number | null },
+  ): string {
+    const usuario = this.resolveAssignedUserId(assignedUserId);
+    const params = new URLSearchParams();
+    if (usuario) params.set('usuario', usuario);
+    params.set('uuid-opportunity', opportunityId);
+    if (options?.isOiFlow) params.set('isOiDerivedFlow', 'true');
+    const sede = options?.sedeId;
+    if (sede != null && sede > 0) params.set('sede', String(sede));
+    return `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?${params.toString()}`;
+  }
+
 
   /**
    * Crea una nueva oportunidad (registro de lead).
@@ -542,9 +564,12 @@ export class OpportunityService {
       const opportunity = this.opportunityRepository.create(payload);
       const saved = await this.opportunityRepository.save(opportunity);
 
-      // URL de redirección: usa el ejecutivo recién asignado (no hereda el del
-      // titular). El sv-backend sobreescribe luego con flags isOiDerivedFlow.
-      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${userToAssign?.id ?? ''}&uuid-opportunity=${saved.id}`;
+      const isOiSubCampaign = dto.subCampaignId === CAMPAIGNS_IDS.OI;
+      const cConctionSv = this.buildManagerLeadsUrl(
+        userToAssign ?? saved.assignedUserId,
+        saved.id,
+        { isOiFlow: isOiSubCampaign, sedeId: campusId ?? null },
+      );
       const updated = await this.update(saved.id, { cConctionSv }, userId);
 
       if (userToAssign && campusId != null) {
@@ -648,8 +673,16 @@ export class OpportunityService {
       const parentCampusId =
         opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? familyRoot.cCampusAtencionId ?? familyRoot.cCampusId ?? undefined;
 
+      const newOpportunityId = this.idGeneratorService.generateId();
+      const isOiSubCampaign = opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI;
+      const cConctionSv = this.buildManagerLeadsUrl(
+        link.assigneeUser ?? opportunity.assignedUserId,
+        newOpportunityId,
+        { isOiFlow: isOiSubCampaign, sedeId: parentCampusId ?? null },
+      );
+
       const payloadOpportunity: Partial<Opportunity> = {
-        id: this.idGeneratorService.generateId(),
+        id: newOpportunityId,
         name: nextRefName,
         closeDate: today,
         createdAt: today,
@@ -668,15 +701,13 @@ export class OpportunityService {
         cCampusAtencionId: parentCampusId,
         cMetadata: opportunity.cMetadata ?? familyRoot.cMetadata ?? undefined,
         isPresaved: true,
+        cConctionSv,
       }
       
       const opportunityCreated = this.opportunityRepository.create(payloadOpportunity);
       const savedOpportunity = await this.opportunityRepository.save(opportunityCreated);
 
-      const assigneeId = link.assigneeUser?.id ?? '';
-      const cConctionSv = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/?usuario=${assigneeId}&uuid-opportunity=${savedOpportunity.id}`;
-
-      const newOpportunity = await this.update(savedOpportunity.id, {cConctionSv: cConctionSv}, userId);
+      const newOpportunity = savedOpportunity;
 
       const payloadClinicHistory: CreateClinicHistoryCrmDto = {
         espoId: newOpportunity.id,
@@ -1185,6 +1216,7 @@ export class OpportunityService {
     if (!userId) return;
     const canManage = await this.resolveCanManageForUser(userId, opportunity, {
       allowTeamLeaderCampusScope: true,
+      viewMode: 'browse',
     });
     if (!canManage) {
       throw new ForbiddenException('No tienes permiso para gestionar esta oportunidad');
