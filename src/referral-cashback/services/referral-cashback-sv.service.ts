@@ -11,6 +11,7 @@ import {
   OFM_DESC_NORM_IS_PRIMER_PAGO,
   ofmDetailIsCuotaInstallment,
   ofmDetailIsPrimerPago,
+  ofmHistoricalPrimerPagoInvoicedSelect,
   ofmPrimerPagoStatusCte,
   ofmPrimerPagoStatusSelect,
   resolveOfmModality,
@@ -45,6 +46,8 @@ export interface SvInvoiceCashbackContext {
   currency: ReferralCashbackCurrency;
   sourceType: ReferralCashbackSvSourceType;
   cashbackPhase?: ReferralCashbackOfmCashbackPhase;
+  /** True si el head de cierre contado también facturó líneas Moldes/Inicial (mismo boleto). */
+  closingIncludesPrimerPago?: boolean;
   isEligible: boolean;
   skipReason?: string;
 }
@@ -339,7 +342,9 @@ export class ReferralCashbackSvService {
    * IRB ancla para evaluar cashback OFM del referido:
    * - Contado: última factura (MAX irb) cuando el contrato está 100% pagado; el 10% es sobre
    *   la suma de IRB de ese mismo invoice head (no solo una línea).
-   * - Cuotas: factura cuando Moldes + Inicial están completos + última al cerrar el contrato.
+   * - Primer pago Moldes+Inicial: cuando ambos estuvieron facturados/cerrados, **aunque**
+   *   la modalidad vigente ya no sea OFM_CUOTAS (cambio cuotas→contado desactiva "Inicial").
+   * - Cuotas remainder: última factura de cuota al cerrar, solo si la modalidad vigente sigue en cuotas.
    */
   async listOfmCashbackTriggerIrbIdsForPatient(patientId: number): Promise<number[]> {
     const client = this.createClient();
@@ -366,6 +371,7 @@ export class ReferralCashbackSvService {
               AND ROUND(COALESCE(cd.balance, 0)::numeric, 2) > 0.01
           )
         ),
+        -- Incluye detalles state=0: tras cuotas→contado "Inicial" queda inactivo pero conserva IRBs.
         contract_irbs AS (
           SELECT
             cd.idcontract,
@@ -379,8 +385,7 @@ export class ReferralCashbackSvService {
           INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
             AND irh.status_invoice = 1
             AND COALESCE(irh.credit_memo_state, false) = false
-          WHERE COALESCE(cd.state, 1) = 1
-            AND c.idclinichistory = $1
+          WHERE c.idclinichistory = $1
         )
         SELECT irb_id FROM (
           SELECT MAX(ci.irb_id) AS irb_id
@@ -392,18 +397,18 @@ export class ReferralCashbackSvService {
 
           UNION
 
+          -- Primer pago Moldes+Inicial: independiente de modalidad vigente
           SELECT MAX(ci.irb_id) AS irb_id
           FROM contract_irbs ci
           INNER JOIN patient_ofm_contracts poc ON poc.contract_id = ci.idcontract
           INNER JOIN (
-            ${ofmPrimerPagoStatusSelect()}
+            ${ofmPrimerPagoStatusSelect(undefined, { includeInactive: true })}
           ) pps ON pps.contract_id = ci.idcontract
             AND pps.has_moldes
             AND pps.has_inicial
             AND pps.moldes_complete
             AND pps.inicial_complete
-          WHERE poc.treatment_code = 'OFM_CUOTAS'
-            AND ${OFM_DESC_NORM_IS_PRIMER_PAGO}
+          WHERE ${OFM_DESC_NORM_IS_PRIMER_PAGO}
           GROUP BY ci.idcontract
 
           UNION
@@ -568,7 +573,9 @@ export class ReferralCashbackSvService {
    * - Contado: 10% de la factura (head) que cierra el contrato al 100%.
    *   Si esa boleta tiene varias líneas (Moldes + Único Pago), se suman todos los IRB del mismo head.
    *   Pagos parciales en facturas distintas: solo la última factura de cierre cuenta.
-   * - Cuotas: 10% de Moldes + Inicial (ambos completos) + 10% de las cuotas al cerrar el contrato.
+   * - Primer pago (Moldes + Inicial): 10% aunque el contrato ya no sea OFM_CUOTAS
+   *   (cambio de modalidad desactiva "Inicial" pero las facturas históricas siguen valiendo).
+   * - Cuotas remainder: 10% de las cuotas al cerrar, si la modalidad vigente sigue en cuotas.
    */
   private async getOfmContractCashbackContext(
     sourceIrbId: number,
@@ -594,6 +601,7 @@ export class ReferralCashbackSvService {
         total_invoiced: string;
         trigger_irb_amount: string;
         closing_head_invoiced: string;
+        closing_head_has_primer_pago: boolean;
         primer_pago_invoiced: string;
         remainder_invoiced: string;
         id_currency: number;
@@ -620,8 +628,8 @@ export class ReferralCashbackSvService {
           INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
           INNER JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
             AND sopd.idcontractdetail > 0
+          -- state activo o no: tras cuotas→contado "Inicial" pasa a state=0 pero el IRB queda ligado
           INNER JOIN contract_detail cd ON cd.id = sopd.idcontractdetail
-            AND COALESCE(cd.state, 1) = 1
           INNER JOIN contract c ON c.id = cd.idcontract AND c.state = 1
           INNER JOIN contract_structure cs ON cs.id = c.contract_structure_id AND cs.state = 1
           WHERE irb.id = $1
@@ -629,28 +637,10 @@ export class ReferralCashbackSvService {
             AND cs.treatment_code IN ('OFM_CONTADO', 'OFM_CUOTAS')
         ),
         primer_pago_status AS (
-          ${ofmPrimerPagoStatusCte('(SELECT contract_id FROM irb_row)')}
+          ${ofmPrimerPagoStatusCte('(SELECT contract_id FROM irb_row)', { includeInactive: true })}
         ),
         contract_totals AS (
-          SELECT
-            cd.idcontract,
-            COALESCE(SUM(irb2.amount), 0)::numeric AS total_invoiced,
-            COALESCE(SUM(irb2.amount) FILTER (
-              WHERE ${ofmDetailIsPrimerPago('cd')}
-            ), 0)::numeric AS primer_pago_invoiced,
-            COALESCE(SUM(irb2.amount) FILTER (
-              WHERE ${ofmDetailIsCuotaInstallment('cd')}
-            ), 0)::numeric AS remainder_invoiced
-          FROM contract_detail cd
-          INNER JOIN service_order_payment_detail sopd ON sopd.idcontractdetail = cd.id
-          INNER JOIN invoice_result_body irb2 ON irb2.service_order_payment_detail_id = sopd.id
-            AND irb2.amount > 0
-          INNER JOIN invoice_result_head irh2 ON irh2.id = irb2.idinvoice_result_head
-            AND irh2.status_invoice = 1
-            AND COALESCE(irh2.credit_memo_state, false) = false
-          WHERE COALESCE(cd.state, 1) = 1
-            AND cd.idcontract = (SELECT contract_id FROM irb_row)
-          GROUP BY cd.idcontract
+          ${ofmHistoricalPrimerPagoInvoicedSelect('(SELECT contract_id FROM irb_row)')}
         ),
         contract_paid AS (
           SELECT
@@ -667,7 +657,8 @@ export class ReferralCashbackSvService {
         ),
         closing_head_totals AS (
           SELECT
-            COALESCE(SUM(irb_closing.amount), 0)::numeric AS closing_head_invoiced
+            COALESCE(SUM(irb_closing.amount), 0)::numeric AS closing_head_invoiced,
+            COALESCE(BOOL_OR(${ofmDetailIsPrimerPago('cd_closing')}), false) AS closing_head_has_primer_pago
           FROM irb_row ir0
           INNER JOIN invoice_result_body irb_closing ON irb_closing.idinvoice_result_head = ir0.invoice_head_id
             AND irb_closing.amount > 0
@@ -677,7 +668,6 @@ export class ReferralCashbackSvService {
           INNER JOIN service_order_payment_detail sopd_closing ON sopd_closing.id = irb_closing.service_order_payment_detail_id
             AND sopd_closing.idcontractdetail > 0
           INNER JOIN contract_detail cd_closing ON cd_closing.id = sopd_closing.idcontractdetail
-            AND COALESCE(cd_closing.state, 1) = 1
             AND cd_closing.idcontract = ir0.contract_id
         )
         SELECT
@@ -698,11 +688,12 @@ export class ReferralCashbackSvService {
           ct.total_invoiced::text,
           ir.trigger_irb_amount::text,
           cht.closing_head_invoiced::text,
+          cht.closing_head_has_primer_pago,
           ct.primer_pago_invoiced::text,
           ct.remainder_invoiced::text,
           ir.id_currency
         FROM irb_row ir
-        INNER JOIN contract_totals ct ON ct.idcontract = ir.contract_id
+        CROSS JOIN contract_totals ct
         INNER JOIN contract_paid cp ON cp.contract_id = ir.contract_id
         INNER JOIN primer_pago_status pps ON pps.contract_id = ir.contract_id
         CROSS JOIN closing_head_totals cht
@@ -739,13 +730,45 @@ export class ReferralCashbackSvService {
         currency: currencyFromSvCoinId(row.id_currency),
       };
 
+      // Moldes+Inicial completos y facturados: vale aunque modalidad vigente ya sea contado
+      if (row.is_primer_pago_line) {
+        if (primerPagoReady && primerPagoInvoiced > 0) {
+          return {
+            ...base,
+            sourceType: 'OFM_CUOTAS_INICIAL',
+            cashbackPhase: 'cuotas_inicial',
+            invoicedAmount: primerPagoInvoiced,
+            isEligible: true,
+          };
+        }
+        const skipReason = !row.has_moldes
+          ? 'Contrato sin línea Moldes (histórica)'
+          : !row.has_inicial
+            ? 'Contrato sin línea Inicial (histórica)'
+            : !row.moldes_complete
+              ? 'Moldes aún no está pagado al 100%'
+              : !row.inicial_complete
+                ? 'Inicial aún no está pagada al 100%'
+                : 'Primer pago (Moldes + Inicial) sin monto facturado';
+        return {
+          ...base,
+          sourceType: 'OFM_CUOTAS_INICIAL',
+          cashbackPhase: 'cuotas_inicial',
+          invoicedAmount: primerPagoInvoiced,
+          isEligible: false,
+          skipReason,
+        };
+      }
+
       if (isContado && !isCuotas) {
+        const closingIncludesPrimerPago = row.closing_head_has_primer_pago === true;
         if (!fullyPaid) {
           return {
             ...base,
             sourceType: 'OFM_CONTADO_COMPLETE',
             cashbackPhase: 'contado_complete',
             invoicedAmount: closingInvoicedAmount,
+            closingIncludesPrimerPago,
             isEligible: false,
             skipReason: 'Contrato OFM al contado aún no está pagado al 100%',
           };
@@ -755,6 +778,7 @@ export class ReferralCashbackSvService {
           sourceType: 'OFM_CONTADO_COMPLETE',
           cashbackPhase: 'contado_complete',
           invoicedAmount: closingInvoicedAmount,
+          closingIncludesPrimerPago,
           isEligible: closingInvoicedAmount > 0,
           skipReason:
             closingInvoicedAmount > 0
@@ -764,34 +788,6 @@ export class ReferralCashbackSvService {
       }
 
       if (isCuotas) {
-        if (row.is_primer_pago_line) {
-          if (primerPagoReady && primerPagoInvoiced > 0) {
-            return {
-              ...base,
-              sourceType: 'OFM_CUOTAS_INICIAL',
-              cashbackPhase: 'cuotas_inicial',
-              invoicedAmount: primerPagoInvoiced,
-              isEligible: true,
-            };
-          }
-          const skipReason = !row.has_moldes
-            ? 'Contrato en cuotas sin línea Moldes'
-            : !row.has_inicial
-              ? 'Contrato en cuotas sin línea Inicial'
-              : !row.moldes_complete
-                ? 'Moldes aún no está pagado al 100%'
-                : !row.inicial_complete
-                  ? 'Inicial aún no está pagada al 100%'
-                  : 'Primer pago (Moldes + Inicial) sin monto facturado';
-          return {
-            ...base,
-            sourceType: 'OFM_CUOTAS_INICIAL',
-            cashbackPhase: 'cuotas_inicial',
-            invoicedAmount: primerPagoInvoiced,
-            isEligible: false,
-            skipReason,
-          };
-        }
         if (row.is_cuota_line) {
           if (fullyPaid && remainderInvoiced > 0) {
             return {

@@ -20,6 +20,16 @@ import {
 } from './dto/referral-cashback.dto';
 import { ReferralCashbackSvService, type ReferralCashbackSvSourceType } from './services/referral-cashback-sv.service';
 
+export interface PendingReferralCashbackPhase {
+  /** Etiqueta corta de la fase (ej. OFM cuotas — moldes + inicial). */
+  treatmentLabel: string;
+  sourceType?: string;
+  cashbackPhase?: string;
+  invoicedAmount: number;
+  estimatedCashback: number;
+  currency: ReferralCashbackCurrency;
+}
+
 export interface PendingReferralCashbackItem {
   referredPatientId: number;
   referredPatientName: string | null;
@@ -35,6 +45,8 @@ export interface PendingReferralCashbackItem {
   amountPaid?: number;
   amountPending?: number;
   progressPercent?: number;
+  /** Desglose por fase (moldes+inicial, cierre contado, cuotas remainder). */
+  phases?: PendingReferralCashbackPhase[];
 }
 
 export interface ReferralCashbackProcessResult {
@@ -267,6 +279,10 @@ export class ReferralCashbackService {
   /**
    * Referidos con pago OFM facturado cuyo cashback aún no se acreditó al titular
    * (típicamente porque el titular no completó su propio contrato OFM).
+   *
+   * Puede haber varias fases por el mismo referido (moldes+inicial y luego cierre
+   * contado/cuotas). Se **suman** en un solo pending para que no se pierda el ~$260
+   * al cambiar de modalidad y cerrar el resto.
    */
   private async buildPendingReferralCashback(
     referrerPatientId: number,
@@ -282,7 +298,8 @@ export class ReferralCashbackService {
       const irbIds = await this.svService.listOfmCashbackTriggerIrbIdsForPatient(referredPatientId);
       if (!irbIds.length) continue;
 
-      let best: PendingReferralCashbackItem | null = null;
+      const phaseItems: PendingReferralCashbackItem[] = [];
+      const seenPhases = new Set<string>();
 
       for (const sourceIrbId of irbIds) {
         const existing = await this.findEarnedEntryBySourceIrb(sourceIrbId);
@@ -291,7 +308,44 @@ export class ReferralCashbackService {
         const ctx = await this.svService.getInvoiceCashbackContext(sourceIrbId);
         if (!ctx?.isEligible || ctx.invoicedAmount <= 0) continue;
 
-        const estimatedCashback = this.roundMoney(ctx.invoicedAmount * (percent / 100));
+        // Idempotencia por fase: no duplicar el mismo cashbackPhase del contrato
+        const phaseKey = `${ctx.contractId ?? 'x'}:${ctx.cashbackPhase ?? ctx.sourceType}`;
+        if (ctx.contractId && ctx.cashbackPhase) {
+          const existingPhase = await this.findEarnedEntryByContractPhase(
+            ctx.contractId,
+            ctx.cashbackPhase,
+          );
+          if (existingPhase) continue;
+        }
+        if (seenPhases.has(phaseKey)) continue;
+        seenPhases.add(phaseKey);
+
+        let invoicedAmount = ctx.invoicedAmount;
+        // Si el head de cierre contado incluye el primer pago histórico, restar esa base
+        // (mismo criterio que processInvoicePayment). Si es solo "Único pago" restante, no restar.
+        if (
+          ctx.sourceType === 'OFM_CONTADO_COMPLETE'
+          && ctx.contractId
+          && ctx.closingIncludesPrimerPago
+        ) {
+          const priorInicial = await this.findEarnedEntryByContractPhase(
+            ctx.contractId,
+            'cuotas_inicial',
+          );
+          // También restar si el pending de esta misma pasada ya trae moldes+inicial
+          const priorBaseFromPending = phaseItems
+            .filter((p) => p.treatmentLabel.includes('moldes'))
+            .reduce((s, p) => s + p.invoicedAmount, 0);
+          const priorBase = Number(
+            (priorInicial?.metadata as Record<string, unknown> | undefined)?.invoicedAmount ?? 0,
+          );
+          const deduct = Math.max(priorBase, priorBaseFromPending);
+          if (deduct > 0 && invoicedAmount > deduct) {
+            invoicedAmount = this.roundMoney(invoicedAmount - deduct);
+          }
+        }
+
+        const estimatedCashback = this.roundMoney(invoicedAmount * (percent / 100));
         if (estimatedCashback <= 0) continue;
 
         const referredBriefs = await this.svService.getClinicHistoryBriefs([referredPatientId]);
@@ -301,24 +355,57 @@ export class ReferralCashbackService {
           cashbackPhase: ctx.cashbackPhase,
         });
 
-        const item: PendingReferralCashbackItem = {
+        phaseItems.push({
           referredPatientId,
           referredPatientName: referred?.fullName ?? refOpp.name ?? null,
           referredClinicHistory: referred?.history ?? refOpp.cClinicHistory ?? null,
           referredOpportunityId: refOpp.id,
           treatmentLabel,
-          invoicedAmount: ctx.invoicedAmount,
+          invoicedAmount,
           estimatedCashback,
           currency: ctx.currency,
           status: 'waiting_referrer_eligibility',
-        };
-
-        if (!best || item.estimatedCashback > best.estimatedCashback) {
-          best = item;
-        }
+          phases: [
+            {
+              treatmentLabel,
+              sourceType: ctx.sourceType,
+              cashbackPhase: ctx.cashbackPhase,
+              invoicedAmount,
+              estimatedCashback,
+              currency: ctx.currency,
+            },
+          ],
+        });
       }
 
-      if (best) pending.push(best);
+      if (!phaseItems.length) continue;
+
+      if (phaseItems.length === 1) {
+        pending.push(phaseItems[0]);
+        continue;
+      }
+
+      // Varias fases (ej. moldes+inicial $100 + cierre contado $260) → un pending agregado
+      const currency = phaseItems[0].currency;
+      const totalInvoiced = this.roundMoney(
+        phaseItems.reduce((s, p) => s + p.invoicedAmount, 0),
+      );
+      const totalCashback = this.roundMoney(
+        phaseItems.reduce((s, p) => s + p.estimatedCashback, 0),
+      );
+      const phases = phaseItems.flatMap((p) => p.phases ?? []);
+      pending.push({
+        referredPatientId: phaseItems[0].referredPatientId,
+        referredPatientName: phaseItems[0].referredPatientName,
+        referredClinicHistory: phaseItems[0].referredClinicHistory,
+        referredOpportunityId: phaseItems[0].referredOpportunityId,
+        treatmentLabel: phases.map((p) => p.treatmentLabel).join(' + '),
+        invoicedAmount: totalInvoiced,
+        estimatedCashback: totalCashback,
+        currency,
+        status: 'waiting_referrer_eligibility',
+        phases,
+      });
     }
 
     return pending;
@@ -578,6 +665,31 @@ export class ReferralCashbackService {
             reason: `Cashback ya acreditado (${invoiceCtx.cashbackPhase})`,
             ledgerId: existingPhase.id,
           };
+        }
+      }
+
+      // Evitar doble: si ya se acreditó moldes+inicial y el head de cierre incluye
+      // esas líneas (misma boleta), restar esa base. Si el head es solo "Único pago"
+      // restante ($2600), NO restar.
+      if (
+        invoiceCtx.sourceType === 'OFM_CONTADO_COMPLETE'
+        && invoiceCtx.contractId
+        && invoiceCtx.cashbackPhase === 'contado_complete'
+        && invoiceCtx.closingIncludesPrimerPago
+      ) {
+        const priorInicial = await this.findEarnedEntryByContractPhase(
+          invoiceCtx.contractId,
+          'cuotas_inicial',
+        );
+        if (priorInicial?.metadata) {
+          const priorBase = Number(
+            (priorInicial.metadata as Record<string, unknown>).invoicedAmount ?? 0,
+          );
+          if (priorBase > 0 && invoiceCtx.invoicedAmount > priorBase) {
+            invoiceCtx.invoicedAmount = this.roundMoney(
+              invoiceCtx.invoicedAmount - priorBase,
+            );
+          }
         }
       }
     } else if (invoiceCtx.sourceType === 'OI_FULL_PLAN' && invoiceCtx.treatmentPlanId) {

@@ -1,4 +1,4 @@
-import { BadRequestException, HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
@@ -91,7 +91,9 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
       SELECT deduped.id FROM (
         SELECT op_d.id,
           ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM(op_d.cotizacion_id), ''), op_d.id)
+            PARTITION BY
+              COALESCE(NULLIF(TRIM(op_d.cotizacion_id), ''), op_d.id),
+              COALESCE(NULLIF(TRIM(op_d.h_c_patient), ''), op_d.id)
             ORDER BY
               CASE WHEN LOWER(TRIM(op_d.status)) IN ('win', 'ganado', 'cierre ganado') THEN 0 ELSE 1 END,
               CASE WHEN op_d.contract_id IS NOT NULL AND TRIM(op_d.contract_id) <> '' THEN 0 ELSE 1 END,
@@ -113,15 +115,116 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     });
   }
 
+  /**
+   * Una fila activa por par (cotización, historia clínica).
+   * Permite que distintos pacientes tengan filas con el mismo cotizacion_id en CRM
+   * (p. ej. datos históricos contaminados) sin bloquear la creación del dueño real.
+   */
+  async findOpportunityCloserByQuotationAndPatient(
+    quotationId: string,
+    hCPatient?: string,
+  ): Promise<OpportunitiesClosers | null> {
+    const normalizedQuotation = quotationId?.trim();
+    if (!normalizedQuotation) return null;
+
+    const normalizedHc = hCPatient?.trim();
+    if (!normalizedHc) {
+      return this.findOpportunityCloserByQuotationId(normalizedQuotation);
+    }
+
+    return this.opportunitiesClosersRepository.findOne({
+      where: {
+        cotizacionId: normalizedQuotation,
+        hCPatient: normalizedHc,
+        deleted: false,
+      },
+    });
+  }
+
+  private async resolveClinicHistoryIdFromPayload(
+    payload: Partial<OpportunitiesClosers>,
+    tokenSv: string,
+  ): Promise<number | null> {
+    const rawHistory = payload.hCPatient?.trim();
+    if (rawHistory) {
+      if (/^\d+$/.test(rawHistory)) {
+        const numericId = Number(rawHistory);
+        return Number.isFinite(numericId) && numericId > 0 ? numericId : null;
+      }
+      try {
+        const patient = await this.svServices.getPatientSV(rawHistory, tokenSv);
+        const patientId = Number(patient?.id ?? 0);
+        if (Number.isFinite(patientId) && patientId > 0) return patientId;
+      } catch {
+        // No bloquear creación por error de lookup de HC; se intenta fallback por opportunity.
+      }
+    }
+
+    const opportunityId = payload.opportunityId?.trim();
+    if (!opportunityId) return null;
+    try {
+      const opportunity = await this.opportunityService.findOne(opportunityId);
+      const hc = opportunity?.cClinicHistory?.trim();
+      if (!hc) return null;
+      if (/^\d+$/.test(hc)) {
+        const numericId = Number(hc);
+        return Number.isFinite(numericId) && numericId > 0 ? numericId : null;
+      }
+      const patient = await this.svServices.getPatientSV(hc, tokenSv);
+      const patientId = Number(patient?.id ?? 0);
+      return Number.isFinite(patientId) && patientId > 0 ? patientId : null;
+    } catch {
+      return null;
+    }
+  }
+
   async createOpportunityCloser(payload: Partial<OpportunitiesClosers>) {
     const cotizacionId = payload.cotizacionId?.trim();
     if (cotizacionId) {
-      const existing = await this.findOpportunityCloserByQuotationId(cotizacionId);
+      const cotizacionNum = Number(cotizacionId);
+      const hasValidQuotationId = Number.isFinite(cotizacionNum) && cotizacionNum > 0;
+      const tokenSv = hasValidQuotationId
+        ? (await this.svServices.getTokenSvAdmin()).tokenSv
+        : undefined;
+      const svQuotation = hasValidQuotationId
+        ? await this.svServices.getQuotationById(cotizacionNum, tokenSv)
+        : null;
+      if (hasValidQuotationId && !svQuotation) {
+        throw new BadRequestException(
+          `No se encontró la cotización ${cotizacionId} en SV.`,
+        );
+      }
+
+      const expectedClinicHistoryId = tokenSv
+        ? await this.resolveClinicHistoryIdFromPayload(payload, tokenSv)
+        : null;
+      const existing = await this.findOpportunityCloserByQuotationAndPatient(
+        cotizacionId,
+        payload.hCPatient,
+      );
       if (existing) {
         this.logger.warn(
-          `[createOpportunityCloser] Cotización ${cotizacionId} ya tiene oportunidad cerradora id=${existing.id}; no se crea duplicado.`,
+          `[createOpportunityCloser] Cotización ${cotizacionId} ya tiene oportunidad cerradora ` +
+            `para ${existing.hCPatient ?? 'sin HC'} (id=${existing.id}); no se crea duplicado.`,
         );
         return existing;
+      }
+
+      // Validar que la cotización en SV pertenece al mismo paciente (history/patient_id esperado).
+      if (hasValidQuotationId) {
+        if (
+          expectedClinicHistoryId != null
+          && svQuotation?.clinicHistoryId != null
+          && svQuotation.clinicHistoryId !== expectedClinicHistoryId
+        ) {
+          this.logger.error(
+            `[createOpportunityCloser] Cotización ${cotizacionId} en SV pertenece a clinicHistory ` +
+            `${svQuotation.clinicHistoryId}, no al esperado ${expectedClinicHistoryId}. Creación bloqueada.`,
+          );
+          throw new ConflictException(
+            `La cotización ${cotizacionId} pertenece a otro paciente en SV. Usa la cotización real del paciente.`,
+          );
+        }
       }
     }
 
@@ -264,7 +367,10 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
             this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
             continue;
           }
-          const exists = await this.existsOpportunityCloserByQuotationId(String(item.id));
+          const exists = await this.existsOpportunityCloserByQuotationId(
+            String(item.id),
+            item.history,
+          );
           if (exists) {
             skippedExists++;
             this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
@@ -1053,8 +1159,8 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     return rows.map((r: { id: string }) => r.id);
   }
 
-  async existsOpportunityCloserByQuotationId(quotationId: string) {
-    return !!(await this.findOpportunityCloserByQuotationId(quotationId));
+  async existsOpportunityCloserByQuotationId(quotationId: string, hCPatient?: string) {
+    return !!(await this.findOpportunityCloserByQuotationAndPatient(quotationId, hCPatient));
   }
 
   async getLastOpportunity(){

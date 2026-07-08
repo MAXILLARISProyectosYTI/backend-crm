@@ -47,7 +47,10 @@ export class OpportunitiesClosersCronsService {
 
     const quotationsToAdd: { id: number | string; name: string; history: string }[] = [];
     for (const quotation of list) {
-      const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(String(quotation.id));
+      const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(
+        String(quotation.id),
+        quotation.history,
+      );
       if (!exists) quotationsToAdd.push(quotation);
     }
 

@@ -4,6 +4,7 @@ import {
   ofmDetailIsInicial,
   ofmDetailIsCuotaInstallment,
   ofmDetailIsPrimerPago,
+  ofmPrimerPagoStatusSelect,
 } from './ofm-contract-detail-sql';
 
 describe('ofm-contract-detail-sql', () => {
@@ -36,6 +37,19 @@ describe('ofm-contract-detail-sql', () => {
       expect(ofmDetailIsInicial('cd')).toContain("'inicial'");
       expect(ofmDetailIsCuotaInstallment('cd')).toContain("= 'cuota'");
       expect(ofmDetailIsPrimerPago('cd')).toContain('OR');
+    });
+  });
+
+  describe('ofmPrimerPagoStatusSelect', () => {
+    it('por defecto exige state activo', () => {
+      const sql = ofmPrimerPagoStatusSelect();
+      expect(sql).toContain('COALESCE(cd.state, 1) = 1');
+    });
+
+    it('con includeInactive no filtra state (sobrevive cuotas→contado)', () => {
+      const sql = ofmPrimerPagoStatusSelect(undefined, { includeInactive: true });
+      expect(sql).toContain('TRUE');
+      expect(sql).not.toContain('COALESCE(cd.state, 1) = 1');
     });
   });
 });
