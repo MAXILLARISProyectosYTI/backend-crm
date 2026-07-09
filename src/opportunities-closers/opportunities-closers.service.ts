@@ -141,6 +141,27 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     });
   }
 
+  /**
+   * Igual a findOpportunityCloserByQuotationAndPatient pero para muchas cotizaciones
+   * en una sola query (evita 1 query por cotización en loopAddQuotationQueue).
+   */
+  async findExistingQuotationKeys(quotationIds: string[]): Promise<Map<string, Set<string>>> {
+    const normalizedIds = [...new Set(quotationIds.map((id) => id?.trim()).filter(Boolean))];
+    const result = new Map<string, Set<string>>();
+    if (!normalizedIds.length) return result;
+
+    const rows = await this.opportunitiesClosersRepository.find({
+      where: { cotizacionId: In(normalizedIds), deleted: false },
+      select: ['cotizacionId', 'hCPatient'],
+    });
+    for (const row of rows) {
+      if (!row.cotizacionId) continue;
+      if (!result.has(row.cotizacionId)) result.set(row.cotizacionId, new Set());
+      result.get(row.cotizacionId)!.add((row.hCPatient ?? '').trim());
+    }
+    return result;
+  }
+
   private async resolveClinicHistoryIdFromPayload(
     payload: Partial<OpportunitiesClosers>,
     tokenSv: string,

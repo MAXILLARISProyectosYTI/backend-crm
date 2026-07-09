@@ -29,6 +29,51 @@ export function ofmDetailIsCuotaInstallment(alias = 'cd'): string {
   )`;
 }
 
+/** Línea de cierre al contado (aparece al cambiar cuotas → contado). */
+export function ofmDetailIsUnicoPago(alias = 'cd'): string {
+  return `LOWER(TRIM(${desc(alias)})) LIKE 'único pago%' OR LOWER(TRIM(${desc(alias)})) LIKE 'unico pago%'`;
+}
+
+/** Monto IRB en USD (PEN / TC o USD directo). coin.id: 1=PEN, 2=USD */
+export function ofmIrbAmountUsdExpr(irbAlias = 'irb', erAlias = 'er'): string {
+  return `(
+    CASE
+      WHEN ${irbAlias}.id_currency = 2 THEN ${irbAlias}.amount
+      WHEN ${erAlias}.value > 0 THEN ROUND((${irbAlias}.amount / ${erAlias}.value)::numeric, 2)
+      ELSE 0
+    END
+  )`;
+}
+
+/**
+ * Incluir facturas de "Único pago" en el primer tramo cuando el contrato volvió a cuotas
+ * y aún tiene cuotas pendientes (pago contado intermedio que completa Moldes+Inicial).
+ */
+export function ofmUnicoPagoCountsAsPrimerTramoSql(
+  contractIdExpr: string,
+  cdAlias = 'cd',
+): string {
+  return `(
+    ${ofmDetailIsUnicoPago(cdAlias)}
+    AND EXISTS (
+      SELECT 1
+      FROM contract c_u
+      INNER JOIN contract_structure cs_u ON cs_u.id = c_u.contract_structure_id AND cs_u.state = 1
+      WHERE c_u.id = ${contractIdExpr}
+        AND c_u.state = 1
+        AND cs_u.treatment_code = 'OFM_CUOTAS'
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM contract_detail cd_p
+      WHERE cd_p.idcontract = ${contractIdExpr}
+        AND COALESCE(cd_p.state, 1) = 1
+        AND ${ofmDetailIsCuotaInstallment('cd_p')}
+        AND ROUND(COALESCE(cd_p.balance, 0)::numeric, 2) > 0.01
+    )
+  )`;
+}
+
 /** Primer pago en modalidad cuotas: Moldes + Inicial. */
 export function ofmDetailIsPrimerPago(alias = 'cd'): string {
   return `(${ofmDetailIsMoldes(alias)} OR ${ofmDetailIsInicial(alias)})`;
@@ -39,6 +84,7 @@ export const OFM_DESC_NORM_IS_MOLDES = "desc_norm = 'moldes'";
 export const OFM_DESC_NORM_IS_INICIAL = "(desc_norm = 'inicial' OR desc_norm LIKE 'cuota inicial%')";
 export const OFM_DESC_NORM_IS_CUOTA = "(desc_norm LIKE 'cuota%' AND desc_norm NOT LIKE 'cuota inicial%')";
 export const OFM_DESC_NORM_IS_PRIMER_PAGO = `(${OFM_DESC_NORM_IS_MOLDES} OR ${OFM_DESC_NORM_IS_INICIAL})`;
+export const OFM_DESC_NORM_IS_UNICO_PAGO = "(desc_norm LIKE 'único pago%' OR desc_norm LIKE 'unico pago%')";
 
 /**
  * Estado del primer pago Moldes + Inicial.
@@ -117,11 +163,27 @@ export function ofmPrimerPagoStatusCte(
  * Sobrevive al cambio de modalidad que desactiva "Inicial".
  */
 export function ofmHistoricalPrimerPagoInvoicedSelect(contractIdExpr: string): string {
+  const primerTramoLine = `(
+    ${ofmDetailIsPrimerPago('cd')}
+    OR ${ofmUnicoPagoCountsAsPrimerTramoSql(contractIdExpr, 'cd')}
+  )`;
   return `
     SELECT
       COALESCE(SUM(irb.amount) FILTER (
         WHERE ${ofmDetailIsPrimerPago('cd')}
       ), 0)::numeric AS primer_pago_invoiced,
+      COALESCE(SUM(${ofmIrbAmountUsdExpr('irb', 'er')}) FILTER (
+        WHERE ${primerTramoLine}
+      ), 0)::numeric AS primer_pago_invoiced_usd,
+      COALESCE(SUM(${ofmIrbAmountUsdExpr('irb', 'er')}) FILTER (
+        WHERE ${ofmDetailIsMoldes('cd')}
+      ), 0)::numeric AS moldes_invoiced_usd,
+      COALESCE(SUM(${ofmIrbAmountUsdExpr('irb', 'er')}) FILTER (
+        WHERE ${ofmDetailIsInicial('cd')}
+      ), 0)::numeric AS inicial_invoiced_usd,
+      COALESCE(SUM(${ofmIrbAmountUsdExpr('irb', 'er')}) FILTER (
+        WHERE ${ofmUnicoPagoCountsAsPrimerTramoSql(contractIdExpr, 'cd')}
+      ), 0)::numeric AS unico_pago_invoiced_usd,
       COALESCE(SUM(irb.amount) FILTER (
         WHERE ${ofmDetailIsMoldes('cd')}
       ), 0)::numeric AS moldes_invoiced,
@@ -139,6 +201,7 @@ export function ofmHistoricalPrimerPagoInvoicedSelect(contractIdExpr: string): s
     INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
       AND irh.status_invoice = 1
       AND COALESCE(irh.credit_memo_state, false) = false
+    LEFT JOIN exchange_rate er ON er.id = irb.exchange_rate_id
     WHERE cd.idcontract = ${contractIdExpr}
   `;
 }

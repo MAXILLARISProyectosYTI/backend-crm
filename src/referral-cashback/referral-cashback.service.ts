@@ -19,6 +19,10 @@ import {
   UpdateReferralCashbackConfigDto,
 } from './dto/referral-cashback.dto';
 import { ReferralCashbackSvService, type ReferralCashbackSvSourceType } from './services/referral-cashback-sv.service';
+import {
+  CASHBACK_ACCOUNT_CURRENCY,
+  convertCashbackAmountToUsd,
+} from './utils/referral-cashback-currency.util';
 
 export interface PendingReferralCashbackPhase {
   /** Etiqueta corta de la fase (ej. OFM cuotas — moldes + inicial). */
@@ -28,6 +32,8 @@ export interface PendingReferralCashbackPhase {
   invoicedAmount: number;
   estimatedCashback: number;
   currency: ReferralCashbackCurrency;
+  /** TC soles/USD de la factura cuando el pago fue en PEN. */
+  exchangeRate?: number | null;
 }
 
 export interface PendingReferralCashbackItem {
@@ -47,6 +53,8 @@ export interface PendingReferralCashbackItem {
   progressPercent?: number;
   /** Desglose por fase (moldes+inicial, cierre contado, cuotas remainder). */
   phases?: PendingReferralCashbackPhase[];
+  /** TC soles/USD cuando el pending proviene de factura en PEN. */
+  exchangeRate?: number | null;
 }
 
 export interface ReferralCashbackProcessResult {
@@ -180,7 +188,11 @@ export class ReferralCashbackService {
     const pendingEligible: PendingReferralCashbackItem[] = referrerEligible
       ? pendingEligibleRaw.map((item) => ({ ...item, status: 'ready_to_credit' as const }))
       : pendingEligibleRaw;
-    if (referrerEligible && pendingEligible.length > 0) {
+    const refOppsForHeal = referrerEligible
+      ? await this.listReferralOpportunitiesForTitular(patientId)
+      : [];
+    // Reprocesar referidos: pending nuevo o top-up de primer tramo (cuotas→contado→cuotas).
+    if (referrerEligible && (pendingEligible.length > 0 || refOppsForHeal.length > 0)) {
       this.triggerSelfHealCredit(patientId);
     }
     const pendingReferralCashback = [...pendingEligible, ...pendingContract];
@@ -214,7 +226,7 @@ export class ReferralCashbackService {
           ? patientBriefs.get(entry.referredPatientId)
           : undefined;
 
-      return {
+      const base = {
         ...entry,
         sourceType: sourceType || null,
         sourceLabel: this.sourceLabelFromMetadata(meta),
@@ -231,8 +243,14 @@ export class ReferralCashbackService {
         invoicedAt: irb?.invoicedAt ?? null,
         creditedAt: entry.createdAt,
       };
+
+      return this.enrichLedgerEntryForUsdDisplay(base, irb, meta);
     });
 
+    const consolidatedBalance = this.buildConsolidatedUsdBalance(
+      balancePayload.balances,
+      entries,
+    );
     const referredSummary = this.buildReferredSummary(entries);
 
     return {
@@ -242,9 +260,185 @@ export class ReferralCashbackService {
       pendingReferralCashback,
       expirationMonths,
       nextExpirationAt: balancePayload.nextExpirationAt,
-      balances: balancePayload.balances,
+      displayCurrency: CASHBACK_ACCOUNT_CURRENCY,
+      balances: [consolidatedBalance],
       entries,
       referredSummary,
+    };
+  }
+
+  /**
+   * Montos de cuenta siempre en USD; convierte ledger PEN con el TC de cada factura.
+   */
+  private enrichLedgerEntryForUsdDisplay<
+    T extends {
+      amount: number;
+      currency: string;
+      metadata?: Record<string, unknown> | null;
+      invoicedAmount?: number | null;
+      sourceIrbId?: number | null;
+    },
+  >(
+    entry: T,
+    irb?: { exchangeRate?: number | null; currency?: string; amount?: number },
+    metaInput?: Record<string, unknown>,
+  ) {
+    const meta = metaInput ?? ((entry.metadata ?? {}) as Record<string, unknown>);
+    const storedRate =
+      meta.exchangeRate != null && Number.isFinite(Number(meta.exchangeRate))
+        ? Number(meta.exchangeRate)
+        : null;
+    const irbRate =
+      irb?.exchangeRate != null && Number.isFinite(irb.exchangeRate) && irb.exchangeRate > 0
+        ? irb.exchangeRate
+        : null;
+    const exchangeRate = storedRate ?? irbRate;
+
+    const originalCurrency = String(
+      meta.originalCurrency ?? entry.currency ?? CASHBACK_ACCOUNT_CURRENCY,
+    ) as ReferralCashbackCurrency;
+    const originalAmount =
+      meta.originalAmount != null && Number.isFinite(Number(meta.originalAmount))
+        ? Number(meta.originalAmount)
+        : entry.amount;
+
+    const convertedPen = convertCashbackAmountToUsd(
+      entry.amount,
+      ReferralCashbackCurrency.PEN,
+      exchangeRate,
+    );
+    const displayAmountUsd =
+      entry.currency === ReferralCashbackCurrency.USD
+        ? entry.amount
+        : convertedPen ?? 0;
+
+    const invoicedOriginal =
+      meta.invoicedAmount != null
+        ? Number(meta.invoicedAmount)
+        : irb?.amount ?? entry.invoicedAmount ?? null;
+
+    const isPrimerPagoTopUp = meta.primerPagoTopUp === true;
+
+    let invoicedAmountUsd =
+      meta.supplementalInvoicedUsd != null && Number.isFinite(Number(meta.supplementalInvoicedUsd))
+        ? Number(meta.supplementalInvoicedUsd)
+        : null;
+
+    // Top-up: mostrar la base de ESTE pago (ej. $500), no el total del primer tramo ($644.09).
+    if (invoicedAmountUsd == null && isPrimerPagoTopUp && irb?.amount != null) {
+      const irbCurrency = (irb.currency ?? ReferralCashbackCurrency.USD) as ReferralCashbackCurrency;
+      invoicedAmountUsd =
+        irbCurrency === ReferralCashbackCurrency.USD
+          ? irb.amount
+          : convertCashbackAmountToUsd(irb.amount, ReferralCashbackCurrency.PEN, exchangeRate);
+    }
+
+    if (invoicedAmountUsd == null && !isPrimerPagoTopUp) {
+      invoicedAmountUsd =
+        meta.invoicedAmountUsd != null && Number.isFinite(Number(meta.invoicedAmountUsd))
+          ? Number(meta.invoicedAmountUsd)
+          : null;
+    }
+
+    if (invoicedAmountUsd == null && invoicedOriginal != null && !isPrimerPagoTopUp) {
+      invoicedAmountUsd =
+        originalCurrency === ReferralCashbackCurrency.USD
+          ? invoicedOriginal
+          : convertCashbackAmountToUsd(
+              invoicedOriginal,
+              ReferralCashbackCurrency.PEN,
+              exchangeRate,
+            );
+    }
+
+    return {
+      ...entry,
+      displayCurrency: CASHBACK_ACCOUNT_CURRENCY,
+      displayAmountUsd: this.roundMoney(displayAmountUsd),
+      exchangeRate:
+        originalCurrency === ReferralCashbackCurrency.PEN && exchangeRate != null
+          ? exchangeRate
+          : null,
+      originalCurrency:
+        originalCurrency !== ReferralCashbackCurrency.USD ? originalCurrency : null,
+      originalAmount:
+        originalCurrency !== ReferralCashbackCurrency.USD ? originalAmount : null,
+      invoicedAmountUsd:
+        invoicedAmountUsd != null ? this.roundMoney(invoicedAmountUsd) : null,
+      primerTramoTotalUsd:
+        isPrimerPagoTopUp && meta.primerTramoTotalUsd != null
+          ? this.roundMoney(Number(meta.primerTramoTotalUsd))
+          : isPrimerPagoTopUp && meta.invoicedAmountUsd != null
+            ? this.roundMoney(Number(meta.invoicedAmountUsd))
+            : null,
+      isPrimerPagoTopUp,
+    };
+  }
+
+  private buildConsolidatedUsdBalance(
+    balances: Array<{
+      currency: string;
+      availableAmount: number;
+      totalEarned: number;
+      totalUsed: number;
+    }>,
+    entries: Array<{
+      entryType: string;
+      currency: string;
+      amount: number;
+      displayAmountUsd?: number;
+      exchangeRate?: number | null;
+      metadata?: Record<string, unknown> | null;
+    }>,
+  ) {
+    let availableUsd = 0;
+    let totalEarnedUsd = 0;
+    let totalUsedUsd = 0;
+
+    const usdBalance = balances.find((b) => b.currency === ReferralCashbackCurrency.USD);
+    if (usdBalance) {
+      availableUsd += usdBalance.availableAmount;
+      totalEarnedUsd += usdBalance.totalEarned;
+      totalUsedUsd += usdBalance.totalUsed;
+    }
+
+    const penBalance = balances.find((b) => b.currency === ReferralCashbackCurrency.PEN);
+    if (penBalance) {
+      const penEntries = entries.filter((e) => e.currency === ReferralCashbackCurrency.PEN);
+      for (const entry of penEntries) {
+        const usd = entry.displayAmountUsd ?? 0;
+        if (entry.entryType === ReferralCashbackLedgerType.EARNED) {
+          totalEarnedUsd += usd;
+        } else if (
+          entry.entryType === ReferralCashbackLedgerType.USED
+          || entry.entryType === ReferralCashbackLedgerType.EXPIRED
+        ) {
+          totalUsedUsd += usd;
+        }
+      }
+      for (const entry of penEntries.filter(
+        (e) => e.entryType === ReferralCashbackLedgerType.EARNED,
+      )) {
+        const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+        const remaining =
+          meta.remainingAmount != null && Number.isFinite(Number(meta.remainingAmount))
+            ? Number(meta.remainingAmount)
+            : entry.amount;
+        const remUsd =
+          convertCashbackAmountToUsd(
+            remaining,
+            ReferralCashbackCurrency.PEN,
+            entry.exchangeRate,
+          ) ?? 0;
+        availableUsd += remUsd;
+      }
+    }
+
+    return {
+      currency: CASHBACK_ACCOUNT_CURRENCY,
+      availableAmount: this.roundMoney(availableUsd),
+      totalEarned: this.roundMoney(totalEarnedUsd),
+      totalUsed: this.roundMoney(totalUsedUsd),
     };
   }
 
@@ -320,7 +514,17 @@ export class ReferralCashbackService {
         if (seenPhases.has(phaseKey)) continue;
         seenPhases.add(phaseKey);
 
-        let invoicedAmount = ctx.invoicedAmount;
+        let invoicedAmountUsd =
+          ctx.invoicedAmountUsd
+          ?? (ctx.currency === ReferralCashbackCurrency.USD
+            ? ctx.invoicedAmount
+            : convertCashbackAmountToUsd(
+                ctx.invoicedAmount,
+                ctx.currency,
+                ctx.exchangeRate,
+              ));
+        if (invoicedAmountUsd == null || invoicedAmountUsd <= 0) continue;
+
         // Si el head de cierre contado incluye el primer pago histórico, restar esa base
         // (mismo criterio que processInvoicePayment). Si es solo "Único pago" restante, no restar.
         if (
@@ -336,16 +540,18 @@ export class ReferralCashbackService {
           const priorBaseFromPending = phaseItems
             .filter((p) => p.treatmentLabel.includes('moldes'))
             .reduce((s, p) => s + p.invoicedAmount, 0);
-          const priorBase = Number(
-            (priorInicial?.metadata as Record<string, unknown> | undefined)?.invoicedAmount ?? 0,
+          const priorBaseUsd = Number(
+            (priorInicial?.metadata as Record<string, unknown> | undefined)?.invoicedAmountUsd
+            ?? (priorInicial?.metadata as Record<string, unknown> | undefined)?.invoicedAmount
+            ?? 0,
           );
-          const deduct = Math.max(priorBase, priorBaseFromPending);
-          if (deduct > 0 && invoicedAmount > deduct) {
-            invoicedAmount = this.roundMoney(invoicedAmount - deduct);
+          const deduct = Math.max(priorBaseUsd, priorBaseFromPending);
+          if (deduct > 0 && invoicedAmountUsd > deduct) {
+            invoicedAmountUsd = this.roundMoney(invoicedAmountUsd - deduct);
           }
         }
 
-        const estimatedCashback = this.roundMoney(invoicedAmount * (percent / 100));
+        const estimatedCashback = this.roundMoney(invoicedAmountUsd * (percent / 100));
         if (estimatedCashback <= 0) continue;
 
         const referredBriefs = await this.svService.getClinicHistoryBriefs([referredPatientId]);
@@ -361,18 +567,20 @@ export class ReferralCashbackService {
           referredClinicHistory: referred?.history ?? refOpp.cClinicHistory ?? null,
           referredOpportunityId: refOpp.id,
           treatmentLabel,
-          invoicedAmount,
+          invoicedAmount: invoicedAmountUsd,
           estimatedCashback,
-          currency: ctx.currency,
+          currency: CASHBACK_ACCOUNT_CURRENCY,
+          exchangeRate: ctx.exchangeRate ?? null,
           status: 'waiting_referrer_eligibility',
           phases: [
             {
               treatmentLabel,
               sourceType: ctx.sourceType,
               cashbackPhase: ctx.cashbackPhase,
-              invoicedAmount,
+              invoicedAmount: invoicedAmountUsd,
               estimatedCashback,
-              currency: ctx.currency,
+              currency: CASHBACK_ACCOUNT_CURRENCY,
+              exchangeRate: ctx.exchangeRate ?? null,
             },
           ],
         });
@@ -386,7 +594,6 @@ export class ReferralCashbackService {
       }
 
       // Varias fases (ej. moldes+inicial $100 + cierre contado $260) → un pending agregado
-      const currency = phaseItems[0].currency;
       const totalInvoiced = this.roundMoney(
         phaseItems.reduce((s, p) => s + p.invoicedAmount, 0),
       );
@@ -402,7 +609,7 @@ export class ReferralCashbackService {
         treatmentLabel: phases.map((p) => p.treatmentLabel).join(' + '),
         invoicedAmount: totalInvoiced,
         estimatedCashback: totalCashback,
-        currency,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
         status: 'waiting_referrer_eligibility',
         phases,
       });
@@ -483,12 +690,17 @@ export class ReferralCashbackService {
       entryType: string;
       amount: number;
       currency: string;
+      displayAmountUsd?: number;
+      exchangeRate?: number | null;
+      originalCurrency?: string | null;
+      originalAmount?: number | null;
       referredPatientId?: number | null;
       referredPatientName?: string | null;
       referredClinicHistory?: string | null;
       sourceLabel?: string;
       treatmentLabel?: string | null;
       invoicedAmount?: number | null;
+      invoicedAmountUsd?: number | null;
       invoicedAt?: string | Date | null;
       creditedAt?: string | Date | null;
       createdAt: string | Date;
@@ -529,11 +741,16 @@ export class ReferralCashbackService {
         byPatient.set(entry.referredPatientId, row);
       }
 
-      if (entry.currency === 'USD') {
-        row.totalEarnedUsd = this.roundMoney(row.totalEarnedUsd + entry.amount);
-      } else {
-        row.totalEarnedPen = this.roundMoney(row.totalEarnedPen + entry.amount);
-      }
+      const amountUsd = entry.displayAmountUsd ?? (
+        entry.currency === ReferralCashbackCurrency.USD
+          ? entry.amount
+          : convertCashbackAmountToUsd(
+              entry.amount,
+              ReferralCashbackCurrency.PEN,
+              entry.exchangeRate,
+            ) ?? 0
+      );
+      row.totalEarnedUsd = this.roundMoney(row.totalEarnedUsd + amountUsd);
 
       const dateIso =
         entry.creditedAt instanceof Date
@@ -546,9 +763,9 @@ export class ReferralCashbackService {
         date: dateIso,
         sourceLabel: entry.sourceLabel ?? 'Referido',
         treatmentLabel: entry.treatmentLabel ?? null,
-        invoicedAmount: entry.invoicedAmount ?? null,
-        cashbackAmount: entry.amount,
-        currency: entry.currency,
+        invoicedAmount: entry.invoicedAmountUsd ?? entry.invoicedAmount ?? null,
+        cashbackAmount: entry.displayAmountUsd ?? entry.amount,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
       });
     }
 
@@ -647,7 +864,10 @@ export class ReferralCashbackService {
         };
       }
       const existingByIrb = await this.findEarnedEntryBySourceIrb(dto.sourceIrbId);
-      if (existingByIrb) {
+      if (
+        existingByIrb
+        && invoiceCtx.cashbackPhase !== 'cuotas_inicial'
+      ) {
         return {
           status: 'duplicate',
           reason: 'IRB ya procesado',
@@ -659,7 +879,7 @@ export class ReferralCashbackService {
           invoiceCtx.contractId,
           invoiceCtx.cashbackPhase,
         );
-        if (existingPhase) {
+        if (existingPhase && invoiceCtx.cashbackPhase !== 'cuotas_inicial') {
           return {
             status: 'duplicate',
             reason: `Cashback ya acreditado (${invoiceCtx.cashbackPhase})`,
@@ -682,13 +902,24 @@ export class ReferralCashbackService {
           'cuotas_inicial',
         );
         if (priorInicial?.metadata) {
-          const priorBase = Number(
-            (priorInicial.metadata as Record<string, unknown>).invoicedAmount ?? 0,
-          );
-          if (priorBase > 0 && invoiceCtx.invoicedAmount > priorBase) {
-            invoiceCtx.invoicedAmount = this.roundMoney(
-              invoiceCtx.invoicedAmount - priorBase,
+          const priorMeta = priorInicial.metadata as Record<string, unknown>;
+          const priorBaseUsd = Number(priorMeta.invoicedAmountUsd ?? priorMeta.invoicedAmount ?? 0);
+          const currentUsd =
+            invoiceCtx.invoicedAmountUsd
+            ?? convertCashbackAmountToUsd(
+              invoiceCtx.invoicedAmount,
+              invoiceCtx.currency,
+              invoiceCtx.exchangeRate,
             );
+          if (priorBaseUsd > 0 && currentUsd != null && currentUsd > priorBaseUsd) {
+            invoiceCtx.invoicedAmountUsd = this.roundMoney(currentUsd - priorBaseUsd);
+            if (invoiceCtx.currency === ReferralCashbackCurrency.PEN && invoiceCtx.exchangeRate) {
+              invoiceCtx.invoicedAmount = this.roundMoney(
+                invoiceCtx.invoicedAmountUsd * invoiceCtx.exchangeRate,
+              );
+            } else {
+              invoiceCtx.invoicedAmount = invoiceCtx.invoicedAmountUsd;
+            }
           }
         }
       }
@@ -734,7 +965,7 @@ export class ReferralCashbackService {
     if (!referrerEligible) {
       return {
         status: 'skipped',
-        reason: 'Referidor no habilitado (requiere tratamiento OFM pagado al 100%)',
+        reason: 'Referidor no habilitado (OFM contado/cuotas al 100% o moldes+inicial en cuotas)',
       };
     }
 
@@ -744,9 +975,33 @@ export class ReferralCashbackService {
     }
 
     const percent = Number(config.defaultPercent);
-    const cashbackAmount = this.roundMoney(invoiceCtx.invoicedAmount * (percent / 100));
+    const invoicedBaseUsd =
+      invoiceCtx.invoicedAmountUsd
+      ?? (invoiceCtx.currency === ReferralCashbackCurrency.USD
+        ? invoiceCtx.invoicedAmount
+        : convertCashbackAmountToUsd(
+            invoiceCtx.invoicedAmount,
+            invoiceCtx.currency,
+            invoiceCtx.exchangeRate,
+          ));
 
-    if (cashbackAmount <= 0) {
+    if (invoicedBaseUsd == null || invoicedBaseUsd <= 0) {
+      return {
+        status: 'skipped',
+        reason:
+          invoiceCtx.currency === ReferralCashbackCurrency.PEN
+            ? 'Factura en soles sin tipo de cambio válido'
+            : 'Monto facturado inválido',
+      };
+    }
+
+    const cashbackAmountUsd = this.roundMoney(invoicedBaseUsd * (percent / 100));
+    const originalCashbackAmount =
+      invoiceCtx.currency === ReferralCashbackCurrency.PEN
+        ? this.roundMoney(invoiceCtx.invoicedAmount * (percent / 100))
+        : cashbackAmountUsd;
+
+    if (cashbackAmountUsd <= 0) {
       return { status: 'skipped', reason: 'Cashback calculado es cero' };
     }
 
@@ -754,17 +1009,45 @@ export class ReferralCashbackService {
     const creditedAt = new Date();
     const expiresAt = this.addMonths(creditedAt, expirationMonths);
 
+    if (invoiceCtx.cashbackPhase === 'cuotas_inicial' && invoiceCtx.contractId) {
+      const phaseEntries = await this.findEarnedEntriesByContractPhase(
+        invoiceCtx.contractId,
+        'cuotas_inicial',
+      );
+      if (phaseEntries.length > 0) {
+        const topUp = await this.creditPrimerPagoTopUpIfNeeded({
+          phaseEntries,
+          invoiceCtx,
+          dto,
+          invoicedBaseUsd,
+          expectedCashbackUsd: cashbackAmountUsd,
+          percent,
+          referrerPatientId,
+          referrerOpportunity,
+          referredOpportunity,
+          expirationMonths,
+          expiresAt,
+        });
+        if (topUp) return topUp;
+        return {
+          status: 'duplicate',
+          reason: 'Cashback ya acreditado (cuotas_inicial)',
+          ledgerId: phaseEntries[0].id,
+        };
+      }
+    }
+
     let balance = await this.balanceRepo.findOne({
       where: {
         patientId: referrerPatientId,
-        currency: invoiceCtx.currency,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
       },
     });
 
     if (!balance) {
       balance = this.balanceRepo.create({
         patientId: referrerPatientId,
-        currency: invoiceCtx.currency,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
         availableAmount: 0,
         totalEarned: 0,
         totalUsed: 0,
@@ -783,8 +1066,8 @@ export class ReferralCashbackService {
         this.ledgerRepo.create({
           balanceId: balance.id,
           entryType: ReferralCashbackLedgerType.EARNED,
-          amount: cashbackAmount,
-          currency: invoiceCtx.currency,
+          amount: cashbackAmountUsd,
+          currency: CASHBACK_ACCOUNT_CURRENCY,
           percentApplied: percent,
           referrerPatientId,
           referredPatientId: invoiceCtx.patientId,
@@ -795,13 +1078,17 @@ export class ReferralCashbackService {
           expiresAt,
           metadata: {
             invoicedAmount: invoiceCtx.invoicedAmount,
+            invoicedAmountUsd: invoicedBaseUsd,
+            originalCurrency: invoiceCtx.currency,
+            originalAmount: originalCashbackAmount,
+            exchangeRate: invoiceCtx.exchangeRate ?? null,
             sourceType: invoiceCtx.sourceType,
             cashbackPhase: invoiceCtx.cashbackPhase ?? null,
             treatmentCode: invoiceCtx.treatmentCode,
             treatmentPlanId: invoiceCtx.treatmentPlanId,
             tariffId: invoiceCtx.tariffId,
             invoiceHeadId: invoiceCtx.invoiceHeadId,
-            remainingAmount: cashbackAmount,
+            remainingAmount: cashbackAmountUsd,
             expirationMonths,
             referralRootOpportunityId: referredOpportunity.cReferralRootOpportunityId ?? null,
           },
@@ -827,19 +1114,20 @@ export class ReferralCashbackService {
       throw error;
     }
 
-    balance.availableAmount = this.roundMoney(Number(balance.availableAmount) + cashbackAmount);
-    balance.totalEarned = this.roundMoney(Number(balance.totalEarned) + cashbackAmount);
+    balance.availableAmount = this.roundMoney(Number(balance.availableAmount) + cashbackAmountUsd);
+    balance.totalEarned = this.roundMoney(Number(balance.totalEarned) + cashbackAmountUsd);
     balance = await this.balanceRepo.save(balance);
 
     this.logger.log(
-      `Cashback +${cashbackAmount} ${invoiceCtx.currency} → patient ${referrerPatientId} ` +
-        `(IRB ${dto.sourceIrbId}, referido ${invoiceCtx.patientId})`,
+      `Cashback +${cashbackAmountUsd} USD → patient ${referrerPatientId} ` +
+        `(IRB ${dto.sourceIrbId}, referido ${invoiceCtx.patientId}` +
+        `${invoiceCtx.currency === ReferralCashbackCurrency.PEN ? `, TC ${invoiceCtx.exchangeRate}` : ''})`,
     );
 
     return {
       status: 'credited',
-      cashbackAmount,
-      currency: invoiceCtx.currency,
+      cashbackAmount: cashbackAmountUsd,
+      currency: CASHBACK_ACCOUNT_CURRENCY,
       referrerPatientId,
       ledgerId: ledger.id,
     };
@@ -1287,6 +1575,195 @@ export class ReferralCashbackService {
       default:
         return 'Factura no elegible para cashback referidos';
     }
+  }
+
+  private async findEarnedEntriesByContractPhase(contractId: number, phase: string) {
+    return this.ledgerRepo
+      .createQueryBuilder('l')
+      .where('l.entry_type = :entryType', { entryType: ReferralCashbackLedgerType.EARNED })
+      .andWhere('l.source_contract_id = :contractId', { contractId })
+      .andWhere("l.metadata->>'cashbackPhase' = :phase", { phase })
+      .orderBy('l.created_at', 'ASC')
+      .getMany();
+  }
+
+  /**
+   * Tras cambio cuotas→contado→cuotas, el primer tramo puede tener facturas PEN + USD.
+   * Si ya se acreditó solo el bloque en soles, completa el delta hasta el 10% USD correcto.
+   */
+  private async creditPrimerPagoTopUpIfNeeded(params: {
+    phaseEntries: ReferralCashbackLedger[];
+    invoiceCtx: {
+      contractId: number | null;
+      patientId: number;
+      sourceType: string;
+      cashbackPhase?: string;
+      treatmentCode?: string;
+      exchangeRate?: number | null;
+    };
+    dto: ProcessInvoiceCashbackDto;
+    invoicedBaseUsd: number;
+    expectedCashbackUsd: number;
+    percent: number;
+    referrerPatientId: number;
+    referrerOpportunity: Opportunity;
+    referredOpportunity: Opportunity;
+    expirationMonths: number;
+    expiresAt: Date;
+  }): Promise<ReferralCashbackProcessResult | null> {
+    const {
+      phaseEntries,
+      invoiceCtx,
+      dto,
+      invoicedBaseUsd,
+      expectedCashbackUsd,
+      percent,
+      referrerPatientId,
+      referrerOpportunity,
+      referredOpportunity,
+      expirationMonths,
+      expiresAt,
+    } = params;
+
+    const irbIds = phaseEntries
+      .map((e) => e.sourceIrbId)
+      .filter((id): id is number => id != null && Number.isFinite(id) && id > 0);
+    const irbRates = await this.svService.getExchangeRatesForIrbs([
+      ...irbIds,
+      ...(dto.sourceIrbId ? [dto.sourceIrbId] : []),
+    ]);
+
+    const creditedUsd = this.roundMoney(
+      phaseEntries.reduce((sum, entry) => {
+        const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+        const storedRate =
+          meta.exchangeRate != null && Number.isFinite(Number(meta.exchangeRate))
+            ? Number(meta.exchangeRate)
+            : null;
+        const irbRate =
+          entry.sourceIrbId != null ? irbRates.get(entry.sourceIrbId) ?? null : null;
+        const rate = storedRate ?? irbRate;
+        if (entry.currency === ReferralCashbackCurrency.USD) {
+          return sum + Number(entry.amount);
+        }
+        const usd = convertCashbackAmountToUsd(
+          Number(entry.amount),
+          ReferralCashbackCurrency.PEN,
+          rate,
+        );
+        return sum + (usd ?? 0);
+      }, 0),
+    );
+
+    const deltaUsd = this.roundMoney(expectedCashbackUsd - creditedUsd);
+    if (deltaUsd <= 0.01) return null;
+
+    const ledgerSourceIrbId = await this.resolveTopUpLedgerSourceIrbId(
+      invoiceCtx.patientId,
+      dto.sourceIrbId,
+    );
+
+    let supplementalInvoicedUsd: number | null = null;
+    if (ledgerSourceIrbId) {
+      const irbDetails = await this.svService.getIrbCashbackDetails([ledgerSourceIrbId]);
+      const irb = irbDetails.get(ledgerSourceIrbId);
+      if (irb) {
+        supplementalInvoicedUsd =
+          irb.currency === ReferralCashbackCurrency.USD
+            ? irb.amount
+            : convertCashbackAmountToUsd(irb.amount, irb.currency, irb.exchangeRate);
+      }
+    }
+    if (supplementalInvoicedUsd == null || supplementalInvoicedUsd <= 0) {
+      supplementalInvoicedUsd = deltaUsd * (100 / percent);
+    }
+
+    let balance = await this.balanceRepo.findOne({
+      where: {
+        patientId: referrerPatientId,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
+      },
+    });
+    if (!balance) {
+      balance = this.balanceRepo.create({
+        patientId: referrerPatientId,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
+        availableAmount: 0,
+        totalEarned: 0,
+        totalUsed: 0,
+        referrerOpportunityId: referrerOpportunity.id,
+      });
+      balance = await this.balanceRepo.save(balance);
+    }
+
+    const ledger = await this.ledgerRepo.save(
+      this.ledgerRepo.create({
+        balanceId: balance.id,
+        entryType: ReferralCashbackLedgerType.EARNED,
+        amount: deltaUsd,
+        currency: CASHBACK_ACCOUNT_CURRENCY,
+        percentApplied: percent,
+        referrerPatientId,
+        referredPatientId: invoiceCtx.patientId,
+        referrerOpportunityId: referrerOpportunity.id,
+        referredOpportunityId: referredOpportunity.id,
+        sourceIrbId: ledgerSourceIrbId,
+        sourceContractId: invoiceCtx.contractId,
+        expiresAt,
+        metadata: {
+          primerPagoTopUp: true,
+          triggerSourceIrbId: dto.sourceIrbId,
+          supplementalInvoicedUsd: this.roundMoney(supplementalInvoicedUsd),
+          primerTramoTotalUsd: invoicedBaseUsd,
+          priorCreditedUsd: creditedUsd,
+          sourceType: invoiceCtx.sourceType,
+          cashbackPhase: invoiceCtx.cashbackPhase ?? 'cuotas_inicial',
+          treatmentCode: invoiceCtx.treatmentCode,
+          remainingAmount: deltaUsd,
+          expirationMonths,
+          referralRootOpportunityId: referredOpportunity.cReferralRootOpportunityId ?? null,
+        },
+      }),
+    );
+
+    balance.availableAmount = this.roundMoney(Number(balance.availableAmount) + deltaUsd);
+    balance.totalEarned = this.roundMoney(Number(balance.totalEarned) + deltaUsd);
+    await this.balanceRepo.save(balance);
+
+    this.logger.log(
+      `Cashback top-up +${deltaUsd} USD → patient ${referrerPatientId} ` +
+        `(contrato ${invoiceCtx.contractId}, IRB ledger ${ledgerSourceIrbId ?? '—'}, base USD ${invoicedBaseUsd})`,
+    );
+
+    return {
+      status: 'credited',
+      cashbackAmount: deltaUsd,
+      currency: CASHBACK_ACCOUNT_CURRENCY,
+      referrerPatientId,
+      ledgerId: ledger.id,
+    };
+  }
+
+  /** IRB para ledger de top-up: uno del primer tramo que aún no tenga abono EARNED. */
+  private async resolveTopUpLedgerSourceIrbId(
+    referredPatientId: number,
+    triggerSourceIrbId: number,
+  ): Promise<number | null> {
+    const triggerIrbIds = await this.svService.listOfmCashbackTriggerIrbIdsForPatient(
+      referredPatientId,
+    );
+    const candidates = [
+      ...new Set(
+        [triggerSourceIrbId, ...triggerIrbIds].filter(
+          (id) => Number.isFinite(id) && id > 0,
+        ),
+      ),
+    ];
+    for (const irbId of candidates) {
+      const existing = await this.findEarnedEntryBySourceIrb(irbId);
+      if (!existing) return irbId;
+    }
+    return null;
   }
 
   private async findEarnedEntryBySourceIrb(sourceIrbId: number) {

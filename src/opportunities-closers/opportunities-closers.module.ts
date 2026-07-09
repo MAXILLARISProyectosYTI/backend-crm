@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OpportunitiesClosersService } from './opportunities-closers.service';
 import { OpportunitiesClosersController } from './opportunities-closers.controller';
+import { OpportunitiesClosersFromSvController } from './opportunities-closers-from-sv.controller';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
 import { UserModule } from 'src/user/user.module';
@@ -21,7 +22,7 @@ import { CampusTeamModule } from 'src/campus-team/campus-team.module';
     OpportunityModule,
     CampusTeamModule,
   ],
-  controllers: [OpportunitiesClosersController],
+  controllers: [OpportunitiesClosersController, OpportunitiesClosersFromSvController],
   providers: [OpportunitiesClosersService, SvServices, OpportunitiesClosersCronsService],
   exports: [OpportunitiesClosersService],
 })

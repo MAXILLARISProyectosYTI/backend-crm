@@ -5,12 +5,20 @@ import {
   type SvDatabaseConfig,
   resolveSvDatabaseConfig,
 } from '../../config/sv-database.config';
-import { ReferralCashbackCurrency, currencyFromSvCoinId } from '../enums/referral-cashback.enums';
+import {
+  ReferralCashbackCurrency,
+  currencyFromSvCoinId,
+} from '../enums/referral-cashback.enums';
+import {
+  convertCashbackAmountToUsd,
+} from '../utils/referral-cashback-currency.util';
 import {
   OFM_DESC_NORM_IS_CUOTA,
   OFM_DESC_NORM_IS_PRIMER_PAGO,
+  OFM_DESC_NORM_IS_UNICO_PAGO,
   ofmDetailIsCuotaInstallment,
   ofmDetailIsPrimerPago,
+  ofmDetailIsUnicoPago,
   ofmHistoricalPrimerPagoInvoicedSelect,
   ofmPrimerPagoStatusCte,
   ofmPrimerPagoStatusSelect,
@@ -44,6 +52,10 @@ export interface SvInvoiceCashbackContext {
   contractType?: string;
   invoicedAmount: number;
   currency: ReferralCashbackCurrency;
+  /** TC soles/USD de la factura (irb.exchange_rate_id → exchange_rate.value). */
+  exchangeRate?: number | null;
+  /** Monto facturado base en USD (original o convertido con TC). */
+  invoicedAmountUsd?: number;
   sourceType: ReferralCashbackSvSourceType;
   cashbackPhase?: ReferralCashbackOfmCashbackPhase;
   /** True si el head de cierre contado también facturó líneas Moldes/Inicial (mismo boleto). */
@@ -62,6 +74,7 @@ export interface SvIrbCashbackDetail {
   irbId: number;
   amount: number;
   currency: ReferralCashbackCurrency;
+  exchangeRate: number | null;
   serviceOrderId: number | null;
   treatmentLabel: string | null;
   invoicedAt: string | null;
@@ -79,6 +92,8 @@ export interface ReferrerOfmEligibilityProgress {
   amountPending: number;
   progressPercent: number;
   hasValidInvoice: boolean;
+  /** OFM cuotas: Moldes + Inicial pagados al 100% (habilita referidor sin cerrar cuotas). */
+  primerPagoComplete: boolean;
 }
 
 @Injectable()
@@ -153,41 +168,76 @@ export class ReferralCashbackSvService {
   }
 
   /**
-   * Referidor habilitado: al menos un contrato OFM (contado o cuotas) pagado al 100%
-   * con al menos una factura válida en SV.
+   * Referidor habilitado:
+   * - OFM contado (o cuotas cerradas al 100%): contrato sin saldo pendiente + factura válida.
+   * - OFM cuotas: Moldes + Inicial pagados al 100% y facturados (no exige cerrar todas las cuotas).
    */
   async isPatientReferrerEligible(patientId: number): Promise<boolean> {
     const client = this.createClient();
+    const primerPagoCte = ofmPrimerPagoStatusSelect(
+      'c.idclinichistory = $1 AND c.state = 1',
+      { includeInactive: true },
+    );
     try {
       await client.connect();
       const { rows } = await client.query<{ eligible: boolean }>(
         `
-        SELECT EXISTS (
-          SELECT 1
-          FROM contract c
-          INNER JOIN contract_structure cs ON cs.id = c.contract_structure_id AND cs.state = 1
-          WHERE c.idclinichistory = $1
-            AND c.state = 1
-            AND cs.treatment_code IN ('OFM_CONTADO', 'OFM_CUOTAS')
-            AND NOT EXISTS (
-              SELECT 1
-              FROM contract_detail cd
-              WHERE cd.idcontract = c.id
-                AND COALESCE(cd.state, 1) = 1
-                AND ROUND(COALESCE(cd.balance, 0)::numeric, 2) > 0.01
-            )
-            AND EXISTS (
-              SELECT 1
-              FROM contract_detail cd2
-              INNER JOIN service_order_payment_detail sopd ON sopd.idcontractdetail = cd2.id
-              INNER JOIN invoice_result_body irb ON irb.service_order_payment_detail_id = sopd.id
-                AND irb.amount > 0
-              INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
-                AND irh.status_invoice = 1
-                AND COALESCE(irh.credit_memo_state, false) = false
-              WHERE cd2.idcontract = c.id
-                AND COALESCE(cd2.state, 1) = 1
-            )
+        WITH primer_pago AS (
+          ${primerPagoCte}
+        )
+        SELECT (
+          EXISTS (
+            SELECT 1
+            FROM contract c
+            INNER JOIN contract_structure cs ON cs.id = c.contract_structure_id AND cs.state = 1
+            WHERE c.idclinichistory = $1
+              AND c.state = 1
+              AND cs.treatment_code IN ('OFM_CONTADO', 'OFM_CUOTAS')
+              AND NOT EXISTS (
+                SELECT 1
+                FROM contract_detail cd
+                WHERE cd.idcontract = c.id
+                  AND COALESCE(cd.state, 1) = 1
+                  AND ROUND(COALESCE(cd.balance, 0)::numeric, 2) > 0.01
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM contract_detail cd2
+                INNER JOIN service_order_payment_detail sopd ON sopd.idcontractdetail = cd2.id
+                INNER JOIN invoice_result_body irb ON irb.service_order_payment_detail_id = sopd.id
+                  AND irb.amount > 0
+                INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+                  AND irh.status_invoice = 1
+                  AND COALESCE(irh.credit_memo_state, false) = false
+                WHERE cd2.idcontract = c.id
+                  AND COALESCE(cd2.state, 1) = 1
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM contract c
+            INNER JOIN contract_structure cs ON cs.id = c.contract_structure_id AND cs.state = 1
+            INNER JOIN primer_pago pps ON pps.contract_id = c.id
+            WHERE c.idclinichistory = $1
+              AND c.state = 1
+              AND cs.treatment_code = 'OFM_CUOTAS'
+              AND pps.has_moldes
+              AND pps.has_inicial
+              AND pps.moldes_complete
+              AND pps.inicial_complete
+              AND EXISTS (
+                SELECT 1
+                FROM contract_detail cd
+                INNER JOIN service_order_payment_detail sopd ON sopd.idcontractdetail = cd.id
+                INNER JOIN invoice_result_body irb ON irb.service_order_payment_detail_id = sopd.id
+                  AND irb.amount > 0
+                INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+                  AND irh.status_invoice = 1
+                  AND COALESCE(irh.credit_memo_state, false) = false
+                WHERE cd.idcontract = c.id
+                  AND (${ofmDetailIsPrimerPago('cd')})
+              )
+          )
         ) AS eligible
         `,
         [patientId],
@@ -215,6 +265,7 @@ export class ReferralCashbackSvService {
       amountPending: 0,
       progressPercent: 0,
       hasValidInvoice: false,
+      primerPagoComplete: false,
     };
 
     const client = this.createClient();
@@ -228,6 +279,10 @@ export class ReferralCashbackSvService {
         amount_pending: string;
         id_currency: number | null;
         has_valid_invoice: boolean;
+        has_moldes: boolean;
+        has_inicial: boolean;
+        moldes_complete: boolean;
+        inicial_complete: boolean;
       }>(
         `
         WITH latest_ofm AS (
@@ -239,6 +294,12 @@ export class ReferralCashbackSvService {
             AND cs.treatment_code IN ('OFM_CONTADO', 'OFM_CUOTAS')
           ORDER BY c.id DESC
           LIMIT 1
+        ),
+        primer_pago AS (
+          ${ofmPrimerPagoStatusSelect(
+            'c.id = (SELECT contract_id FROM latest_ofm)',
+            { includeInactive: true },
+          )}
         ),
         line_totals AS (
           SELECT
@@ -292,9 +353,14 @@ export class ReferralCashbackSvService {
               AND COALESCE(irh2.credit_memo_state, false) = false
             WHERE cd2.idcontract = lt.contract_id
               AND COALESCE(cd2.state, 1) = 1
-          ) AS has_valid_invoice
+          ) AS has_valid_invoice,
+          COALESCE(pp.has_moldes, false) AS has_moldes,
+          COALESCE(pp.has_inicial, false) AS has_inicial,
+          COALESCE(pp.moldes_complete, false) AS moldes_complete,
+          COALESCE(pp.inicial_complete, false) AS inicial_complete
         FROM line_totals lt
         LEFT JOIN invoice_currency ic ON true
+        LEFT JOIN primer_pago pp ON pp.contract_id = lt.contract_id
         `,
         [patientId],
       );
@@ -318,6 +384,14 @@ export class ReferralCashbackSvService {
             ? 'OFM contado'
             : 'OFM';
 
+      const primerPagoComplete =
+        treatmentCode === 'OFM_CUOTAS'
+        && row.has_moldes === true
+        && row.has_inicial === true
+        && row.moldes_complete === true
+        && row.inicial_complete === true
+        && row.has_valid_invoice === true;
+
       return {
         hasOfmContract: true,
         contractId: row.contract_id,
@@ -329,6 +403,7 @@ export class ReferralCashbackSvService {
         amountPending,
         progressPercent,
         hasValidInvoice: row.has_valid_invoice === true,
+        primerPagoComplete,
       };
     } catch (err) {
       this.logger.warn(`getReferrerOfmEligibilityProgress(${patientId}): ${err}`);
@@ -409,6 +484,31 @@ export class ReferralCashbackSvService {
             AND pps.moldes_complete
             AND pps.inicial_complete
           WHERE ${OFM_DESC_NORM_IS_PRIMER_PAGO}
+          GROUP BY ci.idcontract
+
+          UNION
+
+          -- Único pago USD tras cambio cuotas→contado→cuotas (completa primer tramo)
+          SELECT MAX(ci.irb_id) AS irb_id
+          FROM contract_irbs ci
+          INNER JOIN patient_ofm_contracts poc ON poc.contract_id = ci.idcontract
+          INNER JOIN (
+            ${ofmPrimerPagoStatusSelect(undefined, { includeInactive: true })}
+          ) pps ON pps.contract_id = ci.idcontract
+            AND pps.has_moldes
+            AND pps.has_inicial
+            AND pps.moldes_complete
+            AND pps.inicial_complete
+          WHERE poc.treatment_code = 'OFM_CUOTAS'
+            AND ${OFM_DESC_NORM_IS_UNICO_PAGO}
+            AND EXISTS (
+              SELECT 1
+              FROM contract_detail cd_p
+              WHERE cd_p.idcontract = ci.idcontract
+                AND COALESCE(cd_p.state, 1) = 1
+                AND ${ofmDetailIsCuotaInstallment('cd_p')}
+                AND ROUND(COALESCE(cd_p.balance, 0)::numeric, 2) > 0.01
+            )
           GROUP BY ci.idcontract
 
           UNION
@@ -562,10 +662,76 @@ export class ReferralCashbackSvService {
 
   async getInvoiceCashbackContext(sourceIrbId: number): Promise<SvInvoiceCashbackContext | null> {
     const ofm = await this.getOfmContractCashbackContext(sourceIrbId);
-    if (ofm) return ofm;
+    if (ofm) return this.enrichInvoiceContextWithUsd(ofm);
     const oiPlan = await this.getOiFullPlanCashbackContext(sourceIrbId);
-    if (oiPlan) return oiPlan;
-    return this.getOiStandaloneTariffCashbackContext(sourceIrbId);
+    if (oiPlan) return this.enrichInvoiceContextWithUsd(oiPlan);
+    const oiStandalone = await this.getOiStandaloneTariffCashbackContext(sourceIrbId);
+    if (oiStandalone) return this.enrichInvoiceContextWithUsd(oiStandalone);
+    return null;
+  }
+
+  async getExchangeRateForIrb(sourceIrbId: number): Promise<number | null> {
+    const map = await this.getExchangeRatesForIrbs([sourceIrbId]);
+    return map.get(sourceIrbId) ?? null;
+  }
+
+  async getExchangeRatesForIrbs(irbIds: number[]): Promise<Map<number, number>> {
+    const map = new Map<number, number>();
+    if (!irbIds.length) return map;
+
+    const client = this.createClient();
+    try {
+      await client.connect();
+      const { rows } = await client.query<{ irb_id: number; exchange_rate: string }>(
+        `
+        SELECT irb.id AS irb_id, er.value::text AS exchange_rate
+        FROM invoice_result_body irb
+        LEFT JOIN exchange_rate er ON er.id = irb.exchange_rate_id
+        WHERE irb.id = ANY($1::int[])
+        `,
+        [irbIds],
+      );
+      for (const row of rows) {
+        const rate = parseFloat(row.exchange_rate);
+        if (Number.isFinite(rate) && rate > 0) {
+          map.set(row.irb_id, rate);
+        }
+      }
+      return map;
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
+  private async enrichInvoiceContextWithUsd(
+    ctx: SvInvoiceCashbackContext,
+  ): Promise<SvInvoiceCashbackContext> {
+    const exchangeRate =
+      ctx.exchangeRate != null && ctx.exchangeRate > 0
+        ? ctx.exchangeRate
+        : await this.getExchangeRateForIrb(ctx.sourceIrbId);
+
+    const invoicedAmountUsd = convertCashbackAmountToUsd(
+      ctx.invoicedAmount,
+      ctx.currency,
+      exchangeRate,
+    );
+
+    if (ctx.currency === ReferralCashbackCurrency.PEN && invoicedAmountUsd == null) {
+      return {
+        ...ctx,
+        exchangeRate: exchangeRate ?? null,
+        invoicedAmountUsd: 0,
+        isEligible: false,
+        skipReason: ctx.skipReason ?? 'Sin tipo de cambio en la factura para convertir a USD',
+      };
+    }
+
+    return {
+      ...ctx,
+      exchangeRate: exchangeRate ?? null,
+      invoicedAmountUsd: invoicedAmountUsd ?? ctx.invoicedAmount,
+    };
   }
 
   /**
@@ -591,6 +757,7 @@ export class ReferralCashbackSvService {
         contract_type: string;
         detail_description: string;
         is_primer_pago_line: boolean;
+        is_unico_pago_line: boolean;
         is_cuota_line: boolean;
         has_moldes: boolean;
         has_inicial: boolean;
@@ -603,6 +770,7 @@ export class ReferralCashbackSvService {
         closing_head_invoiced: string;
         closing_head_has_primer_pago: boolean;
         primer_pago_invoiced: string;
+        primer_pago_invoiced_usd: string;
         remainder_invoiced: string;
         id_currency: number;
       }>(
@@ -619,6 +787,7 @@ export class ReferralCashbackSvService {
             irb.amount AS trigger_irb_amount,
             irb.id_currency,
             (${ofmDetailIsPrimerPago('cd')}) AS is_primer_pago_line,
+            (${ofmDetailIsUnicoPago('cd')}) AS is_unico_pago_line,
             (${ofmDetailIsCuotaInstallment('cd')}) AS is_cuota_line
           FROM invoice_result_body irb
           INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
@@ -678,6 +847,7 @@ export class ReferralCashbackSvService {
           ir.contract_type,
           ir.detail_description,
           ir.is_primer_pago_line,
+          ir.is_unico_pago_line,
           ir.is_cuota_line,
           pps.has_moldes,
           pps.has_inicial,
@@ -690,6 +860,7 @@ export class ReferralCashbackSvService {
           cht.closing_head_invoiced::text,
           cht.closing_head_has_primer_pago,
           ct.primer_pago_invoiced::text,
+          ct.primer_pago_invoiced_usd::text,
           ct.remainder_invoiced::text,
           ir.id_currency
         FROM irb_row ir
@@ -713,10 +884,18 @@ export class ReferralCashbackSvService {
           ? closingHeadInvoiced
           : parseFloat(row.trigger_irb_amount) || 0;
       const primerPagoInvoiced = parseFloat(row.primer_pago_invoiced) || 0;
+      const primerPagoInvoicedUsd = parseFloat(row.primer_pago_invoiced_usd) || 0;
       const remainderInvoiced = parseFloat(row.remainder_invoiced) || 0;
       const fullyPaid = row.contract_fully_paid === true;
       const primerPagoReady = row.primer_pago_ready === true;
       const { isContado, isCuotas } = resolveOfmModality(treatmentCode, contractType);
+
+      const primerTramoInvoiced =
+        primerPagoInvoicedUsd > 0 ? primerPagoInvoicedUsd : primerPagoInvoiced;
+      const primerTramoCurrency =
+        primerPagoInvoicedUsd > 0
+          ? ReferralCashbackCurrency.USD
+          : currencyFromSvCoinId(row.id_currency);
 
       const base = {
         sourceIrbId: row.source_irb_id,
@@ -727,17 +906,19 @@ export class ReferralCashbackSvService {
         invoiceHeadId: null as number | null,
         treatmentCode,
         contractType,
-        currency: currencyFromSvCoinId(row.id_currency),
+        currency: primerTramoCurrency,
       };
 
-      // Moldes+Inicial completos y facturados: vale aunque modalidad vigente ya sea contado
+      // Moldes+Inicial completos y facturados: vale aunque modalidad vigente ya sea contado.
+      // Base en USD si hay mezcla PEN+USD (cambio cuotas→contado→cuotas).
       if (row.is_primer_pago_line) {
-        if (primerPagoReady && primerPagoInvoiced > 0) {
+        if (primerPagoReady && primerTramoInvoiced > 0) {
           return {
             ...base,
             sourceType: 'OFM_CUOTAS_INICIAL',
             cashbackPhase: 'cuotas_inicial',
-            invoicedAmount: primerPagoInvoiced,
+            invoicedAmount: primerTramoInvoiced,
+            currency: primerTramoCurrency,
             isEligible: true,
           };
         }
@@ -754,9 +935,37 @@ export class ReferralCashbackSvService {
           ...base,
           sourceType: 'OFM_CUOTAS_INICIAL',
           cashbackPhase: 'cuotas_inicial',
-          invoicedAmount: primerPagoInvoiced,
+          invoicedAmount: primerTramoInvoiced,
+          currency: primerTramoCurrency,
           isEligible: false,
           skipReason,
+        };
+      }
+
+      // Pago en "Único pago" (intento contado) con contrato vigente en cuotas: completa primer tramo.
+      if (isCuotas && row.is_unico_pago_line) {
+        if (primerPagoReady && primerTramoInvoiced > 0 && !fullyPaid) {
+          return {
+            ...base,
+            sourceType: 'OFM_CUOTAS_INICIAL',
+            cashbackPhase: 'cuotas_inicial',
+            invoicedAmount: primerTramoInvoiced,
+            currency: primerTramoCurrency,
+            isEligible: true,
+          };
+        }
+        return {
+          ...base,
+          sourceType: 'OFM_CUOTAS_INICIAL',
+          cashbackPhase: 'cuotas_inicial',
+          invoicedAmount: primerTramoInvoiced,
+          currency: primerTramoCurrency,
+          isEligible: false,
+          skipReason: !primerPagoReady
+            ? 'Moldes + Inicial aún no completos'
+            : fullyPaid
+              ? 'Contrato ya cerrado al 100%'
+              : 'Sin monto facturado en primer tramo',
         };
       }
 
@@ -1096,6 +1305,7 @@ export class ReferralCashbackSvService {
         irb_id: number;
         amount: string;
         id_currency: number;
+        exchange_rate: string | null;
         service_order_id: number | null;
         treatment_label: string | null;
         invoiced_at: Date | string | null;
@@ -1105,6 +1315,7 @@ export class ReferralCashbackSvService {
           irb.id AS irb_id,
           irb.amount::text AS amount,
           irb.id_currency,
+          er.value::text AS exchange_rate,
           so.id AS service_order_id,
           COALESCE(
             NULLIF(TRIM(t.name), ''),
@@ -1124,16 +1335,19 @@ export class ReferralCashbackSvService {
         LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
         LEFT JOIN tariff t ON t.id = sopd."tariffId"
         LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail
+        LEFT JOIN exchange_rate er ON er.id = irb.exchange_rate_id
         WHERE irb.id = ANY($1::int[])
         `,
         [irbIds],
       );
 
       for (const row of rows) {
+        const rate = row.exchange_rate != null ? parseFloat(row.exchange_rate) : NaN;
         map.set(row.irb_id, {
           irbId: row.irb_id,
           amount: parseFloat(row.amount) || 0,
           currency: currencyFromSvCoinId(row.id_currency),
+          exchangeRate: Number.isFinite(rate) && rate > 0 ? rate : null,
           serviceOrderId: row.service_order_id,
           treatmentLabel: row.treatment_label,
           invoicedAt: row.invoiced_at ? new Date(row.invoiced_at).toISOString() : null,
