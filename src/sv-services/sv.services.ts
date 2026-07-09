@@ -173,6 +173,48 @@ export class SvServices {
     }
   }
 
+  /** Contexto principal/referido por teléfono compartido (flujo Derivar a OI / referidos). */
+  async getOiPhoneCheck(clinicHistoryCode: string): Promise<{
+    current: {
+      hcCode: string;
+      patientId: number;
+      fullName: string;
+      cellphone: string | null;
+      createdAt: string | null;
+    };
+    isReferral: boolean;
+    primary: {
+      hcCode: string;
+      patientId: number;
+      fullName: string;
+      createdAt: string | null;
+      opportunityId: string | null;
+    } | null;
+    siblings: Array<{
+      hcCode: string;
+      patientId: number;
+      fullName: string;
+      createdAt: string | null;
+      role: 'primary' | 'referral';
+      isCurrent: boolean;
+    }>;
+  }> {
+    const code = (clinicHistoryCode ?? '').trim();
+    if (!code) {
+      throw new BadRequestException('clinicHistoryCode requerido');
+    }
+    try {
+      const encoded = encodeURIComponent(code);
+      const response = await axios.get(
+        `${this.URL_BACK_SV}/opportunities/oi-phone-check/${encoded}`,
+      );
+      return response.data;
+    } catch (error) {
+      console.error('getOiPhoneCheck error', clinicHistoryCode, error);
+      throw new BadRequestException('Error al consultar contexto de referido en SV');
+    }
+  }
+
   async getStatusClient(opportunityId: string, tokenSv: string) {
     try {
       const responseStatusClient: { data: { 
@@ -372,6 +414,27 @@ export class SvServices {
     } catch (error) {
       console.error('Error getFactsByContractId', error);
       throw new BadRequestException('Error al obtener facturas del contrato en SV');
+    }
+  }
+
+  async getQuotationById(
+    quotationId: number,
+    tokenSv?: string,
+  ): Promise<{ id: number; clinicHistoryId: number | null } | null> {
+    try {
+      const bearer = tokenSv ?? (await this.getTokenSvAdmin()).tokenSv;
+      const response = await axios.get<{ id: number; clinicHistory: { id: number } }>(
+        `${this.URL_BACK_SV}/quotation/id/${quotationId}`,
+        { headers: { Authorization: `Bearer ${bearer}` } },
+      );
+      return {
+        id: response.data.id,
+        clinicHistoryId: response.data.clinicHistory?.id != null
+          ? Number(response.data.clinicHistory.id)
+          : null,
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -1196,7 +1259,10 @@ export class SvServices {
     }
   }
 
-  async getPatientCampus(clinicHistoryId: number, tokenSv: string): Promise<{ campusId: number; campusName: string }> {
+  async getClinicHistoryById(
+    clinicHistoryId: number,
+    tokenSv: string,
+  ): Promise<{ id: number; history?: string; campus?: { id: number; name: string } } | null> {
     if (!this.URL_BACK_SV) throw new BadRequestException('URL_BACK_SV no configurada');
     const base = this.URL_BACK_SV.replace(/\/$/, '');
     try {
@@ -1205,15 +1271,53 @@ export class SvServices {
         timeout: 10000,
       });
       const data = res.data;
-      const campus = data?.campus;
+      if (!data?.id) return null;
+      const campus = data.campus;
       return {
-        campusId: campus?.id ?? 1,
-        campusName: campus?.name ?? 'Lima',
+        id: Number(data.id),
+        history: data.history ?? data.ch_history ?? undefined,
+        campus:
+          campus?.id != null
+            ? { id: Number(campus.id), name: String(campus.name ?? '').trim() || 'Sede' }
+            : undefined,
       };
     } catch (error) {
-      console.error('Error getPatientCampus', clinicHistoryId, error);
-      return { campusId: 1, campusName: 'Lima' };
+      console.error('Error getClinicHistoryById', clinicHistoryId, error);
+      return null;
     }
+  }
+
+  /**
+   * Sede del paciente en SV. Lee `clinic_history.campus` (Arequipa, Trujillo, Lima, etc.).
+   * Si el GET por id no trae campus, intenta `sede-by-clinic-history` por código HC.
+   * No inventa ids: si SV no tiene sede, lanza error.
+   */
+  async getPatientCampus(clinicHistoryId: number, tokenSv: string): Promise<{ campusId: number; campusName: string }> {
+    const record = await this.getClinicHistoryById(clinicHistoryId, tokenSv);
+    if (!record) {
+      throw new BadRequestException(
+        `No se encontró historia clínica id=${clinicHistoryId} en SV`,
+      );
+    }
+
+    if (record.campus?.id) {
+      return { campusId: record.campus.id, campusName: record.campus.name };
+    }
+
+    if (record.history) {
+      const sede = await this.getSedeByClinicHistory(record.history, tokenSv);
+      const campusId = sede?.campusId;
+      if (campusId != null && Number.isFinite(Number(campusId)) && Number(campusId) > 0) {
+        return {
+          campusId: Number(campusId),
+          campusName: sede?.campusName?.trim() || 'Sede',
+        };
+      }
+    }
+
+    throw new BadRequestException(
+      `Historia clínica id=${clinicHistoryId} no tiene sede (campus) registrada en SV`,
+    );
   }
 
   // Agenda Services

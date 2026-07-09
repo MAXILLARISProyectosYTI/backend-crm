@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { ILike, In, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { OpportunityServiceOrder } from './opportunity-service-order.entity';
 import { FacturacionSubEstado } from './opportunity-service-order.entity';
@@ -39,6 +39,7 @@ import { CreateOpportunityResponse } from './dto/create-opportunity-response.dto
 import { AssignmentQueueStateService } from '../assignment-queue-state/assignment-queue-state.service';
 import { CampusItem } from 'src/sv-services/campus.types';
 import { OpportunityDerivation } from 'src/opportunity-derivation/opportunity-derivation.entity';
+import { ReferralLineageService } from 'src/referral-lineage/referral-lineage.service';
 
 @Injectable()
 export class OpportunityService {
@@ -67,6 +68,7 @@ export class OpportunityService {
     private readonly filesService: FilesService,
     private readonly campaignService: CampaignService,
     private readonly assignmentQueueStateService: AssignmentQueueStateService,
+    private readonly referralLineageService: ReferralLineageService,
   ) {}
 
   /** Códigos que permiten crear oportunidad como paciente nuevo (sin datos previos en SV) */
@@ -473,26 +475,20 @@ export class OpportunityService {
         };
       }
 
-      const primary = await this.opportunityRepository.findOne({
-        where: { id: dto.primaryOpportunityId },
-        relations: ['assignedUserId'],
-      });
-      if (!primary) {
+      const link = await this.referralLineageService.buildChildReferralLink(
+        dto.primaryOpportunityId,
+      );
+      if (!link) {
         return {
           status: 'error',
           code: 'REFERIDO_PRIMARY_NO_EXISTE',
-          message: `La oportunidad principal ${dto.primaryOpportunityId} no existe en CRM`,
+          message: `No se pudo resolver referidor/raíz para ${dto.primaryOpportunityId}`,
           data: {},
         };
       }
-      if (!primary.contactId) {
-        return {
-          status: 'error',
-          code: 'REFERIDO_PRIMARY_SIN_CONTACTO',
-          message: 'La oportunidad principal no tiene contactId',
-          data: {},
-        };
-      }
+
+      const primary = link.directReferrer;
+      const familyRoot = link.familyRoot;
 
       const refPatient = dto.referredPatient ?? {};
       const referredFullName = [
@@ -505,12 +501,9 @@ export class OpportunityService {
         .join(' ')
         .trim() || dto.name;
 
-      // Calcular siguiente REF-N basándonos en oportunidades del mismo
-      // contactId (todas las del "núcleo" del titular). Si no hay match con
-      // ese contactId, caemos al patrón legacy de buscar por baseName.
       const refRegex = / REF-(\d+)$/;
       const siblingsByContact = await this.opportunityRepository.find({
-        where: { contactId: primary.contactId, deleted: false },
+        where: { contactId: link.contactId, deleted: false },
       });
 
       let nextRefName: string;
@@ -528,10 +521,9 @@ export class OpportunityService {
         nextRefName = `${referredFullName} REF-2`;
       }
 
-      // Asignación round-robin OI por (subcampaña + sede) — igual que `create()`.
       const isTimeToAssign = timeToAssing();
       let userToAssign: User | null = null;
-      const campusId = Number(dto.campusId) || primary.cCampusId || undefined;
+      const campusId = Number(dto.campusId) || primary.cCampusId || familyRoot.cCampusId || undefined;
       if (isTimeToAssign) {
         userToAssign = await this.userService.getNextUserToAssign(
           dto.subCampaignId,
@@ -550,15 +542,18 @@ export class OpportunityService {
         campaignId: dto.campaignId,
         cSubCampaignId: dto.subCampaignId,
         cCanal: dto.channel,
-        contactId: primary.contactId,
+        contactId: link.contactId,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
         cIsReferralCreation: true,
+        cPrimaryOpportunityId: link.directReferrerId,
+        cReferralRootOpportunityId: link.familyRootId,
         cClinicHistory: dto.referredClinicHistoryCode ?? undefined,
         cPatientsname: refPatient.name ?? undefined,
         cPatientsPaternalLastName: refPatient.lastNameFather ?? undefined,
         cPatientsMaternalLastName: refPatient.lastNameMother ?? undefined,
         cPatientDocument: refPatient.documentNumber ?? undefined,
         cPatientDocumentType: refPatient.documentType ?? 'DNI',
+        isPresaved: true,
       };
       if (userToAssign) payload.assignedUserId = userToAssign;
       if (dto.observation) payload.cObs = dto.observation;
@@ -600,6 +595,7 @@ export class OpportunityService {
           } as CreateClinicHistoryCrmDto,
           tokenSv,
         );
+        await this.clearReferralOpportunitySvFlowLinks(updated.id, userId);
       } catch (linkError: any) {
         // No abortamos: la oportunidad ya está creada. El sv-backend también
         // intenta crear `clinic_history_crm` por idempotencia.
@@ -617,7 +613,7 @@ export class OpportunityService {
         targetId: updated.id,
         target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
         userId,
-        message: `Oportunidad creada como REFERIDA de ${primary.id} (${primary.name})`,
+        message: `Oportunidad creada como REFERIDA de ${link.directReferrerId} (raíz ${link.familyRootId})`,
       });
 
       return {
@@ -643,60 +639,44 @@ export class OpportunityService {
   async createWithSamePhoneNumber(opportunityId: string, userId: string){
 
     try {
-      const opportunity = await this.getOneWithEntity(opportunityId);
-
-      if(!opportunity){
-        throw new NotFoundException(`Oportunidad con ID ${opportunityId} no encontrada`);
+      const link = await this.referralLineageService.buildChildReferralLink(opportunityId);
+      if (!link) {
+        throw new NotFoundException(`Oportunidad referidor con ID ${opportunityId} no encontrada`);
       }
+
+      const opportunity = link.directReferrer;
+      const familyRoot = link.familyRoot;
 
       await this.assertCanManageOpportunity(userId, opportunity);
 
       const user = await this.userService.findOne(userId);
 
-      // Primero calcular el baseName para buscar correctamente
       const refRegex = / REF-(\d+)$/;
-      const baseName = opportunity.name!.replace(refRegex, '').trim();
+      const baseName = (familyRoot.name ?? opportunity.name ?? '').replace(refRegex, '').trim();
 
-      // Buscar todas las oportunidades que empiecen con baseName seguido de REF- o sin REF
-      const opportunities = await this.opportunityRepository.find({
-        where: [
-          { name: baseName },
-          { name: Like(`${baseName} REF-%`) }
-        ],
+      const siblingsByContact = await this.opportunityRepository.find({
+        where: { contactId: link.contactId, deleted: false },
       });
 
       let nextRefName: string;
-
-      if (opportunities.length === 1) {
-        // Si solo hay una oportunidad, significa que solo existe la original, asignar REF-2
-        nextRefName = `${baseName} REF-2`;
-      } else {
-        // Buscar el REF más alto entre todas las oportunidades encontradas
-        let highestRef = 1; // El original sería REF1 (sin mostrar)
-        
-        opportunities.forEach(opportunity => {
-          const match = opportunity.name!.match(refRegex);
-          if (match) {
-            const refNumber = parseInt(match[1], 10);
-            if (refNumber > highestRef) {
-              highestRef = refNumber;
-            }
-          } 
-        });
-        
-        // Asignar el siguiente número REF
-        const nextRef = highestRef + 1;
-        nextRefName = `${baseName} REF-${nextRef}`;
+      let highestRef = 1;
+      for (const op of siblingsByContact) {
+        const match = (op.name ?? '').match(refRegex);
+        if (match) {
+          const refNumber = parseInt(match[1], 10);
+          if (refNumber > highestRef) highestRef = refNumber;
+        }
       }
+      nextRefName = `${baseName} REF-${highestRef + 1}`;
 
       const today = new Date();
       const parentCampusId =
-        opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? undefined;
+        opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? familyRoot.cCampusAtencionId ?? familyRoot.cCampusId ?? undefined;
 
       const newOpportunityId = this.idGeneratorService.generateId();
       const isOiSubCampaign = opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI;
       const cConctionSv = this.buildManagerLeadsUrl(
-        opportunity.assignedUserId,
+        link.assigneeUser ?? opportunity.assignedUserId,
         newOpportunityId,
         { isOiFlow: isOiSubCampaign, sedeId: parentCampusId ?? null },
       );
@@ -706,18 +686,21 @@ export class OpportunityService {
         name: nextRefName,
         closeDate: today,
         createdAt: today,
-        cNumeroDeTelefono: opportunity.cNumeroDeTelefono,
+        cNumeroDeTelefono: opportunity.cNumeroDeTelefono ?? familyRoot.cNumeroDeTelefono,
         stage: Enum_Stage.GESTION_INICIAL,
-        campaignId: opportunity.campaignId,
-        cSubCampaignId: opportunity.cSubCampaignId,
-        cCanal: opportunity.cCanal,
-        contactId: opportunity.contactId,
+        campaignId: opportunity.campaignId ?? familyRoot.campaignId,
+        cSubCampaignId: opportunity.cSubCampaignId ?? familyRoot.cSubCampaignId,
+        cCanal: opportunity.cCanal ?? familyRoot.cCanal,
+        contactId: link.contactId,
         cSeguimientocliente: Enum_Following.SIN_SEGUIMIENTO,
-        assignedUserId: opportunity.assignedUserId,
+        assignedUserId: link.assigneeUser ?? undefined,
         cIsReferralCreation: true,
+        cPrimaryOpportunityId: link.directReferrerId,
+        cReferralRootOpportunityId: link.familyRootId,
         cCampusId: parentCampusId,
         cCampusAtencionId: parentCampusId,
-        cMetadata: opportunity.cMetadata ?? undefined,
+        cMetadata: opportunity.cMetadata ?? familyRoot.cMetadata ?? undefined,
+        isPresaved: true,
         cConctionSv,
       }
       
@@ -2164,6 +2147,11 @@ export class OpportunityService {
     });
     if (!opportunity) return false;
 
+    if (opportunity.cIsReferralCreation === true) {
+      if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+      return this.isFlowCompleteForRedirect(opportunityId);
+    }
+
     if (opportunity.isPresaved === false) return true;
     if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
     if (opportunity.cDateReservation && opportunity.cAppointment) return true;
@@ -2218,6 +2206,34 @@ export class OpportunityService {
       { id: opportunityId, cSeTrasfOtroServi: 'FORCE_INITIAL' },
       { cSeTrasfOtroServi: null, modifiedAt: new Date() } as unknown as Partial<Opportunity>,
     );
+  }
+
+  /**
+   * REF-N recién creado: limpia pago/reserva en clinic_history_crm para no heredar
+   * el flujo del titular u otra opp del mismo patient_id.
+   */
+  async clearReferralOpportunitySvFlowLinks(
+    opportunityId: string,
+    userId?: string,
+  ): Promise<void> {
+    try {
+      let tokenSv: string;
+      if (userId) {
+        const user = await this.userService.findOne(userId);
+        ({ tokenSv } = await this.svServices.getTokenSv(user.cUsersv!, user.cContraseaSv!));
+      } else {
+        ({ tokenSv } = await this.svServices.getTokenSvAdmin());
+      }
+      await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, {
+        id_payment: null,
+        id_reservation: null,
+      });
+    } catch (err) {
+      console.warn(
+        `[clearReferralOpportunitySvFlowLinks] No se pudo limpiar clinic_history_crm (${opportunityId})`,
+        err,
+      );
+    }
   }
 
   /**
@@ -2543,6 +2559,11 @@ export class OpportunityService {
 
     if(clinicHistoryCrm) {
       let payloadUpdateClinicHistoryCrm: Partial<CreateClinicHistoryCrmDto> = {};
+      const existingPatientId = Number(
+        (clinicHistoryCrm as { patientId?: number; patient_id?: number }).patientId
+        ?? (clinicHistoryCrm as { patient_id?: number }).patient_id,
+      );
+      const hcForPatientLink = (body.cClinicHistory ?? newOpportunity.cClinicHistory)?.trim();
   
       if (onlyAppointment) {
         if(!body.reservationId) throw new BadRequestException('El campo reservationId no puede estar vacío');
@@ -2582,6 +2603,26 @@ export class OpportunityService {
           id_reservation: body.reservationId,
           patientId: patient.ch_id,
         });
+      }
+
+      // Titular: si clinic_history_crm aún no tiene patient_id, resolverlo por HC de la opp.
+      if (
+        !payloadUpdateClinicHistoryCrm.patientId
+        && (!Number.isFinite(existingPatientId) || existingPatientId <= 0)
+        && hcForPatientLink
+      ) {
+        try {
+          const patient = await this.svServices.getPatientByClinicHistory(hcForPatientLink, tokenSv);
+          if (patient?.ch_id) {
+            payloadUpdateClinicHistoryCrm.patientId = patient.ch_id;
+            console.log('[updateOpportunityWithFacturas] patientId por HC (fallback)', {
+              hc: hcForPatientLink,
+              patientId: patient.ch_id,
+            });
+          }
+        } catch (err) {
+          console.warn('[updateOpportunityWithFacturas] No se pudo resolver patientId por HC', err);
+        }
       }
   
       if (Object.keys(payloadUpdateClinicHistoryCrm).length > 0) {
@@ -2806,17 +2847,61 @@ export class OpportunityService {
     });
   }
 
+  /** Últimos 9 dígitos del teléfono (Perú), sin formato. */
+  private normalizePhoneLast9(phoneNumber: string): string {
+    return String(phoneNumber ?? '').replace(/\D/g, '').slice(-9);
+  }
+
+  /**
+   * Opps cuyo teléfono termina exactamente en los mismos 9 dígitos (no ILike parcial).
+   * Evita arrastrar miles de leads cuando en dev todos comparten el mismo número.
+   */
   async getAllOpportunitiesByPhone(phoneNumber: string): Promise<Opportunity[]> {
-    const digits = phoneNumber.replace(/\D/g, '').slice(-9);
-    if (!digits) return [];
-    return this.opportunityRepository.find({
-      where: {
-        cNumeroDeTelefono: ILike(`%${digits}%`),
-        deleted: false,
-      },
-      relations: ['assignedUserId'],
-      order: { createdAt: 'DESC' },
+    const digits = this.normalizePhoneLast9(phoneNumber);
+    if (digits.length < 9) return [];
+    return this.opportunityRepository
+      .createQueryBuilder('o')
+      .leftJoinAndSelect('o.assignedUserId', 'assignedUserId')
+      .where('o.deleted = false')
+      .andWhere(
+        `RIGHT(REGEXP_REPLACE(COALESCE(o.c_numero_de_telefono, ''), '\\D', '', 'g'), 9) = :digits`,
+        { digits },
+      )
+      .orderBy('o.created_at', 'DESC')
+      .limit(50)
+      .getMany();
+  }
+
+  /**
+   * @deprecated Preferir resolveReferrerForCloser (incluye referidor directo elegible).
+   * Devuelve solo el titular raíz del núcleo familiar.
+   */
+  async resolvePrimaryOpportunityForReferralFromCloser(params: {
+    closerOpportunityId?: string | null;
+    hcCode: string;
+    primaryOpportunityId?: string | null;
+  }): Promise<Opportunity | null> {
+    if (params.primaryOpportunityId?.trim()) {
+      const opp = await this.referralLineageService.loadOpportunity(params.primaryOpportunityId);
+      if (!opp) return null;
+      return this.referralLineageService.resolveFamilyRoot(opp);
+    }
+    const resolved = await this.referralLineageService.resolveReferrerForCloser({
+      closerOpportunityId: params.closerOpportunityId,
+      hcCode: params.hcCode,
     });
+    return resolved?.familyRoot ?? null;
+  }
+
+  resolveReferrerForCloser(params: {
+    closerOpportunityId?: string | null;
+    hcCode: string;
+  }) {
+    return this.referralLineageService.resolveReferrerForCloser(params);
+  }
+
+  isOpportunityEligibleAsReferrer(opportunityId: string) {
+    return this.referralLineageService.isOpportunityEligibleAsReferrer(opportunityId);
   }
 
   async getOpportunityByClinicHistory(clinicHistory: string) {
@@ -2829,6 +2914,92 @@ export class OpportunityService {
     }
 
     return opportunities;
+  }
+
+  /**
+   * Persiste c_clinic_history en CRM cuando el paciente ya está vinculado en SV
+   * (clinic_history_crm) pero la oportunidad nunca recibió el código HC.
+   */
+  async syncClinicHistoryFromSvIfMissing(
+    opportunityId: string,
+    userId = 'system',
+  ): Promise<string | null> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false },
+    });
+    if (!opportunity) return null;
+
+    const existing = opportunity.cClinicHistory?.trim();
+    if (OpportunityService.isValidHcCode(existing)) {
+      return existing!;
+    }
+
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const chCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
+      const patientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+      if (!Number.isFinite(patientId) || patientId <= 0) return null;
+
+      const patient = await this.svServices.getClinicHistoryById(patientId, tokenSv);
+      const hcCode = patient?.history?.trim();
+      if (!OpportunityService.isValidHcCode(hcCode)) return null;
+
+      await this.update(opportunityId, { cClinicHistory: hcCode }, userId);
+      return hcCode!;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resuelve la oportunidad de gestión (Ventas) para una HC: primero por
+   * c_clinic_history; si falta, enlaza vía clinic_history_crm en SV + teléfono.
+   */
+  async findOrSyncGestiónOpportunityByHc(
+    hcCode: string,
+    userId = 'system',
+  ): Promise<Opportunity | null> {
+    const code = hcCode?.trim();
+    if (!code) return null;
+
+    const byHc = await this.getOpportunityByClinicHistory(code);
+    if (byHc.length > 0) {
+      return byHc.sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tb - ta;
+      })[0];
+    }
+
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const patient = await this.svServices.getPatientByClinicHistory(code, tokenSv);
+      const patientId = Number(patient?.ch_id ?? patient?.id);
+      const phone = String(patient?.cellphone ?? patient?.phone ?? '').trim();
+      if (!Number.isFinite(patientId) || patientId <= 0 || !phone) return null;
+
+      const candidates = await this.getAllOpportunitiesByPhone(phone);
+      for (const candidate of candidates) {
+        if (candidate.cIsReferralCreation === true) continue;
+        try {
+          const chCrm = await this.svServices.getPatientSVByEspoId(candidate.id, tokenSv);
+          const linkedPatientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+          if (linkedPatientId !== patientId) continue;
+
+          if (!OpportunityService.isValidHcCode(candidate.cClinicHistory)) {
+            await this.update(candidate.id, { cClinicHistory: code }, userId);
+            candidate.cClinicHistory = code;
+          }
+          return candidate;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
   }
 
   /**
@@ -2904,6 +3075,26 @@ export class OpportunityService {
       isReferralCreation,
     );
 
+    // SV ya conoce al paciente (clinic_history_crm) pero CRM puede no tener c_clinic_history
+    // (p. ej. evaluación OFM: redirect code=0 promueve a Cierre ganado sin facturar).
+    if (!OpportunityService.isValidHcCode(opportunity.cClinicHistory)) {
+      const hcFromRedirect = (redirectResponse as any)?.dataPatient?.history?.trim();
+      if (OpportunityService.isValidHcCode(hcFromRedirect)) {
+        await this.update(
+          opportunityId,
+          { cClinicHistory: hcFromRedirect },
+          opportunity.assignedUserId?.id ?? 'system',
+        );
+        opportunity.cClinicHistory = hcFromRedirect;
+      } else {
+        const syncedHc = await this.syncClinicHistoryFromSvIfMissing(
+          opportunityId,
+          opportunity.assignedUserId?.id ?? 'system',
+        );
+        if (syncedHc) opportunity.cClinicHistory = syncedHc;
+      }
+    }
+
     // ── Enriquecer respuesta OI con datos de la oportunidad CRM ─────────────
     // Si el SV no encontró paciente en su BD (dataPatient = null) pero la
     // oportunidad en CRM ya tiene nombre/HC/contacto, exponemos esos datos
@@ -2927,8 +3118,13 @@ export class OpportunityService {
     }
 
     // Si code es 0, significa que el paciente cumplió todo el flujo (cliente + factura + agendamiento)
-    // Entonces actualizamos el estado a Cierre Ganado si aún no lo está
+    // Entonces actualizamos el estado a Cierre Ganado si aún no lo está.
+    // REF-N: no promover por datos heredados del titular; exige flujo completo en esta opp.
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
+      const canPromoteToWon =
+        opportunity.cIsReferralCreation !== true
+        || (await this.isFlowCompleteForRedirect(opportunityId));
+      if (canPromoteToWon) {
       await this.opportunityRepository.update(
         { id: opportunityId },
         { 
@@ -2941,6 +3137,7 @@ export class OpportunityService {
       const updatedOpportunity = await this.getOneWithEntity(opportunityId);
       if (updatedOpportunity.assignedUserId) {
         await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, opportunity.stage);
+      }
       }
     }
 
