@@ -29,7 +29,12 @@ export class OpportunitiesClosersCronsService {
     private readonly campusTeamService: CampusTeamService,
   ) {}
 
-  @Cron('0 */1 9-21 * * *')
+  /**
+   * Red de seguridad: el webhook notifyQuotationCreated (SV → CRM) cubre el
+   * caso principal en tiempo real. Este cron corre cada 15 min como respaldo
+   * para cotizaciones que el webhook no pudo reportar (caída de red, etc.).
+   */
+  @Cron('0 */15 9-21 * * *')
   async loopAddQuotationQueue() {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     let list: { id: number | string; name: string; history: string }[] = [];
@@ -45,11 +50,15 @@ export class OpportunitiesClosersCronsService {
       list = Array.isArray(fallback) ? fallback : (fallback?.data ?? []);
     }
 
-    const quotationsToAdd: { id: number | string; name: string; history: string }[] = [];
-    for (const quotation of list) {
-      const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(String(quotation.id));
-      if (!exists) quotationsToAdd.push(quotation);
-    }
+    const existingKeys = await this.opportunitiesClosersService.findExistingQuotationKeys(
+      list.map((q) => String(q.id)),
+    );
+    const quotationsToAdd = list.filter((quotation) => {
+      const hcSet = existingKeys.get(String(quotation.id));
+      if (!hcSet) return true;
+      const normalizedHc = quotation.history?.trim();
+      return normalizedHc ? !hcSet.has(normalizedHc) : false;
+    });
 
     for (const quotation of quotationsToAdd) {
       const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
@@ -66,6 +75,46 @@ export class OpportunitiesClosersCronsService {
         campusAtencionId: gestiónOpp.cCampusAtencionId ?? undefined,
       });
     }
+  }
+
+  /**
+   * Webhook SV → CRM: cotización recién creada. Misma lógica que loopAddQuotationQueue
+   * pero para una sola cotización, sin esperar al próximo tick del cron.
+   */
+  async notifyQuotationCreated(payload: {
+    quotationId: number;
+    history: string;
+    name: string;
+  }): Promise<{ status: 'ok' | 'skipped'; opportunityCloserId?: string; reason?: string }> {
+    const history = payload.history?.trim();
+    if (!history) {
+      return { status: 'skipped', reason: 'Cotización sin historia clínica' };
+    }
+
+    const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(
+      String(payload.quotationId),
+      history,
+    );
+    if (exists) {
+      return { status: 'skipped', reason: 'Ya encolada' };
+    }
+
+    const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
+      history,
+      'system',
+    );
+    if (!gestiónOpp) {
+      return { status: 'skipped', reason: 'No se pudo resolver oportunidad de gestión para la HC' };
+    }
+
+    const result = await this.addOpportunityToQueue({
+      name: payload.name,
+      history,
+      opportunityId: gestiónOpp.id,
+      quotationId: payload.quotationId,
+      campusAtencionId: gestiónOpp.cCampusAtencionId ?? undefined,
+    });
+    return { status: 'ok', opportunityCloserId: result.id };
   }
 
   async addOpportunityToQueue(body: BodyAddOpportunityToQueueDto) {

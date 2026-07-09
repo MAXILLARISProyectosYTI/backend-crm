@@ -105,9 +105,12 @@ export class OpportunitiesClosersController {
   async addFromSv(
     @Body() body: { quotationId: number; name: string; history: string },
   ) {
-    const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(String(body.quotationId));
+    const exists = await this.opportunitiesClosersService.existsOpportunityCloserByQuotationId(
+      String(body.quotationId),
+      body.history,
+    );
     if (exists) {
-      throw new ConflictException('Esta cotización ya está en la cola de cerradoras');
+      throw new ConflictException('Esta cotización ya está en la cola de cerradoras para este paciente');
     }
     const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(body.history);
     if (!gestiónOpp) {

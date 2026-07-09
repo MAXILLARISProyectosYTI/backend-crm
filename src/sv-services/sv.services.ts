@@ -417,6 +417,27 @@ export class SvServices {
     }
   }
 
+  async getQuotationById(
+    quotationId: number,
+    tokenSv?: string,
+  ): Promise<{ id: number; clinicHistoryId: number | null } | null> {
+    try {
+      const bearer = tokenSv ?? (await this.getTokenSvAdmin()).tokenSv;
+      const response = await axios.get<{ id: number; clinicHistory: { id: number } }>(
+        `${this.URL_BACK_SV}/quotation/id/${quotationId}`,
+        { headers: { Authorization: `Bearer ${bearer}` } },
+      );
+      return {
+        id: response.data.id,
+        clinicHistoryId: response.data.clinicHistory?.id != null
+          ? Number(response.data.clinicHistory.id)
+          : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async getQuotationsToday(tokenSv: string) {
     try {
       const responseQuotations = await axios.get(`${this.URL_BACK_SV}/quotation/get-today`, {
