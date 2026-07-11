@@ -1,4 +1,4 @@
-import { Inject, Injectable, forwardRef } from "@nestjs/common";
+import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { OpportunityService } from "src/opportunity/opportunity.service";
 import { SvServices } from "src/sv-services/sv.services";
@@ -18,6 +18,7 @@ const MAX_QUOTATIONS_PER_RUN = 500;
 @Injectable()
 export class OpportunitiesClosersCronsService {
 
+  private readonly logger = new Logger(OpportunitiesClosersCronsService.name);
   private readonly URL_FRONT = getManagerLeadsBaseUrl(process.env.URL_FRONT_MANAGER_LEADS);
 
   constructor(
@@ -31,10 +32,10 @@ export class OpportunitiesClosersCronsService {
 
   /**
    * Red de seguridad: el webhook notifyQuotationCreated (SV → CRM) cubre el
-   * caso principal en tiempo real. Este cron corre cada 15 min como respaldo
+   * caso principal en tiempo real. Este cron corre cada 5 min como respaldo
    * para cotizaciones que el webhook no pudo reportar (caída de red, etc.).
    */
-  @Cron('0 */15 9-21 * * *')
+  @Cron('*/5 9-21 * * *')
   async loopAddQuotationQueue() {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     let list: { id: number | string; name: string; history: string }[] = [];
@@ -65,7 +66,12 @@ export class OpportunitiesClosersCronsService {
         quotation.history,
         'system',
       );
-      if (!gestiónOpp) continue;
+      if (!gestiónOpp) {
+        this.logger.warn(
+          `loopAddQuotationQueue: cotización ${quotation.id} (HC ${quotation.history}) no se pudo encolar — sin oportunidad de gestión resuelta`,
+        );
+        continue;
+      }
 
       await this.addOpportunityToQueue({
         name: quotation.name,
@@ -104,6 +110,9 @@ export class OpportunitiesClosersCronsService {
       'system',
     );
     if (!gestiónOpp) {
+      this.logger.warn(
+        `notifyQuotationCreated: cotización ${payload.quotationId} (HC ${history}) no se pudo encolar — sin oportunidad de gestión resuelta (el cron de respaldo lo reintentará)`,
+      );
       return { status: 'skipped', reason: 'No se pudo resolver oportunidad de gestión para la HC' };
     }
 

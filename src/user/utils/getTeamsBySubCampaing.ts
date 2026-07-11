@@ -15,7 +15,8 @@ export const getTeamsBySubCampaing = (subCampaignId: string): string[] => {
     ];
   }
   if(subCampaignId === CAMPAIGNS_IDS.APNEA){
-    return [TEAMS_IDS.EJ_COMERCIAL_APNEA, TEAMS_IDS.TEAM_AREQUIPA];
+    // Solo el pool explícito Apnea; sede se resuelve por equipos regionales del usuario.
+    return [TEAMS_IDS.EJ_COMERCIAL_APNEA];
   }
   
   return [];

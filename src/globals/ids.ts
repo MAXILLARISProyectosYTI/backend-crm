@@ -10,6 +10,7 @@ export const ROLES_IDS = {
   CONTROLES_LIMA: '19d6e050866ecbd5b',
   CONTROLES_AREQUIPA: '19d6e050866ecbd5c',
   CONTROLES_TRUJILLO: '19d6e050866ecbd5d',
+  EJECUTIVO_COMERCIAL_APNEA: '6894ef4c093f180e0',
 } as const;
 
 /** Solo con uno de estos roles (y resto de filtros), match-sv-username responde true. */
@@ -60,6 +61,18 @@ export const SUB_CAMPAIGN_NAMES: Record<string, string> = {
   [CAMPAIGNS_IDS.OFM]: 'OFM',
   [CAMPAIGNS_IDS.APNEA]: 'APNEA',
 }
+
+/** IDs de sede en SV (fallback si no hay token SV). */
+export const CAMPUS_NAMES: Record<number, string> = {
+  1: 'Lima',
+  15: 'Arequipa',
+  16: 'Trujillo',
+}
+
+/** Rol CRM para ejecutivos en cola APNEA (nombre en tabla role). */
+export const ROLE_NAMES = {
+  EJECUTIVO_COMERCIAL_APNEA: 'ejecutivo_comercial_apnea',
+} as const;
 
 export const USERS_ID = {
   CRISTIAN_APNEA: '68aca6a8c35e7ddfc',

@@ -10,7 +10,7 @@ import { Opportunity } from '../opportunity/opportunity.entity';
 import { getTeamsBySubCampaing } from './utils/getTeamsBySubCampaing';
 import { orderListAlphabetic } from './utils/orderListAlphabetic';
 import { UserWithTeam } from './dto/user-with-team';
-import { CAMPAIGNS_IDS, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
+import { CAMPAIGNS_IDS, CAMPUS_NAMES, ROLES_IDS, SUB_CAMPAIGN_NAMES, TEAMS_IDS } from '../globals/ids';
 import { OpportunityService } from 'src/opportunity/opportunity.service';
 import { getNextUser } from './utils/getNextUser';
 import { TeamUserService } from 'src/team-user/team-user.service';
@@ -563,6 +563,39 @@ export class UserService {
     return this.getUsersBySubCampaignIdAndCampusId(subCampaignId, undefined);
   }
 
+  private async filterUsersForApneaQueue(
+    users: User[],
+    campusId?: number,
+  ): Promise<User[]> {
+    const apneaTeamRows = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL_APNEA]);
+    const apneaUserIds = new Set(apneaTeamRows.map((row) => row.user_id));
+
+    let candidates = users.filter((user) => apneaUserIds.has(user.id));
+
+    if (campusId == null) {
+      return orderListAlphabetic(candidates);
+    }
+
+    // El pool APNEA es global; en campus_team solo figura bajo Lima.
+    // La sede se determina por equipos regionales (Michell, Verónica, Arequipa, Trujillo, etc.).
+    const campusTeamIds = (await this.campusTeamService.getTeamIdsByCampusId(campusId)).filter(
+      (teamId) => teamId !== TEAMS_IDS.EJ_COMERCIAL_APNEA,
+    );
+    if (campusTeamIds.length === 0) {
+      return [];
+    }
+
+    const byCampus: User[] = [];
+    for (const user of candidates) {
+      const userTeams = await this.getAllTeamsByUser(user.id);
+      if (userTeams.some((team) => campusTeamIds.includes(team.team_id))) {
+        byCampus.push(user);
+      }
+    }
+
+    return orderListAlphabetic(byCampus);
+  }
+
   /**
    * IDs de equipos permitidos para una sede y subcampaña.
    * Intersección de equipos de la subcampaña con los de la sede.
@@ -572,6 +605,10 @@ export class UserService {
     campusId: number,
     subCampaignId: string,
   ): Promise<string[]> {
+    if (subCampaignId === CAMPAIGNS_IDS.APNEA) {
+      return [TEAMS_IDS.EJ_COMERCIAL_APNEA];
+    }
+
     let teams = getTeamsBySubCampaing(subCampaignId);
     if (teams.length === 0) return [];
     const campusTeamIds = await this.campusTeamService.getTeamIdsByCampusId(campusId);
@@ -600,6 +637,10 @@ export class UserService {
   async getUsersBySubCampaignIdAndCampusId(subCampaignId: string, campusId?: number): Promise<User[]> {
     const usersActives = await this.getUsersToAssign();
     if (usersActives.length === 0) return [];
+
+    if (subCampaignId === CAMPAIGNS_IDS.APNEA) {
+      return this.filterUsersForApneaQueue(usersActives, campusId);
+    }
 
     let teams = getTeamsBySubCampaing(subCampaignId);
     if (teams.length === 0) {
@@ -645,9 +686,17 @@ export class UserService {
         case CAMPAIGNS_IDS.OFM:
           listUsersDefault = await this.getUserByAllTeams([TEAMS_IDS.TEAM_LEADERS_COMERCIALES]);
           break;
-        case CAMPAIGNS_IDS.APNEA:
-          listUsersDefault = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL_APNEA]);
-          break;
+        case CAMPAIGNS_IDS.APNEA: {
+          const apneaRows = await this.getUserByAllTeams([TEAMS_IDS.EJ_COMERCIAL_APNEA]);
+          const apneaUsers = await this.userRepository.find({
+            where: { id: In(apneaRows.map((row) => row.user_id)), deleted: false },
+          });
+          const filtered = await this.filterUsersForApneaQueue(apneaUsers, campusId);
+          if (filtered.length === 0) {
+            throw new BadRequestException('NO_USUARIOS_PARA_ASIGNAR');
+          }
+          return filtered[Math.floor(Math.random() * filtered.length)];
+        }
         default:
           throw new BadRequestException('Subcampaña no reconocida para asignación por defecto')
       }
@@ -860,6 +909,19 @@ export class UserService {
     const subCampaignIds = [CAMPAIGNS_IDS.OI, CAMPAIGNS_IDS.OFM, CAMPAIGNS_IDS.APNEA];
     const sedes: SedeAssignmentDto[] = [];
 
+    let campusNameById = new Map<number, string>(
+      Object.entries(CAMPUS_NAMES).map(([id, name]) => [Number(id), name]),
+    );
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const campuses = await this.svServices.getCampuses(tokenSv);
+      for (const campus of campuses) {
+        campusNameById.set(campus.id, campus.name);
+      }
+    } catch {
+      // Fallback: CAMPUS_NAMES
+    }
+
     for (const campusId of campusIds) {
       const campañas: CampañaEnSedeDto[] = [];
 
@@ -935,7 +997,11 @@ export class UserService {
         });
       }
 
-      sedes.push({ campusId, campañas });
+      sedes.push({
+        campusId,
+        campusName: campusNameById.get(campusId),
+        campañas,
+      });
     }
 
     return { sedes };

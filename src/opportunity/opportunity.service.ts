@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, In, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
@@ -44,6 +44,7 @@ import { ReferralLineageService } from 'src/referral-lineage/referral-lineage.se
 @Injectable()
 export class OpportunityService {
 
+  private readonly logger = new Logger(OpportunityService.name);
   private readonly URL_FRONT_MANAGER_LEADS = process.env.URL_FRONT_MANAGER_LEADS;
   private readonly URL_FILES = process.env.URL_DOWNLOAD_FILES;
   
@@ -2936,8 +2937,20 @@ export class OpportunityService {
 
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
+
+      // Ruta 1: buscar por vínculo clinic_history_crm (espo_id → patient_id)
       const chCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
-      const patientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+      let patientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+
+      // Ruta 2: si c_clinic_history es un ID numérico puro (bug de datos heredados),
+      // usarlo directamente como patient_id en SV para resolver el código real.
+      if ((!Number.isFinite(patientId) || patientId <= 0) && existing) {
+        const numericId = Number(existing);
+        if (Number.isFinite(numericId) && numericId > 0) {
+          patientId = numericId;
+        }
+      }
+
       if (!Number.isFinite(patientId) || patientId <= 0) return null;
 
       const patient = await this.svServices.getClinicHistoryById(patientId, tokenSv);
@@ -2962,21 +2975,43 @@ export class OpportunityService {
     const code = hcCode?.trim();
     if (!code) return null;
 
-    const byHc = await this.getOpportunityByClinicHistory(code);
-    if (byHc.length > 0) {
-      return byHc.sort((a, b) => {
+    const pickLatestOpportunity = (rows: Opportunity[]) =>
+      rows.sort((a, b) => {
         const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return tb - ta;
       })[0];
+
+    const byHc = await this.getOpportunityByClinicHistory(code);
+    if (byHc.length > 0) {
+      return pickLatestOpportunity(byHc);
     }
 
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
       const patient = await this.svServices.getPatientByClinicHistory(code, tokenSv);
       const patientId = Number(patient?.ch_id ?? patient?.id);
+
+      // Fallback: oportunidades con c_clinic_history = id numérico SV (ej. "15389" en vez de MX123-…)
+      if (Number.isFinite(patientId) && patientId > 0) {
+        const byNumericHc = await this.getOpportunityByClinicHistory(String(patientId));
+        if (byNumericHc.length > 0) {
+          const best = pickLatestOpportunity(byNumericHc);
+          if (!OpportunityService.isValidHcCode(best.cClinicHistory)) {
+            await this.update(best.id, { cClinicHistory: code }, userId);
+            best.cClinicHistory = code;
+          }
+          return best;
+        }
+      }
+
       const phone = String(patient?.cellphone ?? patient?.phone ?? '').trim();
-      if (!Number.isFinite(patientId) || patientId <= 0 || !phone) return null;
+      if (!Number.isFinite(patientId) || patientId <= 0 || !phone) {
+        this.logger.warn(
+          `findOrSyncGestiónOpportunityByHc(${code}): sin oportunidad por HC/id numérico y sin teléfono válido para buscar por candidatos (patientId=${patientId}, phone="${phone}")`,
+        );
+        return null;
+      }
 
       const candidates = await this.getAllOpportunitiesByPhone(phone);
       for (const candidate of candidates) {
@@ -2991,11 +3026,23 @@ export class OpportunityService {
             candidate.cClinicHistory = code;
           }
           return candidate;
-        } catch {
+        } catch (candidateError: any) {
+          this.logger.warn(
+            `findOrSyncGestiónOpportunityByHc(${code}): error verificando candidato ${candidate.id} por teléfono`,
+            candidateError?.message ?? candidateError,
+          );
           continue;
         }
       }
-    } catch {
+
+      this.logger.warn(
+        `findOrSyncGestiónOpportunityByHc(${code}): no se encontró oportunidad de gestión (patientId=${patientId}, ${candidates.length} candidatos por teléfono revisados)`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `findOrSyncGestiónOpportunityByHc(${code}): excepción no controlada resolviendo oportunidad de gestión`,
+        error?.message ?? error,
+      );
       return null;
     }
 

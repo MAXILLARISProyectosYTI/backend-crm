@@ -259,6 +259,95 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     return await this.opportunitiesClosersRepository.save(opportunity);
   }
 
+  /**
+   * Al buscar en Cerradoras, trae cotizaciones del SV que aún no están encoladas
+   * (antes solo corría cuando el CRM no tenía ningún resultado).
+   */
+  private async syncMissingQuotationsFromSvSearch(
+    search: string,
+    assignedToUserId: string,
+    crmTotalBeforeSync: number,
+  ): Promise<{
+    inserted: number;
+    skippedExists: number;
+    searchFallbackCotizacionIds?: string[];
+  }> {
+    this.logger.log(
+      `[syncMissingQuotationsFromSvSearch] search="${search}", assignedToUserId=${assignedToUserId}, crmTotalBefore=${crmTotalBeforeSync}`,
+    );
+    const token = await this.svServices.getTokenSvAdmin();
+    const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search);
+    this.logger.log(
+      `[syncMissingQuotationsFromSvSearch] SV: cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`,
+    );
+
+    const byQuotationId = new Map<string, (typeof resultsFromSv)[0]>();
+    for (const item of resultsFromSv) {
+      const key = String(item.id);
+      if (!byQuotationId.has(key)) byQuotationId.set(key, item);
+    }
+
+    let inserted = 0;
+    let skippedExists = 0;
+    let skippedBadQuotationId = 0;
+    let skippedNoGestion = 0;
+
+    for (const item of byQuotationId.values()) {
+      const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
+      if (Number.isNaN(quotationId)) {
+        skippedBadQuotationId++;
+        continue;
+      }
+      const exists = await this.existsOpportunityCloserByQuotationId(String(item.id), item.history);
+      if (exists) {
+        skippedExists++;
+        continue;
+      }
+
+      const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
+        item.history,
+        assignedToUserId ?? 'system',
+      );
+      if (!gestiónOpp) {
+        skippedNoGestion++;
+        this.logger.warn(
+          `[syncMissingQuotationsFromSvSearch] Sin oportunidad de gestión para HC=${item.history}, cotizacionId=${item.id}`,
+        );
+        continue;
+      }
+
+      const payload = {
+        assignedUserId: assignedToUserId,
+        name: item.name,
+        status: statesCRM.PENDIENTE,
+        hCPatient: item.history,
+        opportunityId: gestiónOpp.id,
+        cotizacionId: String(quotationId),
+      };
+      const create = await this.createOpportunityCloser(payload);
+      const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
+      await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
+      inserted++;
+      this.logger.log(
+        `[syncMissingQuotationsFromSvSearch] Encolada cotizacionId=${item.id} → closerId=${create.id}`,
+      );
+    }
+
+    let searchFallbackCotizacionIds: string[] | undefined;
+    if (inserted === 0 && skippedExists > 0 && crmTotalBeforeSync === 0) {
+      searchFallbackCotizacionIds = [...byQuotationId.keys()];
+      this.logger.log(
+        `[syncMissingQuotationsFromSvSearch] Fallback por cotizacion_id: ${searchFallbackCotizacionIds.join(', ')}`,
+      );
+    }
+
+    this.logger.log(
+      `[syncMissingQuotationsFromSvSearch] Resumen: insertados=${inserted}, ya_en_cola=${skippedExists}, sin_gestion=${skippedNoGestion}, id_invalido=${skippedBadQuotationId}`,
+    );
+
+    return { inserted, skippedExists, searchFallbackCotizacionIds };
+  }
+
   async findAll(
     page: number = 1,
     limit: number = 10,
@@ -366,66 +455,19 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     let entities: OpportunitiesClosers[];
     let raw: any[];
 
-    if (search?.trim() && total === 0 && assignedToUserId) {
+    if (search?.trim() && assignedToUserId) {
       try {
-        this.logger.log(`[findAll] Info que llega: search="${search?.trim()}", page=${page}, limit=${limit}, assignedToUserId=${assignedToUserId}`);
-        const token = await this.svServices.getTokenSvAdmin();
-        const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search.trim());
-        this.logger.log(`[findAll] Respuesta SV (raw): cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`);
-        const byQuotationId = new Map<string, typeof resultsFromSv[0]>();
-        for (const item of resultsFromSv) {
-          const key = String(item.id);
-          if (!byQuotationId.has(key)) byQuotationId.set(key, item);
+        const syncResult = await this.syncMissingQuotationsFromSvSearch(
+          search.trim(),
+          assignedToUserId,
+          total,
+        );
+        if (syncResult.searchFallbackCotizacionIds?.length) {
+          searchFallbackCotizacionIds = syncResult.searchFallbackCotizacionIds;
         }
-        this.logger.log(`[findAll] Después de dedup por cotizacion_id: cantidad=${byQuotationId.size}`);
-        let inserted = 0;
-        let skippedExists = 0;
-        let skippedBadQuotationId = 0;
-        for (const item of byQuotationId.values()) {
-          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
-          if (Number.isNaN(quotationId)) {
-            skippedBadQuotationId++;
-            this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
-            continue;
-          }
-          const exists = await this.existsOpportunityCloserByQuotationId(
-            String(item.id),
-            item.history,
-          );
-          if (exists) {
-            skippedExists++;
-            this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
-            continue;
-          }
-          const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
-            item.history,
-            assignedToUserId ?? 'system',
-          );
-          const opportunityId = gestiónOpp?.id;
-          this.logger.log(`[findAll] Asignación: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
-          const payload = {
-            assignedUserId: assignedToUserId,
-            name: item.name,
-            status: statesCRM.PENDIENTE,
-            hCPatient: item.history,
-            ...(opportunityId && { opportunityId }),
-            cotizacionId: String(quotationId),
-          };
-          this.logger.log(`[findAll] Guardado (payload): ${JSON.stringify(payload)}`);
-          const create = await this.createOpportunityCloser(payload);
-          this.logger.log(`[findAll] Guardado (resultado create): id=${create.id}, cotizacionId=${create.cotizacionId}, assignedUserId=${create.assignedUserId}`);
-          const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
-          await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
-          inserted++;
+        if (syncResult.inserted > 0 || syncResult.searchFallbackCotizacionIds?.length) {
+          total = await buildQuery().getCount();
         }
-        if (inserted === 0 && skippedExists > 0) {
-          searchFallbackCotizacionIds = [...byQuotationId.keys()];
-          this.logger.log(
-            `[findAll] Cotizaciones ya en cola pero sin match por nombre; fallback por cotizacion_id: ${searchFallbackCotizacionIds.join(', ')}`,
-          );
-        }
-        total = await buildQuery().getCount();
-        this.logger.log(`[findAll] Resumen: insertados=${inserted}, omitidos_ya_en_cola=${skippedExists}, omitidos_cotizacion_id_inválido=${skippedBadQuotationId}, total después de insertar: ${total}`);
       } catch (err) {
         this.logger.warn(`[findAll] Error al obtener SV o insertar: ${err instanceof Error ? err.message : String(err)}`);
       }
