@@ -122,6 +122,14 @@ export class RoleService {
     return roleUsers.map(ru => ru.userId).filter((id): id is string => Boolean(id));
   }
 
+  /** Busca rol activo por nombre exacto (ej. ejecutivo_comercial_apnea). */
+  async findIdByName(name: string): Promise<string | null> {
+    const role = await this.roleRepository.findOne({
+      where: { name, deleted: false },
+    });
+    return role?.id ?? null;
+  }
+
   async getRolesByUser(userId: string): Promise<string[]> {
     const userRoles = await this.roleUserRepository.find({
       where: { userId, deleted: false },
