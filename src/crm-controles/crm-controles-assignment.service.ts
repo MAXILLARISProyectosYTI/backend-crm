@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { User } from 'src/user/user.entity';
 import { SvServices } from 'src/sv-services/sv.services';
 import { AssignmentQueueStateService } from 'src/assignment-queue-state/assignment-queue-state.service';
+import { filterEligibleCrmControlesPatients } from './crm-controles-eligibility';
 import { RoleService } from 'src/role/role.service';
 import { NotificacionesGateway } from 'src/notificaciones/notificaciones.gateway';
 import { NotificacionesService } from 'src/notificaciones/notificaciones.service';
@@ -36,7 +37,10 @@ export class CrmControlesAssignmentService {
   ) {}
 
   async autoAssignFromPatients(patients: Record<string, unknown>[]): Promise<void> {
-    const unassigned = patients.filter(
+    const eligible = filterEligibleCrmControlesPatients(
+      patients as Record<string, unknown>[],
+    );
+    const unassigned = eligible.filter(
       (p) => !p['ejecutivo_controles'] || String(p['ejecutivo_controles']).trim() === '',
     );
 

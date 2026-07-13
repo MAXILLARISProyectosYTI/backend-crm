@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { DateTime } from "luxon";
 import { OpportunityService } from "src/opportunity/opportunity.service";
 import { SvServices } from "src/sv-services/sv.services";
 import { BodyAddOpportunityToQueueDto } from "./dto/queue-assignment-closers";
@@ -40,10 +41,16 @@ export class OpportunitiesClosersCronsService {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     let list: { id: number | string; name: string; history: string }[] = [];
 
+    // Solo respalda cotizaciones recientes (el webhook cubre lo instantáneo);
+    // acota el rango para no traer cada 5 min las 500 cotizaciones más
+    // recientes de todo el sistema sin filtro.
+    const dateFrom = DateTime.now().setZone('America/Lima').minus({ days: 2 }).toFormat('yyyy-MM-dd');
+
     try {
       const res = await this.svServices.getQuotationsAll(tokenSv, {
         page: 1,
         limit: MAX_QUOTATIONS_PER_RUN,
+        dateFrom,
       });
       list = res.data ?? [];
     } catch {
