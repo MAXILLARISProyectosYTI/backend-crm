@@ -10,6 +10,7 @@ import type {
   CrmControlesPatientRow,
   CrmControlesPacientesResponse,
 } from './crm-controles.types';
+import { filterEligibleCrmControlesPatients, isEligibleCrmControlesPatient } from './crm-controles-eligibility';
 import { OiSvInvoiceService } from '../commissions/services/oi-sv-invoice.service';
 
 @Injectable()
@@ -90,7 +91,8 @@ export class CrmControlesService implements OnModuleInit {
   }
 
   getSnapshot(): CrmControlesPacientesResponse {
-    const data = this.patients.map((p) => {
+    const eligible = filterEligibleCrmControlesPatients(this.patients);
+    const data = eligible.map((p) => {
       const chId = Number(p.id_historia_clinica);
       const override = this.estadoFunnelOverrides.get(chId);
       return override ? { ...p, estado_funnel_override: override } : p;
@@ -145,7 +147,13 @@ export class CrmControlesService implements OnModuleInit {
   async syncSinglePatient(clinicHistoryId: number): Promise<CrmControlesPatientRow | null> {
     const { tokenSv } = await this.svServices.getTokenSvAdmin();
     const row = await this.svServices.getCrmControlesSinglePatientFromSv(tokenSv, clinicHistoryId);
-    if (!row) return null;
+    if (!row || !isEligibleCrmControlesPatient(row as CrmControlesPatientRow)) {
+      const idx = this.patients.findIndex(
+        (p) => Number(p.id_historia_clinica) === clinicHistoryId,
+      );
+      if (idx >= 0) this.patients.splice(idx, 1);
+      return null;
+    }
 
     const idx = this.patients.findIndex(
       (p) => Number(p.id_historia_clinica) === clinicHistoryId,
@@ -163,9 +171,12 @@ export class CrmControlesService implements OnModuleInit {
     try {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
       const rows = await this.svServices.getCrmControlesPatientsFromSv(tokenSv);
-      this.patients = Array.isArray(rows) ? rows : [];
+      const all = Array.isArray(rows) ? rows : [];
+      this.patients = filterEligibleCrmControlesPatients(all as CrmControlesPatientRow[]);
       this.meta = { lastSyncAt: new Date().toISOString(), lastError: null, source: 'sv' };
-      this.logger.log(`CRM Controles pacientes: ${this.patients.length} sincronizados`);
+      this.logger.log(
+        `CRM Controles pacientes: ${this.patients.length} elegibles (${all.length} desde SV)`,
+      );
       // Genera notificaciones reales a partir de los datos frescos
       if (this.notifService) {
         void this.notifService.generateFromPatients(this.patients).catch((e) =>
