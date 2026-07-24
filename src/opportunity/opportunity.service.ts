@@ -3012,14 +3012,14 @@ export class OpportunityService {
 
       // Ruta 2: si c_clinic_history es un ID numérico puro (bug de datos heredados),
       // usarlo directamente como patient_id en SV para resolver el código real.
-      if ((!Number.isFinite(patientId) || patientId <= 0) && existing) {
+      if ((patientId == null || !Number.isFinite(patientId) || patientId <= 0) && existing) {
         const numericId = Number(existing);
         if (Number.isFinite(numericId) && numericId > 0) {
           patientId = numericId;
         }
       }
 
-      if (!Number.isFinite(patientId) || patientId <= 0) return null;
+      if (patientId == null || !Number.isFinite(patientId) || patientId <= 0) return null;
 
       const patient = await this.svServices.getClinicHistoryById(patientId, tokenSv);
       const hcCode = patient?.history?.trim();
