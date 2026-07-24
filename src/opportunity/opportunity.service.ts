@@ -40,6 +40,7 @@ import { AssignmentQueueStateService } from '../assignment-queue-state/assignmen
 import { CampusItem } from 'src/sv-services/campus.types';
 import { OpportunityDerivation } from 'src/opportunity-derivation/opportunity-derivation.entity';
 import { ReferralLineageService } from 'src/referral-lineage/referral-lineage.service';
+import { createHash } from 'crypto';
 
 @Injectable()
 export class OpportunityService {
@@ -96,6 +97,41 @@ export class OpportunityService {
   private static isValidHcCode(hc: string | null | undefined): boolean {
     if (!hc?.trim()) return false;
     return /[a-zA-Z]/.test(hc.trim());
+  }
+
+  /** Resuelve código HC real en SV a partir del id numérico de clinic_history. */
+  private async resolveHcCodeFromPatientId(patientId: number): Promise<string | null> {
+    if (!Number.isFinite(patientId) || patientId <= 0) return null;
+    try {
+      const { tokenSv } = await this.svServices.getTokenSvAdmin();
+      const patient = await this.svServices.getClinicHistoryById(patientId, tokenSv);
+      const hcCode = patient?.history?.trim();
+      return OpportunityService.isValidHcCode(hcCode) ? hcCode! : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Normaliza cClinicHistory antes de guardar: rechaza IDs numéricos heredados
+   * del calendario y los reemplaza por el código HC real desde SV.
+   */
+  private async sanitizeClinicHistoryForSave(
+    opportunityId: string,
+    proposedHc: string | undefined | null,
+    userId?: string,
+  ): Promise<string | undefined> {
+    const hc = proposedHc?.trim();
+    if (!hc) return undefined;
+    if (OpportunityService.isValidHcCode(hc)) return hc;
+
+    const numericId = Number(hc);
+    if (Number.isFinite(numericId) && numericId > 0) {
+      const fromId = await this.resolveHcCodeFromPatientId(numericId);
+      if (fromId) return fromId;
+    }
+
+    return (await this.syncClinicHistoryFromSvIfMissing(opportunityId, userId ?? 'system')) ?? undefined;
   }
 
   /** Resuelve el ID del ejecutivo asignado (relación User o string crudo). */
@@ -1436,6 +1472,19 @@ export class OpportunityService {
         (updateData as any)[key] = value;
       }
     });
+
+    if (updateData.cClinicHistory !== undefined) {
+      const sanitizedHc = await this.sanitizeClinicHistoryForSave(
+        id,
+        updateData.cClinicHistory as string,
+        userId,
+      );
+      if (sanitizedHc) {
+        updateData.cClinicHistory = sanitizedHc;
+      } else {
+        delete updateData.cClinicHistory;
+      }
+    }
     
     // cSeguimientocliente y stage son independientes - se pueden cambiar por separado
     // El campo cSeguimientocliente (Sin Seguimiento / En seguimiento) se controla con el botón "Reaccionar"
@@ -1935,6 +1984,14 @@ export class OpportunityService {
 
     if(!opportunity){
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
+    }
+
+    if (!OpportunityService.isValidHcCode(opportunity.cClinicHistory)) {
+      const synced = await this.syncClinicHistoryFromSvIfMissing(
+        id,
+        this.resolveAssignedUserId(opportunity.assignedUserId) || 'system',
+      );
+      if (synced) opportunity.cClinicHistory = synced;
     }
 
     return opportunity;
@@ -2628,7 +2685,13 @@ export class OpportunityService {
   
       if (Object.keys(payloadUpdateClinicHistoryCrm).length > 0) {
         console.log('[updateOpportunityWithFacturas] Actualizando clinicHistoryCrm en SV', payloadUpdateClinicHistoryCrm);
-        await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, payloadUpdateClinicHistoryCrm);
+        const svLinkKey = `update-sv-link:${opportunityId}:${createHash('sha256').update(JSON.stringify(payloadUpdateClinicHistoryCrm)).digest('hex')}`;
+        await this.svServices.updateClinicHistoryCrm(
+          opportunityId,
+          tokenSv,
+          payloadUpdateClinicHistoryCrm,
+          svLinkKey,
+        );
         console.log('[updateOpportunityWithFacturas] clinicHistoryCrm actualizado en SV');
       } else {
         console.log('[updateOpportunityWithFacturas] Sin campos para actualizar en clinicHistoryCrm, se omite');
@@ -2939,25 +3002,33 @@ export class OpportunityService {
       const { tokenSv } = await this.svServices.getTokenSvAdmin();
 
       // Ruta 1: buscar por vínculo clinic_history_crm (espo_id → patient_id)
-      const chCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
-      let patientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+      let patientId: number | undefined;
+      try {
+        const chCrm = await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv);
+        patientId = Number(chCrm?.patientId ?? chCrm?.patient_id);
+      } catch {
+        // Sin vínculo SV aún; seguir con fallback numérico
+      }
 
       // Ruta 2: si c_clinic_history es un ID numérico puro (bug de datos heredados),
       // usarlo directamente como patient_id en SV para resolver el código real.
-      if ((!Number.isFinite(patientId) || patientId <= 0) && existing) {
+      if ((patientId == null || !Number.isFinite(patientId) || patientId <= 0) && existing) {
         const numericId = Number(existing);
         if (Number.isFinite(numericId) && numericId > 0) {
           patientId = numericId;
         }
       }
 
-      if (!Number.isFinite(patientId) || patientId <= 0) return null;
+      if (patientId == null || !Number.isFinite(patientId) || patientId <= 0) return null;
 
       const patient = await this.svServices.getClinicHistoryById(patientId, tokenSv);
       const hcCode = patient?.history?.trim();
       if (!OpportunityService.isValidHcCode(hcCode)) return null;
 
-      await this.update(opportunityId, { cClinicHistory: hcCode }, userId);
+      await this.opportunityRepository.update(
+        { id: opportunityId },
+        { cClinicHistory: hcCode, modifiedAt: new Date() },
+      );
       return hcCode!;
     } catch {
       return null;
@@ -3139,6 +3210,22 @@ export class OpportunityService {
           opportunity.assignedUserId?.id ?? 'system',
         );
         if (syncedHc) opportunity.cClinicHistory = syncedHc;
+      }
+    }
+
+    if (effectiveOiDerived) {
+      const sedeId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? 1;
+      const expectedUrl = this.buildManagerLeadsUrl(
+        opportunity.assignedUserId,
+        opportunityId,
+        { isOiFlow: true, sedeId: sedeId ?? 1 },
+      );
+      if (opportunity.cConctionSv !== expectedUrl) {
+        await this.opportunityRepository.update(
+          { id: opportunityId },
+          { cConctionSv: expectedUrl, modifiedAt: new Date() },
+        );
+        opportunity.cConctionSv = expectedUrl;
       }
     }
 

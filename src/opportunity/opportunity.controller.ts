@@ -20,6 +20,7 @@ import {
   Req,
   Headers,
   UnauthorizedException,
+  ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { OpportunityService } from './opportunity.service';
@@ -50,6 +51,9 @@ import { CreateOpportunityPresaveDto } from './dto/opportunity-presave.dto';
 import { ContractPresaveService } from './contract-presave.service';
 import { CreateContractPresaveDto } from './dto/contract-presave.dto';
 import type { OpportunityViewMode } from 'src/user/commercial-scope.service';
+import { CrmAgendaTransactionSvService } from 'src/crm-agenda-transaction/crm-agenda-transaction-sv.service';
+import { CRM_AGENDA_HEADERS, CrmAgendaTransactionStep } from 'src/crm-agenda-transaction/crm-agenda-transaction.constants';
+import { getCrmAgendaContext } from 'src/crm-agenda-transaction/crm-agenda-correlation.middleware';
 
 @UseGuards(JwtAuthGuard)
 @Controller('opportunity')
@@ -66,6 +70,7 @@ export class OpportunityController {
     private readonly campusCoordinatesService: CampusCoordinatesService,
     private readonly opportunityPresaveService: OpportunityPresaveService,
     private readonly contractPresaveService: ContractPresaveService,
+    private readonly crmAgendaTransactionService: CrmAgendaTransactionSvService,
   ) {}
 
   @Public()          
@@ -594,13 +599,47 @@ export class OpportunityController {
   async updateOpportunityWithProcces(
     @Param('id') id: string, 
     @Body() body: UpdateOpportunityProcces,
-    @Req() req: Request & { user: { userId: string; userName: string } }
+    @Req() req: Request & { user: { userId: string; userName: string } },
+    @Headers(CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY) idempotencyKey?: string,
   ) {
     const userId = req.user.userId;
-    console.log('body', body);
-    console.log('id', id);
-    console.log('userId', userId);
-    return this.opportunityService.updateOpportunityWithFacturas(id, body, userId);
+    const ctx = getCrmAgendaContext();
+    const correlationId =
+      ctx?.correlationId ?? this.crmAgendaTransactionService.resolveCorrelationId();
+    const key =
+      idempotencyKey?.trim() ||
+      `sync-crm:${id}:${this.crmAgendaTransactionService.buildRequestHash(body)}`;
+
+    try {
+      const result = await this.crmAgendaTransactionService.executeIdempotent({
+        correlationId,
+        idempotencyKey: key,
+        espoId: id,
+        step: CrmAgendaTransactionStep.SYNC_CRM,
+        requestPayload: body,
+        handler: () => this.opportunityService.updateOpportunityWithFacturas(id, body, userId),
+        extractIds: () => ({
+          reservationId: body.reservationId ?? null,
+          paymentId: null,
+          patientId: null,
+        }),
+      });
+
+      return {
+        ...result.data,
+        _transaction: {
+          correlationId: result.correlationId,
+          idempotencyKey: result.idempotencyKey,
+          replayed: result.replayed,
+        },
+      };
+    } catch (error: unknown) {
+      const err = error as { status?: number; response?: unknown; message?: string };
+      if (err.status === 409) {
+        throw new ConflictException(err.response ?? { message: err.message });
+      }
+      throw error;
+    }
   }
 
   @Get('patient-sv/:id')
