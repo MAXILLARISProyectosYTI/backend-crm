@@ -33,6 +33,7 @@ import { OpportunityDerivationModule } from './opportunity-derivation/opportunit
 import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
 import { CommissionsModule } from './commissions/commissions.module';
 import { ReferralCashbackModule } from './referral-cashback/referral-cashback.module';
+import { CrmAgendaTransactionModule } from './crm-agenda-transaction/crm-agenda-transaction.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { ReferralCashbackModule } from './referral-cashback/referral-cashback.mo
       isGlobal: true,
       load: [databaseConfig, svDatabaseConfig],
     }),
+    CrmAgendaTransactionModule,
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService): TypeOrmModuleOptions => {
