@@ -4180,11 +4180,56 @@ export class CommissionsDataService {
     let svError: string | null = null;
     const campusIds = campusId != null ? this.commissionCampusCandidates(campusId) : null;
 
+    // Build CRM-derived patient_id→ejecutivo map for eva_asist attribution (opportunity-based).
+    let crmExecMap: Array<{ patient_id: number; ejecutivo: string }> = [];
+    try {
+      const chcEspoRows = await this.oiSvInvoiceService.queryClinicHistoryCrmEspoMap();
+      const espoIds = [...new Set(chcEspoRows.map((r) => r.espo_id).filter(Boolean))];
+      if (espoIds.length > 0) {
+        const crmRows: Array<{ id: string; sv_username: string }> = await this.dataSource.query(
+          `SELECT o.id,
+                  LOWER(COALESCE(NULLIF(TRIM(u.c_usersv), ''), NULLIF(TRIM(u.user_name), ''), '')) AS sv_username
+           FROM opportunity o
+           INNER JOIN "user" u ON u.id = o.assigned_user_id
+           WHERE o.id = ANY($1::text[])
+             AND o.assigned_user_id IS NOT NULL`,
+          [espoIds],
+        );
+        const espoToSvUser = new Map(crmRows.map((r) => [r.id, r.sv_username]));
+        crmExecMap = chcEspoRows
+          .map((r) => ({
+            patient_id: Number(r.patient_id),
+            ejecutivo: espoToSvUser.get(r.espo_id) ?? '',
+          }))
+          .filter((r) => r.ejecutivo && r.patient_id > 0);
+      }
+    } catch (mapErr) {
+      this.logger.warn(
+        `Call Center CRM exec map falló: ${mapErr instanceof Error ? mapErr.message : mapErr}`,
+      );
+    }
+
+    // Build SV username → CRM username map for eval SO creator translation (tto attribution).
+    let svUserMap: Array<{ sv_username: string; crm_username: string }> = [];
+    try {
+      svUserMap = await this.dataSource.query(
+        `SELECT LOWER(TRIM(c_usersv)) AS sv_username, LOWER(TRIM(user_name)) AS crm_username
+         FROM "user"
+         WHERE c_usersv IS NOT NULL AND TRIM(c_usersv) <> '' AND deleted = false`,
+      );
+    } catch (svMapErr) {
+      this.logger.warn(
+        `Call Center SV→CRM user map falló: ${svMapErr instanceof Error ? svMapErr.message : svMapErr}`,
+      );
+    }
+
     try {
       const dbRows = await this.oiSvInvoiceService.queryCallCenterMetricsRows(
         start,
         end,
         campusIds,
+        crmExecMap,
+        svUserMap,
       );
       if (dbRows.length > 0) {
         return { rows: dbRows, source: 'sv-invoice-db', svError: null };
