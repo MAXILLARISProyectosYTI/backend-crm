@@ -60,20 +60,15 @@ function normalizeCerradorasCampusId(raw: number | null | undefined): number {
   return id || 1;
 }
 
-/** Evaluación OI (odontología integral), excluye OFM/MARPE/APNEA. */
+/**
+ * Evaluación OI (odontología integral).
+ * tariff_id=193 "Odontologia Integral" es la tarifa activa en SV desde ene-2023.
+ * tariff_id=54 "Evaluación de OI" es la tarifa legacy (usada 2021→oct-2022, ya sin uso).
+ * Se mantiene por id, no por nombre — SV renombró la tarifa y un filtro ILIKE '%Evalu%'
+ * dejó de matchear "Odontologia Integral" desde 2023.
+ */
 export const OI_EVAL_TARIFF_WHERE = `
-  COALESCE(t.name, '') ILIKE '%Evalu%'
-  AND COALESCE(t.id, 0) NOT IN (58, 192, 198)
-  AND COALESCE(t.name, '') NOT ILIKE '%OFM%'
-  AND COALESCE(t.name, '') NOT ILIKE '%MARPE%'
-  AND COALESCE(t.name, '') NOT ILIKE '%APNEA%'
-  AND COALESCE(t.name, '') NOT ILIKE '%CAPNEA%'
-  AND (
-    COALESCE(t.name, '') ILIKE '%OI%'
-    OR COALESCE(t.name, '') ILIKE '%Odontolog%Integr%'
-    OR COALESCE(t.name, '') ILIKE '%Odontologia Integral%'
-    OR COALESCE(t.name, '') NOT ILIKE '% OFM%'
-  )
+  COALESCE(t.id, 0) IN (54, 193)
 `;
 
 /** En facturación OI: líneas eval solo si son pago completo (id_payment CRM). */
@@ -720,13 +715,6 @@ export class OiSvInvoiceService implements OnModuleInit {
           OR (irb.payment_date IS NULL
             AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
         )
-        AND EXISTS (
-          SELECT 1 FROM contract c
-          JOIN contract_structure cs ON cs.id = c.contract_structure_id
-          WHERE c.idclinichistory = ch.id
-            AND cs.treatment_code LIKE 'OFM%'
-            AND c.state = 1
-        )
         ${campusFilter}
       ORDER BY irb.payment_date DESC NULLS LAST, irh.invoice_date DESC
     `;
@@ -780,11 +768,30 @@ export class OiSvInvoiceService implements OnModuleInit {
     return map;
   }
 
-  /** Métricas Call Center desde BD SV (misma query que union_doctor_patient_attention/call-center-metrics). */
+  /** Pre-query SV: patient_id → espo_id para todos los pacientes con link CRM (sin filtro de fecha, para cubrir contratos ANTIGUO). */
+  async queryClinicHistoryCrmEspoMap(): Promise<Array<{ patient_id: number; espo_id: string }>> {
+    const client = this.createClient();
+    try {
+      await client.connect();
+      const result = await client.query(
+        `SELECT DISTINCT chc.patient_id, chc.espo_id
+         FROM clinic_history_crm chc
+         WHERE chc.id_payment IS NOT NULL
+           AND chc.espo_id IS NOT NULL`,
+      );
+      return result.rows as Array<{ patient_id: number; espo_id: string }>;
+    } finally {
+      try { await client.end(); } catch { /* ignore */ }
+    }
+  }
+
+  /** Métricas Call Center desde BD SV. Atribución tto via eval SO creator (LAST) con fallback a CDN cuando no coinciden; asistencias via crmExecMap. */
   async queryCallCenterMetricsRows(
     since: string,
     until: string,
     campusIds?: number[] | null,
+    crmExecMap?: Array<{ patient_id: number; ejecutivo: string }>,
+    svUserMap?: Array<{ sv_username: string; crm_username: string }>,
   ): Promise<Record<string, unknown>[]> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
@@ -796,99 +803,151 @@ export class OiSvInvoiceService implements OnModuleInit {
       campusFilterAsist = ` AND COALESCE(r.id_campus, ch.campus) = ANY($${params.length}::int[])`;
     }
 
+    // crm_exec CTE: patient→ejecutivo from CRM opportunity assignment (used for eva_asist).
+    let crmExecCte: string;
+    if (crmExecMap && crmExecMap.length > 0) {
+      params.push(crmExecMap.map((r) => r.patient_id));
+      const pidIdx = params.length;
+      params.push(crmExecMap.map((r) => r.ejecutivo));
+      const ejIdx = params.length;
+      crmExecCte = `crm_exec(id_clinic_history, ejecutivo) AS (
+        SELECT UNNEST($${pidIdx}::int[]), UNNEST($${ejIdx}::text[])
+      )`;
+    } else {
+      crmExecCte = `crm_exec(id_clinic_history, ejecutivo) AS (
+        SELECT NULL::int, NULL::text WHERE false
+      )`;
+    }
+
+    // sv_user_map CTE: SV username → CRM username (translates eval SO creator for tto attribution).
+    let svUserMapCte: string;
+    if (svUserMap && svUserMap.length > 0) {
+      params.push(svUserMap.map((r) => r.sv_username));
+      const svIdx = params.length;
+      params.push(svUserMap.map((r) => r.crm_username));
+      const crmIdx = params.length;
+      svUserMapCte = `sv_user_map(sv_username, crm_username) AS (
+        SELECT UNNEST($${svIdx}::text[]), UNNEST($${crmIdx}::text[])
+      )`;
+    } else {
+      svUserMapCte = `sv_user_map(sv_username, crm_username) AS (
+        SELECT NULL::text, NULL::text WHERE false
+      )`;
+    }
+
     const sql = `
-      WITH ejecutivo AS (
-        SELECT DISTINCT ON (r2.patient_id)
-          r2.patient_id AS id_clinic_history,
-          LOWER(TRIM(u2.username)) AS ejecutivo
-        FROM reservation r2
-        INNER JOIN audit a2 ON a2.idregister = r2.id AND a2.title ILIKE '%Reservation%'
-        INNER JOIN users u2 ON u2.id = a2.iduser
-        INNER JOIN tariff t2 ON t2.id = r2.tariff_id
-        WHERE r2.state NOT IN (0)
-          AND COALESCE(t2.name, '') ILIKE '%Evalu%'
-          AND COALESCE(r2.tariff_id, 0) NOT IN (58, 192, 198)
-        ORDER BY r2.patient_id, r2.id DESC, a2.idaudit ASC
+      WITH ${crmExecCte},
+      ${svUserMapCte},
+      -- Step 1: LAST eval SO per patient (SV username).
+      last_eval_so AS (
+        SELECT DISTINCT ON (so_ev.idclinichistory)
+          so_ev.idclinichistory AS patient_id,
+          LOWER(TRIM(u_so.username)) AS sv_username
+        FROM service_order so_ev
+        INNER JOIN users u_so ON u_so.id = so_ev.user_created
+        WHERE so_ev.user_created IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM invoice_result_head irh_ev
+            INNER JOIN invoice_result_body irb_ev ON irb_ev.idinvoice_result_head = irh_ev.id
+            INNER JOIN tariff t_ev ON t_ev.id = irb_ev.tariff_id
+              AND COALESCE(t_ev.name, '') ILIKE '%Evalu%' AND irb_ev.tariff_id NOT IN (58, 192, 198)
+            WHERE irh_ev.id_service_order = so_ev.id AND irh_ev.status_invoice = 1
+          )
+        ORDER BY so_ev.idclinichistory, so_ev.id DESC
+      ),
+      -- Step 2: translate SV username → CRM username (de-duplicate sv_user_map first).
+      sv_user_map_dedup(sv_username, crm_username) AS (
+        SELECT DISTINCT ON (sv_username) sv_username, crm_username
+        FROM sv_user_map
+        ORDER BY sv_username, crm_username
+      ),
+      eval_so_exec AS (
+        SELECT les.patient_id,
+          COALESCE(sumap.crm_username, les.sv_username) AS ejecutivo
+        FROM last_eval_so les
+        LEFT JOIN sv_user_map_dedup sumap ON sumap.sv_username = les.sv_username
       ),
       pagos_mes AS (
         SELECT
-          COALESCE(c_direct.id, c_patient.id) AS contract_id,
+          c_direct.id AS contract_id,
+          ch.id AS patient_id,
           ch.campus AS campus_id,
-          LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, u_so.username, ''))) AS ejecutivo,
           CASE
-            WHEN COALESCE(cs_direct.treatment_code, c_patient.treatment_code, '') ILIKE '%APNEA%'
-              OR COALESCE(cs_direct.treatment_code, c_patient.treatment_code, '') ILIKE '%CAPNEA%'
+            WHEN cs_direct.treatment_code ILIKE '%APNEA%' OR cs_direct.treatment_code ILIKE '%CAPNEA%'
               THEN 'apnea' ELSE 'ofm'
           END AS tipo_tratamiento,
-          CASE
-            WHEN cd.description ILIKE '%moldes%' OR cd.description ILIKE '%inicial%'
-              OR cd.description ILIKE '%contado%' THEN 'contado' ELSE 'cuotas'
-          END AS modalidad_pago
+          CASE WHEN cs_direct.treatment_code ILIKE '%CONTADO%' THEN 'contado' ELSE 'cuotas' END AS modalidad_pago
         FROM invoice_result_body irb
         INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
           AND irh.status_invoice = 1 AND COALESCE(irh.credit_memo_state, false) = false
         INNER JOIN service_order so ON so.id = irh.id_service_order
         INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-        LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
-        LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
-        LEFT JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
-        LEFT JOIN contract_structure cs_direct ON cs_direct.id = c_direct.contract_structure_id
-        LEFT JOIN LATERAL (
-          SELECT c2.id, cs2.treatment_code
-          FROM contract c2
-          INNER JOIN contract_structure cs2 ON cs2.id = c2.contract_structure_id
-          WHERE c2.idclinichistory = ch.id AND c2.state = 1
-            AND (cs2.treatment_code LIKE 'OFM%' OR cs2.treatment_code LIKE 'APNEA%' OR cs2.treatment_code LIKE 'CAPNEA%')
-          ORDER BY c2.date DESC NULLS LAST LIMIT 1
-        ) c_patient ON c_direct.id IS NULL
-        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        LEFT JOIN users u_so ON u_so.id = so.user_created
-        WHERE COALESCE(c_direct.id, c_patient.id) IS NOT NULL
-          AND (
+        INNER JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+        INNER JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+          AND cd.description NOT ILIKE '%moldes%'
+        INNER JOIN contract c_direct ON c_direct.id = cd.idcontract AND c_direct.state = 1
+        INNER JOIN contract_structure cs_direct ON cs_direct.id = c_direct.contract_structure_id
+          AND (cs_direct.treatment_code LIKE 'OFM%' OR cs_direct.treatment_code LIKE 'APNEA%' OR cs_direct.treatment_code LIKE 'CAPNEA%')
+        WHERE (
             (irb.payment_date IS NOT NULL AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
             OR (irb.payment_date IS NULL AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+          )
+          AND (
+            -- JUN-26: no non-Moldes payment before period (new patient this month).
+            NOT EXISTS (
+              SELECT 1
+              FROM invoice_result_body irb_p
+              INNER JOIN invoice_result_head irh_p ON irh_p.id = irb_p.idinvoice_result_head
+                AND irh_p.status_invoice = 1 AND COALESCE(irh_p.credit_memo_state, false) = false
+              INNER JOIN service_order_payment_detail sopd_p ON sopd_p.id = irb_p.service_order_payment_detail_id
+              INNER JOIN contract_detail cd_p ON cd_p.id = sopd_p.idcontractdetail AND cd_p.state = 1
+                AND cd_p.description NOT ILIKE '%moldes%'
+              WHERE cd_p.idcontract = c_direct.id
+                AND COALESCE(irb_p.payment_date, irh_p.invoice_date::date) < $1::date
+            )
+            -- OR contract signed in period (data inconsistency where payment pre-dates contract entry).
+            OR c_direct.date::date >= $1::date
           )
           ${campusFilter}
       ),
       tto_agg AS (
-        SELECT ejecutivo, campus_id,
-          COUNT(*) FILTER (WHERE tipo_tratamiento = 'ofm' AND modalidad_pago = 'contado')::int AS tto_ofm_contado,
-          COUNT(*) FILTER (WHERE tipo_tratamiento = 'ofm' AND modalidad_pago = 'cuotas')::int AS tto_ofm_cuotas,
-          COUNT(*) FILTER (WHERE tipo_tratamiento = 'apnea' AND modalidad_pago = 'contado')::int AS tto_apnea_contado,
-          COUNT(*) FILTER (WHERE tipo_tratamiento = 'apnea' AND modalidad_pago = 'cuotas')::int AS tto_apnea_cuotas
-        FROM pagos_mes WHERE ejecutivo <> '' GROUP BY ejecutivo, campus_id
+        SELECT ee.ejecutivo, pm.campus_id,
+          COUNT(DISTINCT pm.contract_id) FILTER (WHERE pm.tipo_tratamiento = 'ofm' AND pm.modalidad_pago = 'contado')::int AS tto_ofm_contado,
+          COUNT(DISTINCT pm.contract_id) FILTER (WHERE pm.tipo_tratamiento = 'ofm' AND pm.modalidad_pago = 'cuotas')::int AS tto_ofm_cuotas,
+          COUNT(DISTINCT pm.contract_id) FILTER (WHERE pm.tipo_tratamiento = 'apnea' AND pm.modalidad_pago = 'contado')::int AS tto_apnea_contado,
+          COUNT(DISTINCT pm.contract_id) FILTER (WHERE pm.tipo_tratamiento = 'apnea' AND pm.modalidad_pago = 'cuotas')::int AS tto_apnea_cuotas
+        FROM pagos_mes pm
+        INNER JOIN eval_so_exec ee ON ee.patient_id = pm.patient_id
+        WHERE ee.ejecutivo <> ''
+        GROUP BY ee.ejecutivo, pm.campus_id
       ),
       eva_vend AS (
         SELECT
-          LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, ''))) AS ejecutivo,
-          COALESCE(r.id_campus, ch.campus) AS campus_id,
-          COUNT(DISTINCT chc.id) FILTER (
+          LOWER(TRIM(COALESCE(u_bill.username, ''))) AS ejecutivo,
+          ch.campus AS campus_id,
+          COUNT(DISTINCT irh.id) FILTER (
             WHERE COALESCE(t.name, '') NOT ILIKE '%APNEA%'
               AND COALESCE(t.name, '') NOT ILIKE '%CAPNEA%'
           )::int AS eva_vendidas_ofm,
-          COUNT(DISTINCT chc.id) FILTER (
+          COUNT(DISTINCT irh.id) FILTER (
             WHERE COALESCE(t.name, '') ILIKE '%APNEA%'
               OR COALESCE(t.name, '') ILIKE '%CAPNEA%'
           )::int AS eva_vendidas_apnea
-        FROM clinic_history_crm chc
-        INNER JOIN clinic_history ch ON ch.id = chc.patient_id
-        INNER JOIN reservation r ON r.id = chc.id_reservation AND r.patient_id = ch.id
-        LEFT JOIN tariff t ON t.id = r.tariff_id
-        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
-        INNER JOIN invoice_result_head irh ON irh.id = chc.id_payment
-          AND irh.status_invoice = 1
-          AND COALESCE(irh.credit_memo_state, false) = false
-        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        WHERE chc.id_payment IS NOT NULL
-          AND chc.id_reservation IS NOT NULL
-          AND COALESCE(r.tariff_id, 0) NOT IN (58, 192, 198)
+        FROM invoice_result_head irh
+        INNER JOIN service_order so ON so.id = irh.id_service_order
+        INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+        INNER JOIN invoice_result_body irb ON irb.idinvoice_result_head = irh.id
+        INNER JOIN tariff t ON t.id = irb.tariff_id
           AND COALESCE(t.name, '') ILIKE '%Evalu%'
+          AND t.id NOT IN (58, 192, 198)
+        LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+        WHERE irh.status_invoice = 1
+          AND COALESCE(irh.credit_memo_state, false) = false
           AND irh.invoice_date::date >= $1::date
           AND irh.invoice_date::date <= $2::date
-          ${campusFilter.replace(/ch\.campus/g, 'COALESCE(r.id_campus, ch.campus)')}
+          ${campusFilter}
         GROUP BY 1, 2
-        HAVING LOWER(TRIM(COALESCE(ej.ejecutivo, u_bill.username, ''))) <> ''
+        HAVING LOWER(TRIM(COALESCE(u_bill.username, ''))) <> ''
       ),
       eva_asist AS (
         SELECT
@@ -898,7 +957,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         FROM reservation r
         INNER JOIN clinic_history ch ON ch.id = r.patient_id
         LEFT JOIN tariff t ON t.id = r.tariff_id
-        LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
+        LEFT JOIN crm_exec ej ON ej.id_clinic_history = ch.id
         LEFT JOIN LATERAL (
           SELECT
             LOWER(TRIM(COALESCE(u_bill2.username, ''))) AS billing_user,
