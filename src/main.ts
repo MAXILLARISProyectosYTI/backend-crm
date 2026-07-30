@@ -32,14 +32,17 @@ async function bootstrap() {
     forbidNonWhitelisted: true,
   }));
   
-  // Configurar CORS si es necesario
-  const corsOrigins = process.env.CORS_ORIGIN 
-    ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-    : (process.env.NODE_ENV === 'production' ? [] : ['*']);
-  
+  // CORS: whitelist por CORS_ORIGIN (coma-separado). Nunca origin:'*' con credentials.
+  const corsOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
+    : process.env.NODE_ENV === 'production'
+      ? []
+      : true;
+
   app.enableCors({
-    origin: '*',
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    origin: corsOrigins,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   });
   

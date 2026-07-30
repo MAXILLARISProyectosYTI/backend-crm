@@ -768,8 +768,10 @@ export class OpportunityService {
 
       return newOpportunity;
 
-    } catch (error) {
-      throw new BadRequestException(error.message);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Error al crear oportunidad con el mismo teléfono';
+      throw new BadRequestException(message);
     }
   }
 
@@ -2986,7 +2988,7 @@ export class OpportunityService {
    */
   async syncClinicHistoryFromSvIfMissing(
     opportunityId: string,
-    userId = 'system',
+    userId?: string,
   ): Promise<string | null> {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
@@ -3195,21 +3197,33 @@ export class OpportunityService {
 
     // SV ya conoce al paciente (clinic_history_crm) pero CRM puede no tener c_clinic_history
     // (p. ej. evaluación OFM: redirect code=0 promueve a Cierre ganado sin facturar).
+    // assignedUserId puede venir como User o como string crudo: NO usar `.id` directo
+    // (cae a 'system' y assertCanManageOpportunity → 403, rompiendo el redirect).
     if (!OpportunityService.isValidHcCode(opportunity.cClinicHistory)) {
-      const hcFromRedirect = (redirectResponse as any)?.dataPatient?.history?.trim();
-      if (OpportunityService.isValidHcCode(hcFromRedirect)) {
-        await this.update(
-          opportunityId,
-          { cClinicHistory: hcFromRedirect },
-          opportunity.assignedUserId?.id ?? 'system',
+      const actorId =
+        this.resolveAssignedUserId(opportunity.assignedUserId) || undefined;
+      try {
+        const hcFromRedirect = (redirectResponse as any)?.dataPatient?.history?.trim();
+        if (OpportunityService.isValidHcCode(hcFromRedirect)) {
+          await this.update(
+            opportunityId,
+            { cClinicHistory: hcFromRedirect },
+            actorId,
+          );
+          opportunity.cClinicHistory = hcFromRedirect;
+        } else {
+          const syncedHc = await this.syncClinicHistoryFromSvIfMissing(
+            opportunityId,
+            actorId,
+          );
+          if (syncedHc) opportunity.cClinicHistory = syncedHc;
+        }
+      } catch (err) {
+        // No tumbar /opportunity/redirect si el sync de HC falla (permisos, SV, etc.).
+        console.warn(
+          `[redirectToManager] No se pudo sincronizar cClinicHistory para ${opportunityId}:`,
+          (err as Error)?.message ?? err,
         );
-        opportunity.cClinicHistory = hcFromRedirect;
-      } else {
-        const syncedHc = await this.syncClinicHistoryFromSvIfMissing(
-          opportunityId,
-          opportunity.assignedUserId?.id ?? 'system',
-        );
-        if (syncedHc) opportunity.cClinicHistory = syncedHc;
       }
     }
 
