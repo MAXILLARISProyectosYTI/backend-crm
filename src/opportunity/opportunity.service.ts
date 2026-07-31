@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException, Inject, forwardRef, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, In, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { Brackets, ILike, In, IsNull, Like, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Opportunity } from './opportunity.entity';
 import { OpportunityServiceOrder } from './opportunity-service-order.entity';
 import { FacturacionSubEstado } from './opportunity-service-order.entity';
@@ -22,7 +22,6 @@ import { MeetingService } from 'src/meeting/meeting.service';
 import { SvServices } from 'src/sv-services/sv.services';
 import { IdGeneratorService } from 'src/common/services/id-generator.service';
 import { ActionHistoryService } from 'src/action-history/action-history.service';
-import { UserWithTeam } from 'src/user/dto/user-with-team';
 import { hasFields, pickFields } from './utils/hasFields';
 import { Meeting } from 'src/meeting/meeting.entity';
 import { FilesService } from 'src/files/files.service';
@@ -1514,6 +1513,28 @@ export class OpportunityService {
     ) {
       (updateData as Record<string, unknown>).cSeTrasfOtroServi = 'OI_TRANSFER';
     }
+
+    // No dejar en etapa abierta si SV/CRM ya tienen pago o flujo completo.
+    const requestedStage = updateOpportunityDto.stage;
+    if (
+      requestedStage &&
+      OpportunityService.OPEN_STAGES_FOR_AUTO_CIERRE.includes(requestedStage as Enum_Stage) &&
+      opportunity.stage !== Enum_Stage.CIERRE_GANADO
+    ) {
+      try {
+        const promoted = await this.syncSvFlowLinksAndPromoteIfComplete(id, {
+          notify: true,
+          previousStage: opportunity.stage,
+        });
+        if (promoted) {
+          updateData.stage = Enum_Stage.CIERRE_GANADO;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `[update] auto Cierre ganado falló para ${id}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
     
     // Actualizar timestamp de modificación (siempre UTC)
     updateData.modifiedAt = new Date();
@@ -1659,10 +1680,10 @@ export class OpportunityService {
     const isAssistent = teamsUser.some(team => team.team_id === TEAMS_IDS.ASISTENTES_COMERCIALES);
 
     const isTIorOwner = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_TI || team.team_id === TEAMS_IDS.TEAM_OWNER);
-    
+
     const isTeamLeader = teamsUser.some(team => team.team_id === TEAMS_IDS.TEAM_LEADERS_COMERCIALES);
     let team: string = '';
-    let users: UserWithTeam[] = [];
+    let teamLeaderUsers: { user_id: string }[] = [];
 
     // Team leader Arequipa: está en TEAM_AREQUIPA y tiene rol Team Leader Comercial
     const userWithRoles = await this.userService.findOne(userRequest);
@@ -1670,7 +1691,13 @@ export class OpportunityService {
     const hasTeamLeaderRole = roles.some(r => r.roleId === ROLES_IDS.TEAM_LEADER_COMERCIAL);
     const isTeamLeaderArequipa = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_AREQUIPA) && hasTeamLeaderRole;
     const isTeamLeaderTrujillo = teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_TRUJILLO) && hasTeamLeaderRole;
-    
+
+    // NOTA: se intentó reemplazar este bloque por CommercialScopeService.resolveTeamLeaderUserIds
+    // (genérico, sin hardcodear equipos) pero se revirtió: ese método trata CUALQUIER equipo
+    // comercial no-meta como "squad gestionado", incluyendo equipos funcionales/nacionales
+    // (ej. "Equipo Ejecutivos Comercial APNEA"), lo que le daría a un TL miembro de ese equipo
+    // visibilidad sobre ~31k oportunidades de todo el país. Requiere que resolveManagedTeamIdsForTeamLeader
+    // distinga equipos "squad" (sede) de equipos "funcionales" (nacionales) antes de generalizar esto.
     if (isTeamLeader) {
       if (teamsUser.some(t => t.team_id === TEAMS_IDS.TEAM_FIORELLA)) {
         team = TEAMS_IDS.TEAM_FIORELLA;
@@ -1680,16 +1707,15 @@ export class OpportunityService {
         team = TEAMS_IDS.TEAM_VERONICA;
       }
       if (team) {
-        users = await this.userService.getUserByAllTeams([team]);
+        teamLeaderUsers = await this.userService.getUserByAllTeams([team]);
       }
     } else if (isTeamLeaderArequipa) {
       team = TEAMS_IDS.TEAM_AREQUIPA;
-      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
+      teamLeaderUsers = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_AREQUIPA]);
     } else if (isTeamLeaderTrujillo) {
       team = TEAMS_IDS.TEAM_TRUJILLO;
-      users = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_TRUJILLO]);
+      teamLeaderUsers = await this.userService.getUserByAllTeams([TEAMS_IDS.TEAM_TRUJILLO]);
     }
-
 
     const queryBuilder = this.opportunityRepository
       .createQueryBuilder('opportunity')
@@ -1713,7 +1739,7 @@ export class OpportunityService {
       // Admin, asistente, TI/Owner → todas las oportunidades (sin filtro por ejecutivo)
     } else if (isAnyTeamLeader) {
         // Si es team leader (Fiorella/Veronica/Michel/Arequipa), ver oportunidades de todos los usuarios de su equipo
-        const userIds = users.length > 0 ? users.map(u => u.user_id) : [];
+        const userIds = teamLeaderUsers.length > 0 ? teamLeaderUsers.map(u => u.user_id) : [];
         if (!userIds.includes(userRequest)) {
           userIds.push(userRequest);
         }
@@ -1721,7 +1747,9 @@ export class OpportunityService {
           queryBuilder.andWhere('opportunity.assigned_user_id IN (:...userIds)', { userIds });
         }
       } else {
-        // Ver propias oportunidades + las derivadas a OI asignadas a este ejecutivo
+        // Ejecutivo regular (no team leader): exactamente el comportamiento actual de producción
+        // — propias oportunidades + derivadas a OI. La visibilidad por sede NO aplica aquí
+        // (según indicación explícita: solo aplica al "Ver todo" de team leaders, ver rama de arriba).
         const derivedOpportunityIds = await this.opportunityDerivationRepository
           .find({ where: { assignedUserId: userRequest, status: 'active' as any }, select: ['opportunityId'] })
           .then((rows) => rows.map((r) => r.opportunityId));
@@ -2244,6 +2272,264 @@ export class OpportunityService {
     return hasPatient && hasReservation && (hasFacturacion || hasOS);
   }
 
+  /** Etapas abiertas que no deben persistir si SV/CRM ya tienen flujo facturado o completo. */
+  private static readonly OPEN_STAGES_FOR_AUTO_CIERRE: Enum_Stage[] = [
+    Enum_Stage.GESTION_INICIAL,
+    Enum_Stage.SEGUIMIENTO,
+    Enum_Stage.GESTION_RECONTACTO,
+  ];
+
+  private extractPaymentIdFromRedirect(redirect: Record<string, unknown> | null | undefined): number | null {
+    if (!redirect?.payment) return null;
+    const p = redirect.payment as Record<string, unknown> | Record<string, unknown>[];
+    const row = Array.isArray(p) ? p[0] : p;
+    const id = Number(row?.id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  private extractReservationIdFromRedirect(redirect: Record<string, unknown> | null | undefined): number | null {
+    if (!redirect?.reservation) return null;
+    const r = redirect.reservation as Record<string, unknown>;
+    const id = Number(r?.id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  private localPhoneFromOpportunity(opportunity: Opportunity): string {
+    const phoneNumber = opportunity.cNumeroDeTelefono ?? '';
+    const cleanedPhone = phoneNumber.replace(/\(\+\d{1,3}\)\s*/g, '');
+    const digits = cleanedPhone.replace(/\D/g, '');
+    return digits.slice(-9);
+  }
+
+  private shouldAutoPromoteToCierreGanado(
+    opportunity: Opportunity,
+    redirect: Record<string, unknown> | null | undefined,
+  ): boolean {
+    if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return false;
+    if (opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL') return false;
+
+    if (redirect?.code === EnumCodeFlow.FLUJO_REALIZADO) return true;
+
+    const hasHc = OpportunityService.isValidHcCode(opportunity.cClinicHistory);
+    if (opportunity.isPresaved === false && hasHc) return true;
+
+    const paymentId = this.extractPaymentIdFromRedirect(redirect);
+    const reservationId = this.extractReservationIdFromRedirect(redirect);
+    const hasCrmReservation = !!(opportunity.cDateReservation && opportunity.cAppointment);
+
+    if (paymentId && (reservationId || hasCrmReservation)) return true;
+    if (paymentId && hasHc) return true;
+
+    return false;
+  }
+
+  private async fetchSvRedirectForOpportunity(
+    opportunity: Opportunity,
+  ): Promise<Record<string, unknown> | null> {
+    if (!opportunity.cSubCampaignId) return null;
+    const phone = this.localPhoneFromOpportunity(opportunity);
+    if (!phone) return null;
+
+    try {
+      const campaign = await this.campaignService.findOne(opportunity.cSubCampaignId);
+      const isReferralCreation =
+        opportunity.cIsReferralCreation === true ||
+        / REF-\d+$/.test(opportunity.name || '');
+      return (await this.svServices.getRedirectByOpportunityId(
+        opportunity.id,
+        campaign.name!,
+        phone,
+        opportunity.cClinicHistory,
+        opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL',
+        opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI,
+        isReferralCreation,
+      )) as Record<string, unknown>;
+    } catch (err) {
+      this.logger.warn(
+        `[fetchSvRedirectForOpportunity] ${opportunity.id}: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
+  }
+
+  private async backfillClinicHistoryCrmFromRedirect(
+    opportunityId: string,
+    tokenSv: string,
+    redirect: Record<string, unknown> | null | undefined,
+    existingChc: Record<string, unknown> | null | undefined,
+  ): Promise<void> {
+    const paymentId = this.extractPaymentIdFromRedirect(redirect);
+    const reservationId = this.extractReservationIdFromRedirect(redirect);
+    const dataPatient = redirect?.dataPatient as Record<string, unknown> | undefined;
+    const patientId = Number(
+      dataPatient?.id ?? dataPatient?.ch_id ?? redirect?.patientId ?? existingChc?.patientId ?? existingChc?.patient_id,
+    );
+
+    const payload: Partial<CreateClinicHistoryCrmDto> = {};
+    const existingPayment = Number(existingChc?.id_payment ?? existingChc?.idPayment);
+    const existingReservation = Number(existingChc?.id_reservation ?? existingChc?.idReservation);
+    const existingPatient = Number(existingChc?.patient_id ?? existingChc?.patientId);
+
+    if (paymentId && !(Number.isFinite(existingPayment) && existingPayment > 0)) {
+      payload.id_payment = paymentId;
+    }
+    if (reservationId && !(Number.isFinite(existingReservation) && existingReservation > 0)) {
+      payload.id_reservation = reservationId;
+    }
+    if (Number.isFinite(patientId) && patientId > 0 && !(Number.isFinite(existingPatient) && existingPatient > 0)) {
+      payload.patientId = patientId;
+    }
+
+    if (Object.keys(payload).length === 0) return;
+
+    const svLinkKey = `sync-sv-link:${opportunityId}:${createHash('sha256').update(JSON.stringify(payload)).digest('hex')}`;
+    await this.svServices.updateClinicHistoryCrm(opportunityId, tokenSv, payload, svLinkKey);
+  }
+
+  private async applyCrmFieldsFromSvRedirect(
+    opportunity: Opportunity,
+    redirect: Record<string, unknown> | null | undefined,
+  ): Promise<Partial<Opportunity>> {
+    const patch: Partial<Opportunity> = {};
+    const dataPatient = redirect?.dataPatient as Record<string, unknown> | undefined;
+    const reservation = redirect?.reservation as Record<string, unknown> | undefined;
+
+    if (!OpportunityService.isValidHcCode(opportunity.cClinicHistory)) {
+      const hc = (dataPatient?.history as string | undefined)?.trim();
+      if (OpportunityService.isValidHcCode(hc)) {
+        patch.cClinicHistory = hc;
+      }
+    }
+
+    if (reservation) {
+      if (!opportunity.cDateReservation && reservation.date) {
+        patch.cDateReservation = String(reservation.date);
+      }
+      if (!opportunity.cAppointment && reservation.appointment) {
+        patch.cAppointment = String(reservation.appointment);
+      }
+      if (!opportunity.cDoctor && reservation.doctor) {
+        patch.cDoctor = String(reservation.doctor);
+      }
+      if (!opportunity.cSpecialty && reservation.specialty) {
+        patch.cSpecialty = String(reservation.specialty);
+      }
+      if (!opportunity.cTariff && reservation.tariff_id) {
+        patch.cTariff = String(reservation.specialty ?? reservation.tariff_id);
+      }
+      if (!opportunity.cFechaDeReservacion && reservation.date && reservation.since) {
+        patch.cFechaDeReservacion = new Date(`${reservation.date}T${reservation.since}:00`);
+      }
+    }
+
+    if (opportunity.isPresaved !== false && this.extractPaymentIdFromRedirect(redirect)) {
+      patch.isPresaved = false;
+    }
+
+    return patch;
+  }
+
+  /**
+   * Sincroniza vínculos SV (pago/cita) y promueve a Cierre ganado cuando el flujo ya está completo.
+   * Usado tras facturar/agendar, en cron de reconciliación y al intentar mover a etapas abiertas.
+   */
+  async syncSvFlowLinksAndPromoteIfComplete(
+    opportunityId: string,
+    options?: { notify?: boolean; previousStage?: string },
+  ): Promise<boolean> {
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id: opportunityId, deleted: false },
+    });
+    if (!opportunity) return false;
+    if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+    if (opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL') return false;
+
+    const redirect = await this.fetchSvRedirectForOpportunity(opportunity);
+    const { tokenSv } = await this.svServices.getTokenSvAdmin();
+
+    let existingChc: Record<string, unknown> | null = null;
+    try {
+      existingChc = (await this.svServices.getPatientSVByEspoId(opportunityId, tokenSv)) as Record<string, unknown>;
+    } catch {
+      existingChc = null;
+    }
+
+    try {
+      await this.backfillClinicHistoryCrmFromRedirect(opportunityId, tokenSv, redirect, existingChc);
+    } catch (err) {
+      this.logger.warn(
+        `[syncSvFlowLinksAndPromoteIfComplete] backfill SV falló ${opportunityId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
+    const refreshed = await this.opportunityRepository.findOne({ where: { id: opportunityId } });
+    if (!refreshed) return false;
+
+    const crmPatch = await this.applyCrmFieldsFromSvRedirect(refreshed, redirect);
+    if (Object.keys(crmPatch).length > 0) {
+      await this.opportunityRepository.update({ id: opportunityId }, { ...crmPatch, modifiedAt: new Date() });
+    }
+
+    const latest = { ...refreshed, ...crmPatch } as Opportunity;
+    if (!this.shouldAutoPromoteToCierreGanado(latest, redirect)) return false;
+
+    const previousStage = options?.previousStage ?? latest.stage;
+    await this.opportunityRepository.update({
+      id: opportunityId,
+      stage: Not(Enum_Stage.CIERRE_GANADO),
+    }, {
+      stage: Enum_Stage.CIERRE_GANADO,
+      modifiedAt: new Date(),
+    });
+
+    if (options?.notify !== false) {
+      const updatedOpportunity = await this.getOneWithEntity(opportunityId);
+      if (updatedOpportunity.assignedUserId) {
+        await this.websocketService.notifyOpportunityUpdate(updatedOpportunity, previousStage);
+      }
+    }
+
+    this.logger.log(`[syncSvFlowLinksAndPromoteIfComplete] ${opportunityId} → Cierre ganado`);
+    return true;
+  }
+
+  /** Candidatas a reconciliar: etapa abierta con señales de flujo avanzado en CRM. */
+  async findOpportunitiesPendingCierreGanadoSync(limit = 100): Promise<{ id: string }[]> {
+    return this.opportunityRepository
+      .createQueryBuilder('o')
+      .select('o.id', 'id')
+      .where('o.deleted = false')
+      .andWhere('o.stage NOT IN (:...closedStages)', {
+        closedStages: [Enum_Stage.CIERRE_GANADO, Enum_Stage.CIERRE_PERDIDO],
+      })
+      .andWhere("(o.c_se_trasf_otro_servi IS NULL OR TRIM(o.c_se_trasf_otro_servi) <> 'FORCE_INITIAL')")
+      .andWhere(
+        `(o.is_presaved = false
+          OR (o.c_clinic_history IS NOT NULL AND o.c_clinic_history <> '')
+          OR o.stage IN (:...openStages))`,
+        { openStages: OpportunityService.OPEN_STAGES_FOR_AUTO_CIERRE },
+      )
+      .orderBy('o.modified_at', 'DESC')
+      .limit(limit)
+      .getRawMany();
+  }
+
+  async runCierreGanadoSyncBatch(limit = 100): Promise<{ scanned: number; promoted: number }> {
+    const candidates = await this.findOpportunitiesPendingCierreGanadoSync(limit);
+    let promoted = 0;
+    for (const row of candidates) {
+      try {
+        const ok = await this.syncSvFlowLinksAndPromoteIfComplete(row.id, { notify: true });
+        if (ok) promoted++;
+      } catch (err) {
+        this.logger.warn(
+          `[runCierreGanadoSyncBatch] ${row.id}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    return { scanned: candidates.length, promoted };
+  }
+
   /**
    * Devuelve true si la oportunidad tiene el sentinel FORCE_INITIAL en cSeTrasfOtroServi,
    * lo que indica que el ejecutivo pidió explícitamente tratar la oportunidad como Gestión Inicial.
@@ -2713,6 +2999,18 @@ export class OpportunityService {
       }
     } catch {
       // no bloquear el flujo principal
+    }
+
+    try {
+      await this.syncSvFlowLinksAndPromoteIfComplete(opportunityId, {
+        notify: true,
+        previousStage: newOpportunity.stage,
+      });
+      newOpportunity = (await this.getOneWithEntity(opportunityId)) as Opportunity;
+    } catch (err) {
+      this.logger.warn(
+        `[updateOpportunityWithFacturas] syncSvFlowLinksAndPromoteIfComplete falló: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     console.log('[updateOpportunityWithFacturas] Fin exitoso', { opportunityId });
