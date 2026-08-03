@@ -4342,6 +4342,11 @@ export class CommissionsDataService {
       evaAsistidas: 0,
     });
 
+    // Un mismo ejecutivo puede aparecer varias veces en `team` (una fila por sede
+    // de catálogo). Sus métricas SV solo deben sumarse una vez; de lo contrario
+    // cada fila de catálogo re-suma el total completo y lo duplica/triplica.
+    const metricsSummedFor = new Set<string>();
+
     for (const eje of team) {
       const svKey = eje.userId.trim().toLowerCase();
       const catalogCampus = eje.campusId != null
@@ -4350,29 +4355,32 @@ export class CommissionsDataService {
       const aliases = aliasSets.get(eje.userId) ?? new Set([svKey]);
       aliases.add(svKey);
 
-      for (const m of metricsByKey.values()) {
-        if (!aliases.has(m.userId.trim().toLowerCase())) continue;
-        if (m.campusId == null) continue;
-        const metricCampus = this.mapCommissionCampusId(m.campusId);
-        // Se conservan ventas fuera de la sede "home" del ejecutivo (evidencia real:
-        // pago + reserva + auditoría en SV ya lo exige eva_vend/tto_agg). Cada sede
-        // obtiene su propia fila para que el filtro por sede muestre solo lo suyo,
-        // y "Todas" sume el total real del ejecutivo entre sedes.
-        const key = `${svKey}::${metricCampus}`;
-        const prev = accum.get(key);
-        accum.set(key, {
-          userId: svKey,
-          userName: eje.userName ?? m.userName ?? svKey,
-          campusId: metricCampus,
-          campusNombre: this.commissionCampusNombre(metricCampus),
-          ttoOfmContado: (prev?.ttoOfmContado ?? 0) + m.ttoOfmContado,
-          ttoOfmCuotas: (prev?.ttoOfmCuotas ?? 0) + m.ttoOfmCuotas,
-          ttoApneaContado: (prev?.ttoApneaContado ?? 0) + m.ttoApneaContado,
-          ttoApneaCuotas: (prev?.ttoApneaCuotas ?? 0) + m.ttoApneaCuotas,
-          evaVendidasOfm: (prev?.evaVendidasOfm ?? 0) + m.evaVendidasOfm,
-          evaVendidasApnea: (prev?.evaVendidasApnea ?? 0) + m.evaVendidasApnea,
-          evaAsistidas: (prev?.evaAsistidas ?? 0) + m.evaAsistidas,
-        });
+      if (!metricsSummedFor.has(svKey)) {
+        metricsSummedFor.add(svKey);
+        for (const m of metricsByKey.values()) {
+          if (!aliases.has(m.userId.trim().toLowerCase())) continue;
+          if (m.campusId == null) continue;
+          const metricCampus = this.mapCommissionCampusId(m.campusId);
+          // Se conservan ventas fuera de la sede "home" del ejecutivo (evidencia real:
+          // pago + reserva + auditoría en SV ya lo exige eva_vend/tto_agg). Cada sede
+          // obtiene su propia fila para que el filtro por sede muestre solo lo suyo,
+          // y "Todas" sume el total real del ejecutivo entre sedes.
+          const key = `${svKey}::${metricCampus}`;
+          const prev = accum.get(key);
+          accum.set(key, {
+            userId: svKey,
+            userName: eje.userName ?? m.userName ?? svKey,
+            campusId: metricCampus,
+            campusNombre: this.commissionCampusNombre(metricCampus),
+            ttoOfmContado: (prev?.ttoOfmContado ?? 0) + m.ttoOfmContado,
+            ttoOfmCuotas: (prev?.ttoOfmCuotas ?? 0) + m.ttoOfmCuotas,
+            ttoApneaContado: (prev?.ttoApneaContado ?? 0) + m.ttoApneaContado,
+            ttoApneaCuotas: (prev?.ttoApneaCuotas ?? 0) + m.ttoApneaCuotas,
+            evaVendidasOfm: (prev?.evaVendidasOfm ?? 0) + m.evaVendidasOfm,
+            evaVendidasApnea: (prev?.evaVendidasApnea ?? 0) + m.evaVendidasApnea,
+            evaAsistidas: (prev?.evaAsistidas ?? 0) + m.evaAsistidas,
+          });
+        }
       }
 
       if (catalogCampus != null) {
