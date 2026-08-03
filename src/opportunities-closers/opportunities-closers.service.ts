@@ -371,38 +371,51 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
         this.logger.log(`[findAll] Info que llega: search="${search?.trim()}", page=${page}, limit=${limit}, assignedToUserId=${assignedToUserId}`);
         const token = await this.svServices.getTokenSvAdmin();
         const resultsFromSv = await this.svServices.getQuotationSearch(token.tokenSv, search.trim());
-        this.logger.log(`[findAll] Respuesta SV (raw): cantidad=${resultsFromSv.length}, items=${JSON.stringify(resultsFromSv.map((r) => ({ id: r.id, name: r.name, history: r.history })))}`);
+        this.logger.log(`[findAll] SV devolvió ${resultsFromSv.length} cotizaciones para "${search.trim()}"`);
         const byQuotationId = new Map<string, typeof resultsFromSv[0]>();
         for (const item of resultsFromSv) {
           const key = String(item.id);
           if (!byQuotationId.has(key)) byQuotationId.set(key, item);
         }
-        this.logger.log(`[findAll] Después de dedup por cotizacion_id: cantidad=${byQuotationId.size}`);
-        let inserted = 0;
-        let skippedExists = 0;
+        // Descarte de cotizaciones con id no numérico ANTES de tocar la BD.
+        const candidates: typeof resultsFromSv = [];
         let skippedBadQuotationId = 0;
         for (const item of byQuotationId.values()) {
-          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
-          if (Number.isNaN(quotationId)) {
+          const parsed = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
+          if (Number.isNaN(parsed)) {
             skippedBadQuotationId++;
-            this.logger.log(`[findAll] Omitido cotizacion_id inválido: item.id=${item.id}`);
             continue;
           }
-          const exists = await this.existsOpportunityCloserByQuotationId(
-            String(item.id),
-            item.history,
-          );
-          if (exists) {
-            skippedExists++;
-            this.logger.log(`[findAll] Omitido (ya en cola): cotizacionId=${item.id}, history=${item.history}`);
-            continue;
-          }
+          candidates.push(item);
+        }
+
+        // ── Comprobación de existencia EN LOTE ──────────────────────────────
+        // Antes: `existsOpportunityCloserByQuotationId` dentro del bucle, o sea
+        // una query por cotización (hasta 50, el tope de `quotation/search`), y
+        // en la mayoría de búsquedas casi todas terminaban en "ya en cola".
+        // Ahora una sola query resuelve las 50, igual que ya hacía el cron
+        // (`opportunity-closers-crons.service.ts`).
+        const existingKeys = await this.findExistingQuotationKeys(
+          candidates.map((item) => String(item.id)),
+        );
+        const toInsert = candidates.filter((item) => {
+          const hcSet = existingKeys.get(String(item.id).trim());
+          if (!hcSet) return true;
+          const normalizedHc = item.history?.trim();
+          // Sin historia clínica basta con que exista la cotización (misma
+          // semántica que findOpportunityCloserByQuotationAndPatient).
+          return normalizedHc ? !hcSet.has(normalizedHc) : false;
+        });
+        const skippedExists = candidates.length - toInsert.length;
+
+        let inserted = 0;
+        for (const item of toInsert) {
+          const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
           const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
             item.history,
             assignedToUserId ?? 'system',
           );
           const opportunityId = gestiónOpp?.id;
-          this.logger.log(`[findAll] Asignación: cotizacionId=${item.id}, asignado a userId=${assignedToUserId}, opportunityId=${opportunityId ?? 'sin oportunidad en CRM'}, name=${item.name}, history=${item.history}`);
           const payload = {
             assignedUserId: assignedToUserId,
             name: item.name,
@@ -411,9 +424,7 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
             ...(opportunityId && { opportunityId }),
             cotizacionId: String(quotationId),
           };
-          this.logger.log(`[findAll] Guardado (payload): ${JSON.stringify(payload)}`);
           const create = await this.createOpportunityCloser(payload);
-          this.logger.log(`[findAll] Guardado (resultado create): id=${create.id}, cotizacionId=${create.cotizacionId}, assignedUserId=${create.assignedUserId}`);
           const url = `${this.URL_FRONT_MANAGER_LEADS}manager_leads/price?uuid-opportunity=${create.id}&cotizacion=${create.cotizacionId}&usuario=${create.assignedUserId}`;
           await this.update(create.id, { status: statesCRM.EN_PROGRESO, url }, assignedToUserId);
           inserted++;
@@ -469,20 +480,17 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
       }
 
       if (tokenSv) {
-        // Sede en SV (una llamada por historia — ya existía)
-        const results = await Promise.allSettled(
-          uniqueHistories.map((history) => this.svServices.getSedeByClinicHistory(history, tokenSv)),
+        // Sedes en UNA sola petición a SV. Antes era `getSedeByClinicHistory`
+        // por historia: 20 peticiones HTTP por página, en cada carga y en cada
+        // búsqueda, más un log por historia inundando la consola.
+        const sedes = await this.svServices.getSedesByClinicHistories(uniqueHistories, tokenSv);
+        for (const history of uniqueHistories) {
+          const name = sedes[history]?.campusName;
+          if (name) sedeByHistory.set(history, name);
+        }
+        this.logger.log(
+          `[findAll] Sedes: ${sedeByHistory.size}/${uniqueHistories.length} resueltas en SV (resto → "${defaultSede}")`,
         );
-        results.forEach((result, i) => {
-          const history = uniqueHistories[i];
-          const name = result.status === 'fulfilled' ? (result.value?.campusName ?? null) : null;
-          if (name) {
-            sedeByHistory.set(history, name);
-            this.logger.log(`[findAll] Sede por historia: ${history} -> ${name}`);
-          } else {
-            this.logger.log(`[findAll] Sede por historia: ${history} -> sin dato en SV, default "${defaultSede}"`);
-          }
-        });
       }
     }
 
