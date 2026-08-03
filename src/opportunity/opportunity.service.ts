@@ -3445,6 +3445,7 @@ export class OpportunityService {
   async redirectToManager(usuario: string, opportunityId: string, isOiDerivedFlow?: boolean) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
+      relations: ['assignedUserId'],
     });
     if (!opportunity) {
       throw new NotFoundException("No se encontró la oportunidad");
