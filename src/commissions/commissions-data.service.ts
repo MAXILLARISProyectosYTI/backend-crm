@@ -4162,10 +4162,13 @@ export class CommissionsDataService {
     if (options?.pruneOrphans !== false) {
       const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
       for (const rec of existing) {
-        if (!teamUserIds.has(rec.userId.trim().toLowerCase())) {
-          await this.detailRepo.delete({ record: { id: rec.id } });
-          await this.recordRepo.delete(rec.id);
-        }
+        if (teamUserIds.has(rec.userId.trim().toLowerCase())) continue;
+        // No borrar ex-ejecutivas con evidencia real (ventas/comisión) del período,
+        // solo por estar inactivas hoy en el catálogo — ver pruneCallCenterRecordsToCatalog.
+        const hasEvidence = Number(rec.cantidadUnidades ?? 0) > 0 || Number(rec.comisionTotal ?? 0) > 0;
+        if (hasEvidence) continue;
+        await this.detailRepo.delete({ record: { id: rec.id } });
+        await this.recordRepo.delete(rec.id);
       }
     }
 
@@ -4311,16 +4314,23 @@ export class CommissionsDataService {
     return merged;
   }
 
-  /** Elimina filas de usuarios que ya no están en el catálogo Call Center (conserva sedes SV). */
+  /**
+   * Elimina filas huérfanas sin evidencia real (usuarios que ya no están en el
+   * catálogo Call Center Y no tienen ventas/comisión). Conserva registros de
+   * ex-ejecutivas con ventas reales del período (ver orphanKeys en
+   * syncAndCalculateCallCenter) aunque hoy estén inactivas en el catálogo —
+   * de lo contrario esta función las borraría justo después de crearse.
+   */
   private async pruneCallCenterRecordsToCatalog(period: CommissionPeriod): Promise<void> {
     const team = await this.listCallCenterEjecutivos();
     const teamUserIds = new Set(team.map((e) => e.userId.trim().toLowerCase()));
     const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
     for (const rec of existing) {
-      if (!teamUserIds.has(rec.userId.trim().toLowerCase())) {
-        await this.detailRepo.delete({ record: { id: rec.id } });
-        await this.recordRepo.delete(rec.id);
-      }
+      if (teamUserIds.has(rec.userId.trim().toLowerCase())) continue;
+      const hasEvidence = Number(rec.cantidadUnidades ?? 0) > 0 || Number(rec.comisionTotal ?? 0) > 0;
+      if (hasEvidence) continue;
+      await this.detailRepo.delete({ record: { id: rec.id } });
+      await this.recordRepo.delete(rec.id);
     }
   }
 
