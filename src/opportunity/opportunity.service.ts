@@ -3513,8 +3513,12 @@ export class OpportunityService {
 
     if (effectiveOiDerived) {
       const sedeId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? 1;
+      // assignedUserId es una relación no cargada en este findOne; leer el FK crudo.
+      const rawAssignedId: string =
+        (opportunity as any).assigned_user_id ??
+        this.resolveAssignedUserId(opportunity.assignedUserId);
       const expectedUrl = this.buildManagerLeadsUrl(
-        opportunity.assignedUserId,
+        rawAssignedId || opportunity.assignedUserId,
         opportunityId,
         { isOiFlow: true, sedeId: sedeId ?? 1 },
       );
