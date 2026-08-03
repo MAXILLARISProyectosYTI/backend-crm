@@ -4354,8 +4354,10 @@ export class CommissionsDataService {
         if (!aliases.has(m.userId.trim().toLowerCase())) continue;
         if (m.campusId == null) continue;
         const metricCampus = this.mapCommissionCampusId(m.campusId);
-        // Solo métricas de la sede del equipo CRM (evita Airen Lima con 1 eva en Trujillo).
-        if (catalogCampus != null && metricCampus !== catalogCampus) continue;
+        // Se conservan ventas fuera de la sede "home" del ejecutivo (evidencia real:
+        // pago + reserva + auditoría en SV ya lo exige eva_vend/tto_agg). Cada sede
+        // obtiene su propia fila para que el filtro por sede muestre solo lo suyo,
+        // y "Todas" sume el total real del ejecutivo entre sedes.
         const key = `${svKey}::${metricCampus}`;
         const prev = accum.get(key);
         accum.set(key, {
