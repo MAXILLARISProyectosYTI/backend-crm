@@ -4536,6 +4536,41 @@ export class CommissionsDataService {
       }
 
       const team = await this.listCallCenterEjecutivos();
+
+      // El catálogo activo (listCallCenterEjecutivos) filtra por is_active=true HOY,
+      // sin importar el mes que se está calculando. Si alguien vendió en el período
+      // pero luego se desactivó, sus métricas SV quedan huérfanas (no matchean ningún
+      // alias del equipo) y se pierden en buildCallCenterInputsPerCampus. Se agregan
+      // aquí como entradas "fantasma" resueltas directo en la tabla user (sin filtro
+      // de is_active), para no perder ventas reales de ex-ejecutivas del período.
+      const teamAliasSets = await this.buildCrmUserSvAliasSets(team.map((t) => t.userId));
+      const coveredKeys = new Set<string>();
+      for (const set of teamAliasSets.values()) {
+        for (const alias of set) coveredKeys.add(alias);
+      }
+      const orphanKeys = [...metricsByKey.values()]
+        .map((m) => m.userId.trim().toLowerCase())
+        .filter((k) => k && !coveredKeys.has(k));
+      if (orphanKeys.length > 0) {
+        const uniqueOrphans = [...new Set(orphanKeys)];
+        const orphanRows: Array<{
+          id: string; user_name: string | null; c_usersv: string | null;
+          first_name: string | null; last_name: string | null;
+        }> = await this.dataSource.query(
+          `SELECT id, user_name, c_usersv, first_name, last_name FROM "user"
+           WHERE COALESCE(deleted, false) = false
+             AND (LOWER(user_name) = ANY($1::text[]) OR LOWER(c_usersv) = ANY($1::text[]))`,
+          [uniqueOrphans],
+        );
+        for (const row of orphanRows) {
+          const svKey = String(row.c_usersv || row.user_name || '').trim().toLowerCase();
+          if (!svKey || team.some((t) => t.userId.trim().toLowerCase() === svKey)) continue;
+          const displayName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim()
+            || row.user_name || svKey;
+          team.push({ userId: svKey, userName: displayName });
+        }
+      }
+
       const teamByKey = new Map(team.map((e) => [e.userId.toLowerCase(), e]));
       for (const m of metricsByKey.values()) {
         m.userName = teamByKey.get(m.userId)?.userName
