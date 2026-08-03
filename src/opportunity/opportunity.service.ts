@@ -3442,7 +3442,7 @@ export class OpportunityService {
     return result;
   }
 
-  async redirectToManager(_usuario: string, opportunityId: string, isOiDerivedFlow?: boolean) {
+  async redirectToManager(usuario: string, opportunityId: string, isOiDerivedFlow?: boolean) {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id: opportunityId, deleted: false },
     });
@@ -3513,12 +3513,13 @@ export class OpportunityService {
 
     if (effectiveOiDerived) {
       const sedeId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? 1;
-      // assignedUserId es una relación no cargada en este findOne; leer el FK crudo.
-      const rawAssignedId: string =
-        (opportunity as any).assigned_user_id ??
+      // Prioridad: usuario del parámetro (quien abre el redirect) → FK crudo → relación.
+      const resolvedUser =
+        usuario ||
+        (opportunity as any).assigned_user_id ||
         this.resolveAssignedUserId(opportunity.assignedUserId);
       const expectedUrl = this.buildManagerLeadsUrl(
-        rawAssignedId || opportunity.assignedUserId,
+        resolvedUser,
         opportunityId,
         { isOiFlow: true, sedeId: sedeId ?? 1 },
       );
