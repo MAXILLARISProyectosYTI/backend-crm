@@ -519,7 +519,15 @@ export class CommissionsDataService {
   }
 
   async clearCierreTtoCalculatedData(periodId: number): Promise<void> {
-    await this.detailRepo.delete({ record: { period: { id: periodId } } });
+    // TypeORM's DeleteQueryBuilder no resuelve relaciones anidadas (record.period.id) —
+    // hay que resolver los record_id primero y borrar por esa FK directa.
+    const periodRecordIds = await this.recordRepo.find({
+      where: { period: { id: periodId } },
+      select: ['id'],
+    });
+    if (periodRecordIds.length > 0) {
+      await this.detailRepo.delete({ record: { id: In(periodRecordIds.map((r) => r.id)) } });
+    }
     await this.recordRepo.update(
       { period: { id: periodId } },
       {
@@ -3142,6 +3150,11 @@ export class CommissionsDataService {
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
     if (period.area !== 'CIERRE_TTO') throw new Error('El período no es de área CIERRE_TTO');
 
+    // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+    if (period.estado === 'CERRADO') {
+      return this.buildDashboard(periodId);
+    }
+
     await this.initPeriodRates(periodId);
     await this.ensureCierreTtoTeamRecords(period, { pruneOrphans: true });
     await this.clearCierreTtoCalculatedData(periodId);
@@ -3346,6 +3359,11 @@ export class CommissionsDataService {
     const period = await this.periodRepo.findOne({ where: { id: periodId } });
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
     if (period.area !== 'CONTROLES') throw new Error('El período no es de área CONTROLES');
+
+    // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+    if (period.estado === 'CERRADO') {
+      return this.buildDashboard(periodId);
+    }
 
     await this.ensureControlesEjecutivosConfigured(period);
 
@@ -3848,6 +3866,11 @@ export class CommissionsDataService {
       if (!period) throw new Error(`Período ${periodId} no encontrado`);
       if (period.area !== 'OI') throw new Error('El período no es de área OI');
 
+      // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+      if (period.estado === 'CERRADO') {
+        return this.buildDashboard(periodId, undefined, undefined, viewCampusId);
+      }
+
       await this.ensureOiEjecutivosConfigured(period);
       await this.pruneNonOiRecords(periodId);
 
@@ -3956,12 +3979,14 @@ export class CommissionsDataService {
     }
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateControles para recalcular. */
   async getControlesDashboard(periodId: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateControles(periodId, true);
+    return this.buildDashboard(periodId);
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateOi para recalcular. */
   async getOiDashboard(periodId: number, viewCampusId?: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateOi(periodId, viewCampusId);
+    return this.buildDashboard(periodId, undefined, undefined, viewCampusId);
   }
 
   /** Diagnóstico prod: HTTP SV vs BD directa (sin recalcular comisiones). */
@@ -4460,6 +4485,11 @@ export class CommissionsDataService {
       if (!period) throw new Error(`Período ${periodId} no encontrado`);
       if (period.area !== 'CALL_CENTER') throw new Error('El período no es de área CALL_CENTER');
 
+      // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+      if (period.estado === 'CERRADO') {
+        return this.buildDashboard(periodId);
+      }
+
       await this.ensureCallCenterEjecutivosConfigured(period, { pruneOrphans: true });
 
       const { rows, source, svError } = await this.fetchCallCenterMetricsFromSv(
@@ -4570,8 +4600,9 @@ export class CommissionsDataService {
     }
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateCallCenter para recalcular. */
   async getCallCenterDashboard(periodId: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateCallCenter(periodId);
+    return this.buildDashboard(periodId);
   }
 
   async getExportDetail(periodId: number): Promise<CommissionExportDetail> {
@@ -5044,15 +5075,18 @@ export class CommissionsDataService {
       if (!period) return null;
 
       if (area === 'CONTROLES') {
-        return this.syncAndCalculateControles(period.id, true);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/controles.
+        return this.buildDashboard(period.id);
       }
 
       if (area === 'OI') {
-        return this.syncAndCalculateOi(period.id, campusId);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/oi.
+        return this.buildDashboard(period.id, undefined, undefined, campusId);
       }
 
       if (area === 'CALL_CENTER') {
-        return this.syncAndCalculateCallCenter(period.id);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/call-center.
+        return this.buildDashboard(period.id);
       }
 
       if (area === 'CIERRE_TTO') {
