@@ -6,6 +6,8 @@ import { CreateClinicHistoryCrmDto } from "src/opportunity/dto/clinic-history";
 import { PatientIsNewCrmResponse } from "./patient-is-new.types";
 import { CampusListResponse } from "./campus.types";
 import { QuotationListResponse, QuotationListItem } from "./quotation-list.types";
+import { buildOutboundCrmAgendaHeaders } from "../crm-agenda-transaction/crm-agenda-correlation.middleware";
+import { CRM_AGENDA_HEADERS } from "../crm-agenda-transaction/crm-agenda-transaction.constants";
 
 @Injectable()
 export class SvServices {
@@ -160,12 +162,19 @@ export class SvServices {
     }
   }
 
-  async createClinicHistoryCrm(payloadClinicHistory: CreateClinicHistoryCrmDto, tokenSv: string ){
+  async createClinicHistoryCrm(
+    payloadClinicHistory: CreateClinicHistoryCrmDto,
+    tokenSv: string,
+    idempotencyKey?: string,
+  ) {
     try {
       const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-patient-crm/`, payloadClinicHistory, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
+        headers: buildOutboundCrmAgendaHeaders({
+          Authorization: `Bearer ${tokenSv}`,
+          ...(idempotencyKey
+            ? { [CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey }
+            : {}),
+        }),
       })
   
       return responseClinicHistory.data;
@@ -303,12 +312,20 @@ export class SvServices {
     }
   }
 
-  async updateClinicHistoryCrm(espoId: string, tokenSv: string, payload: Partial<CreateClinicHistoryCrmDto>) {
+  async updateClinicHistoryCrm(
+    espoId: string,
+    tokenSv: string,
+    payload: Partial<CreateClinicHistoryCrmDto>,
+    idempotencyKey?: string,
+  ) {
     try {
       const responsePatientSV = await axios.put(`${this.URL_BACK_SV}/opportunities/update-clinic-history-crm/${espoId}`, payload, {
-        headers: {
-          Authorization: `Bearer ${tokenSv}`
-        }
+        headers: buildOutboundCrmAgendaHeaders({
+          Authorization: `Bearer ${tokenSv}`,
+          ...(idempotencyKey
+            ? { [CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey }
+            : {}),
+        }),
       })
   
       return responsePatientSV.data;
@@ -614,7 +631,10 @@ export class SvServices {
       }
       const responseRedirectByOpportunityId = await axios.get(
         `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`,
-        { params },
+        {
+          params,
+          headers: buildOutboundCrmAgendaHeaders(),
+        },
       );
       return responseRedirectByOpportunityId.data;
     } catch {

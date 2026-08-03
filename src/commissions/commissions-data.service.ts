@@ -519,7 +519,15 @@ export class CommissionsDataService {
   }
 
   async clearCierreTtoCalculatedData(periodId: number): Promise<void> {
-    await this.detailRepo.delete({ record: { period: { id: periodId } } });
+    // TypeORM's DeleteQueryBuilder no resuelve relaciones anidadas (record.period.id) —
+    // hay que resolver los record_id primero y borrar por esa FK directa.
+    const periodRecordIds = await this.recordRepo.find({
+      where: { period: { id: periodId } },
+      select: ['id'],
+    });
+    if (periodRecordIds.length > 0) {
+      await this.detailRepo.delete({ record: { id: In(periodRecordIds.map((r) => r.id)) } });
+    }
     await this.recordRepo.update(
       { period: { id: periodId } },
       {
@@ -3142,6 +3150,11 @@ export class CommissionsDataService {
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
     if (period.area !== 'CIERRE_TTO') throw new Error('El período no es de área CIERRE_TTO');
 
+    // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+    if (period.estado === 'CERRADO') {
+      return this.buildDashboard(periodId);
+    }
+
     await this.initPeriodRates(periodId);
     await this.ensureCierreTtoTeamRecords(period, { pruneOrphans: true });
     await this.clearCierreTtoCalculatedData(periodId);
@@ -3346,6 +3359,11 @@ export class CommissionsDataService {
     const period = await this.periodRepo.findOne({ where: { id: periodId } });
     if (!period) throw new Error(`Período ${periodId} no encontrado`);
     if (period.area !== 'CONTROLES') throw new Error('El período no es de área CONTROLES');
+
+    // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+    if (period.estado === 'CERRADO') {
+      return this.buildDashboard(periodId);
+    }
 
     await this.ensureControlesEjecutivosConfigured(period);
 
@@ -3848,6 +3866,11 @@ export class CommissionsDataService {
       if (!period) throw new Error(`Período ${periodId} no encontrado`);
       if (period.area !== 'OI') throw new Error('El período no es de área OI');
 
+      // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+      if (period.estado === 'CERRADO') {
+        return this.buildDashboard(periodId, undefined, undefined, viewCampusId);
+      }
+
       await this.ensureOiEjecutivosConfigured(period);
       await this.pruneNonOiRecords(periodId);
 
@@ -3956,12 +3979,14 @@ export class CommissionsDataService {
     }
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateControles para recalcular. */
   async getControlesDashboard(periodId: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateControles(periodId, true);
+    return this.buildDashboard(periodId);
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateOi para recalcular. */
   async getOiDashboard(periodId: number, viewCampusId?: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateOi(periodId, viewCampusId);
+    return this.buildDashboard(periodId, undefined, undefined, viewCampusId);
   }
 
   /** Diagnóstico prod: HTTP SV vs BD directa (sin recalcular comisiones). */
@@ -4137,10 +4162,13 @@ export class CommissionsDataService {
     if (options?.pruneOrphans !== false) {
       const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
       for (const rec of existing) {
-        if (!teamUserIds.has(rec.userId.trim().toLowerCase())) {
-          await this.detailRepo.delete({ record: { id: rec.id } });
-          await this.recordRepo.delete(rec.id);
-        }
+        if (teamUserIds.has(rec.userId.trim().toLowerCase())) continue;
+        // No borrar ex-ejecutivas con evidencia real (ventas/comisión) del período,
+        // solo por estar inactivas hoy en el catálogo — ver pruneCallCenterRecordsToCatalog.
+        const hasEvidence = Number(rec.cantidadUnidades ?? 0) > 0 || Number(rec.comisionTotal ?? 0) > 0;
+        if (hasEvidence) continue;
+        await this.detailRepo.delete({ record: { id: rec.id } });
+        await this.recordRepo.delete(rec.id);
       }
     }
 
@@ -4180,11 +4208,56 @@ export class CommissionsDataService {
     let svError: string | null = null;
     const campusIds = campusId != null ? this.commissionCampusCandidates(campusId) : null;
 
+    // Build CRM-derived patient_id→ejecutivo map for eva_asist attribution (opportunity-based).
+    let crmExecMap: Array<{ patient_id: number; ejecutivo: string }> = [];
+    try {
+      const chcEspoRows = await this.oiSvInvoiceService.queryClinicHistoryCrmEspoMap();
+      const espoIds = [...new Set(chcEspoRows.map((r) => r.espo_id).filter(Boolean))];
+      if (espoIds.length > 0) {
+        const crmRows: Array<{ id: string; sv_username: string }> = await this.dataSource.query(
+          `SELECT o.id,
+                  LOWER(COALESCE(NULLIF(TRIM(u.c_usersv), ''), NULLIF(TRIM(u.user_name), ''), '')) AS sv_username
+           FROM opportunity o
+           INNER JOIN "user" u ON u.id = o.assigned_user_id
+           WHERE o.id = ANY($1::text[])
+             AND o.assigned_user_id IS NOT NULL`,
+          [espoIds],
+        );
+        const espoToSvUser = new Map(crmRows.map((r) => [r.id, r.sv_username]));
+        crmExecMap = chcEspoRows
+          .map((r) => ({
+            patient_id: Number(r.patient_id),
+            ejecutivo: espoToSvUser.get(r.espo_id) ?? '',
+          }))
+          .filter((r) => r.ejecutivo && r.patient_id > 0);
+      }
+    } catch (mapErr) {
+      this.logger.warn(
+        `Call Center CRM exec map falló: ${mapErr instanceof Error ? mapErr.message : mapErr}`,
+      );
+    }
+
+    // Build SV username → CRM username map for eval SO creator translation (tto attribution).
+    let svUserMap: Array<{ sv_username: string; crm_username: string }> = [];
+    try {
+      svUserMap = await this.dataSource.query(
+        `SELECT LOWER(TRIM(c_usersv)) AS sv_username, LOWER(TRIM(user_name)) AS crm_username
+         FROM "user"
+         WHERE c_usersv IS NOT NULL AND TRIM(c_usersv) <> '' AND deleted = false`,
+      );
+    } catch (svMapErr) {
+      this.logger.warn(
+        `Call Center SV→CRM user map falló: ${svMapErr instanceof Error ? svMapErr.message : svMapErr}`,
+      );
+    }
+
     try {
       const dbRows = await this.oiSvInvoiceService.queryCallCenterMetricsRows(
         start,
         end,
         campusIds,
+        crmExecMap,
+        svUserMap,
       );
       if (dbRows.length > 0) {
         return { rows: dbRows, source: 'sv-invoice-db', svError: null };
@@ -4241,16 +4314,23 @@ export class CommissionsDataService {
     return merged;
   }
 
-  /** Elimina filas de usuarios que ya no están en el catálogo Call Center (conserva sedes SV). */
+  /**
+   * Elimina filas huérfanas sin evidencia real (usuarios que ya no están en el
+   * catálogo Call Center Y no tienen ventas/comisión). Conserva registros de
+   * ex-ejecutivas con ventas reales del período (ver orphanKeys en
+   * syncAndCalculateCallCenter) aunque hoy estén inactivas en el catálogo —
+   * de lo contrario esta función las borraría justo después de crearse.
+   */
   private async pruneCallCenterRecordsToCatalog(period: CommissionPeriod): Promise<void> {
     const team = await this.listCallCenterEjecutivos();
     const teamUserIds = new Set(team.map((e) => e.userId.trim().toLowerCase()));
     const existing = await this.recordRepo.find({ where: { period: { id: period.id } } });
     for (const rec of existing) {
-      if (!teamUserIds.has(rec.userId.trim().toLowerCase())) {
-        await this.detailRepo.delete({ record: { id: rec.id } });
-        await this.recordRepo.delete(rec.id);
-      }
+      if (teamUserIds.has(rec.userId.trim().toLowerCase())) continue;
+      const hasEvidence = Number(rec.cantidadUnidades ?? 0) > 0 || Number(rec.comisionTotal ?? 0) > 0;
+      if (hasEvidence) continue;
+      await this.detailRepo.delete({ record: { id: rec.id } });
+      await this.recordRepo.delete(rec.id);
     }
   }
 
@@ -4272,6 +4352,11 @@ export class CommissionsDataService {
       evaAsistidas: 0,
     });
 
+    // Un mismo ejecutivo puede aparecer varias veces en `team` (una fila por sede
+    // de catálogo). Sus métricas SV solo deben sumarse una vez; de lo contrario
+    // cada fila de catálogo re-suma el total completo y lo duplica/triplica.
+    const metricsSummedFor = new Set<string>();
+
     for (const eje of team) {
       const svKey = eje.userId.trim().toLowerCase();
       const catalogCampus = eje.campusId != null
@@ -4280,27 +4365,32 @@ export class CommissionsDataService {
       const aliases = aliasSets.get(eje.userId) ?? new Set([svKey]);
       aliases.add(svKey);
 
-      for (const m of metricsByKey.values()) {
-        if (!aliases.has(m.userId.trim().toLowerCase())) continue;
-        if (m.campusId == null) continue;
-        const metricCampus = this.mapCommissionCampusId(m.campusId);
-        // Solo métricas de la sede del equipo CRM (evita Airen Lima con 1 eva en Trujillo).
-        if (catalogCampus != null && metricCampus !== catalogCampus) continue;
-        const key = `${svKey}::${metricCampus}`;
-        const prev = accum.get(key);
-        accum.set(key, {
-          userId: svKey,
-          userName: eje.userName ?? m.userName ?? svKey,
-          campusId: metricCampus,
-          campusNombre: this.commissionCampusNombre(metricCampus),
-          ttoOfmContado: (prev?.ttoOfmContado ?? 0) + m.ttoOfmContado,
-          ttoOfmCuotas: (prev?.ttoOfmCuotas ?? 0) + m.ttoOfmCuotas,
-          ttoApneaContado: (prev?.ttoApneaContado ?? 0) + m.ttoApneaContado,
-          ttoApneaCuotas: (prev?.ttoApneaCuotas ?? 0) + m.ttoApneaCuotas,
-          evaVendidasOfm: (prev?.evaVendidasOfm ?? 0) + m.evaVendidasOfm,
-          evaVendidasApnea: (prev?.evaVendidasApnea ?? 0) + m.evaVendidasApnea,
-          evaAsistidas: (prev?.evaAsistidas ?? 0) + m.evaAsistidas,
-        });
+      if (!metricsSummedFor.has(svKey)) {
+        metricsSummedFor.add(svKey);
+        for (const m of metricsByKey.values()) {
+          if (!aliases.has(m.userId.trim().toLowerCase())) continue;
+          if (m.campusId == null) continue;
+          const metricCampus = this.mapCommissionCampusId(m.campusId);
+          // Se conservan ventas fuera de la sede "home" del ejecutivo (evidencia real:
+          // pago + reserva + auditoría en SV ya lo exige eva_vend/tto_agg). Cada sede
+          // obtiene su propia fila para que el filtro por sede muestre solo lo suyo,
+          // y "Todas" sume el total real del ejecutivo entre sedes.
+          const key = `${svKey}::${metricCampus}`;
+          const prev = accum.get(key);
+          accum.set(key, {
+            userId: svKey,
+            userName: eje.userName ?? m.userName ?? svKey,
+            campusId: metricCampus,
+            campusNombre: this.commissionCampusNombre(metricCampus),
+            ttoOfmContado: (prev?.ttoOfmContado ?? 0) + m.ttoOfmContado,
+            ttoOfmCuotas: (prev?.ttoOfmCuotas ?? 0) + m.ttoOfmCuotas,
+            ttoApneaContado: (prev?.ttoApneaContado ?? 0) + m.ttoApneaContado,
+            ttoApneaCuotas: (prev?.ttoApneaCuotas ?? 0) + m.ttoApneaCuotas,
+            evaVendidasOfm: (prev?.evaVendidasOfm ?? 0) + m.evaVendidasOfm,
+            evaVendidasApnea: (prev?.evaVendidasApnea ?? 0) + m.evaVendidasApnea,
+            evaAsistidas: (prev?.evaAsistidas ?? 0) + m.evaAsistidas,
+          });
+        }
       }
 
       if (catalogCampus != null) {
@@ -4415,6 +4505,11 @@ export class CommissionsDataService {
       if (!period) throw new Error(`Período ${periodId} no encontrado`);
       if (period.area !== 'CALL_CENTER') throw new Error('El período no es de área CALL_CENTER');
 
+      // Período cerrado: congelado, no se vuelve a sincronizar/sobreescribir.
+      if (period.estado === 'CERRADO') {
+        return this.buildDashboard(periodId);
+      }
+
       await this.ensureCallCenterEjecutivosConfigured(period, { pruneOrphans: true });
 
       const { rows, source, svError } = await this.fetchCallCenterMetricsFromSv(
@@ -4451,6 +4546,52 @@ export class CommissionsDataService {
       }
 
       const team = await this.listCallCenterEjecutivos();
+
+      // El catálogo activo (listCallCenterEjecutivos) filtra por is_active=true HOY,
+      // sin importar el mes que se está calculando. Si alguien vendió en el período
+      // pero luego se desactivó, sus métricas SV quedan huérfanas (no matchean ningún
+      // alias del equipo) y se pierden en buildCallCenterInputsPerCampus. Se agregan
+      // aquí como entradas "fantasma" resueltas directo en la tabla user (sin filtro
+      // de is_active), para no perder ventas reales de ex-ejecutivas del período.
+      const teamAliasSets = await this.buildCrmUserSvAliasSets(team.map((t) => t.userId));
+      const coveredKeys = new Set<string>();
+      for (const set of teamAliasSets.values()) {
+        for (const alias of set) coveredKeys.add(alias);
+      }
+      const orphanKeys = [...metricsByKey.values()]
+        .map((m) => m.userId.trim().toLowerCase())
+        .filter((k) => k && !coveredKeys.has(k));
+      if (orphanKeys.length > 0) {
+        const uniqueOrphans = [...new Set(orphanKeys)];
+        const callCenterTeamIds = Object.keys(VENTAS_STAFF_TEAM_META).filter((teamId) =>
+          VENTAS_STAFF_TEAM_META[teamId].areas.includes('CALL_CENTER'),
+        );
+        // Solo se rescatan huérfanos que fueron REALMENTE parte de algún equipo
+        // Call Center (aunque hoy is_active=false) — no cualquier usuario cuyo
+        // nombre aparezca en la auditoría SV, para no filtrar gente de OI/APNEA
+        // que nunca perteneció a Call Center (ej. Cristian Meléndez, solo OI).
+        const orphanRows: Array<{
+          id: string; user_name: string | null; c_usersv: string | null;
+          first_name: string | null; last_name: string | null;
+        }> = await this.dataSource.query(
+          `SELECT DISTINCT u.id, u.user_name, u.c_usersv, u.first_name, u.last_name
+           FROM "user" u
+           INNER JOIN team_user tu ON tu.user_id = u.id
+             AND COALESCE(tu.deleted, false) = false
+             AND tu.team_id = ANY($2::varchar[])
+           WHERE COALESCE(u.deleted, false) = false
+             AND (LOWER(u.user_name) = ANY($1::text[]) OR LOWER(u.c_usersv) = ANY($1::text[]))`,
+          [uniqueOrphans, callCenterTeamIds],
+        );
+        for (const row of orphanRows) {
+          const svKey = String(row.c_usersv || row.user_name || '').trim().toLowerCase();
+          if (!svKey || team.some((t) => t.userId.trim().toLowerCase() === svKey)) continue;
+          const displayName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim()
+            || row.user_name || svKey;
+          team.push({ userId: svKey, userName: displayName });
+        }
+      }
+
       const teamByKey = new Map(team.map((e) => [e.userId.toLowerCase(), e]));
       for (const m of metricsByKey.values()) {
         m.userName = teamByKey.get(m.userId)?.userName
@@ -4525,8 +4666,9 @@ export class CommissionsDataService {
     }
   }
 
+  /** Lee el último cálculo guardado sin volver a sincronizar con SV (rápido). Usar syncAndCalculateCallCenter para recalcular. */
   async getCallCenterDashboard(periodId: number): Promise<CommissionDashboard> {
-    return this.syncAndCalculateCallCenter(periodId);
+    return this.buildDashboard(periodId);
   }
 
   async getExportDetail(periodId: number): Promise<CommissionExportDetail> {
@@ -4999,15 +5141,18 @@ export class CommissionsDataService {
       if (!period) return null;
 
       if (area === 'CONTROLES') {
-        return this.syncAndCalculateControles(period.id, true);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/controles.
+        return this.buildDashboard(period.id);
       }
 
       if (area === 'OI') {
-        return this.syncAndCalculateOi(period.id, campusId);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/oi.
+        return this.buildDashboard(period.id, undefined, undefined, campusId);
       }
 
       if (area === 'CALL_CENTER') {
-        return this.syncAndCalculateCallCenter(period.id);
+        // Lee el último cálculo guardado (rápido) — el re-sync vive en POST /periods/:id/sync/call-center.
+        return this.buildDashboard(period.id);
       }
 
       if (area === 'CIERRE_TTO') {

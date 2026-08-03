@@ -62,6 +62,20 @@ export class OpportunityCronsService {
     }
   }
 
+  /** Cada 15 min: reconciliar oportunidades con pago/cita en SV que siguen en etapa abierta. */
+  @Cron('*/15 * * * *')
+  async runPromoteCompletedFlowsToCierreGanado() {
+    if (process.env.OPPORTUNITY_CIERRE_GANADO_SYNC_CRON_ENABLED === 'false') return;
+    try {
+      const result = await this.opportunityService.runCierreGanadoSyncBatch(100);
+      if (result.promoted > 0) {
+        console.log('[Cron] Oportunidades promovidas a Cierre ganado', result);
+      }
+    } catch (err) {
+      console.error('[Cron] Error en runPromoteCompletedFlowsToCierreGanado', err);
+    }
+  }
+
   // DESACTIVADO temporalmente — descomentar la línea siguiente para volver a activar el cron de reasignación
   // @Cron('*/2 * * * * *')
   async runReassignUser() {
