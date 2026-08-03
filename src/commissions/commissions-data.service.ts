@@ -4563,14 +4563,25 @@ export class CommissionsDataService {
         .filter((k) => k && !coveredKeys.has(k));
       if (orphanKeys.length > 0) {
         const uniqueOrphans = [...new Set(orphanKeys)];
+        const callCenterTeamIds = Object.keys(VENTAS_STAFF_TEAM_META).filter((teamId) =>
+          VENTAS_STAFF_TEAM_META[teamId].areas.includes('CALL_CENTER'),
+        );
+        // Solo se rescatan huérfanos que fueron REALMENTE parte de algún equipo
+        // Call Center (aunque hoy is_active=false) — no cualquier usuario cuyo
+        // nombre aparezca en la auditoría SV, para no filtrar gente de OI/APNEA
+        // que nunca perteneció a Call Center (ej. Cristian Meléndez, solo OI).
         const orphanRows: Array<{
           id: string; user_name: string | null; c_usersv: string | null;
           first_name: string | null; last_name: string | null;
         }> = await this.dataSource.query(
-          `SELECT id, user_name, c_usersv, first_name, last_name FROM "user"
-           WHERE COALESCE(deleted, false) = false
-             AND (LOWER(user_name) = ANY($1::text[]) OR LOWER(c_usersv) = ANY($1::text[]))`,
-          [uniqueOrphans],
+          `SELECT DISTINCT u.id, u.user_name, u.c_usersv, u.first_name, u.last_name
+           FROM "user" u
+           INNER JOIN team_user tu ON tu.user_id = u.id
+             AND COALESCE(tu.deleted, false) = false
+             AND tu.team_id = ANY($2::varchar[])
+           WHERE COALESCE(u.deleted, false) = false
+             AND (LOWER(u.user_name) = ANY($1::text[]) OR LOWER(u.c_usersv) = ANY($1::text[]))`,
+          [uniqueOrphans, callCenterTeamIds],
         );
         for (const row of orphanRows) {
           const svKey = String(row.c_usersv || row.user_name || '').trim().toLowerCase();
