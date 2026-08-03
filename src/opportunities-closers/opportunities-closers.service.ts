@@ -292,17 +292,38 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
     let skippedBadQuotationId = 0;
     let skippedNoGestion = 0;
 
+    // Descarte de ids no numéricos ANTES de tocar la BD.
+    const candidates: (typeof resultsFromSv)[0][] = [];
     for (const item of byQuotationId.values()) {
-      const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
-      if (Number.isNaN(quotationId)) {
+      const parsed = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
+      if (Number.isNaN(parsed)) {
         skippedBadQuotationId++;
         continue;
       }
-      const exists = await this.existsOpportunityCloserByQuotationId(String(item.id), item.history);
-      if (exists) {
-        skippedExists++;
-        continue;
-      }
+      candidates.push(item);
+    }
+
+    // ── Comprobación de existencia EN LOTE ────────────────────────────────
+    // Antes: `existsOpportunityCloserByQuotationId` dentro del bucle, o sea una
+    // query por cotización (hasta 50, el tope de `quotation/search`), y en la
+    // mayoría de búsquedas casi todas terminaban en "ya en cola". Ahora una
+    // sola query resuelve las 50, igual que ya hacía el cron
+    // (`opportunity-closers-crons.service.ts`).
+    const existingKeys = await this.findExistingQuotationKeys(
+      candidates.map((item) => String(item.id)),
+    );
+    const toInsert = candidates.filter((item) => {
+      const hcSet = existingKeys.get(String(item.id).trim());
+      if (!hcSet) return true;
+      const normalizedHc = item.history?.trim();
+      // Sin historia clínica basta con que exista la cotización (misma
+      // semántica que findOpportunityCloserByQuotationAndPatient).
+      return normalizedHc ? !hcSet.has(normalizedHc) : false;
+    });
+    skippedExists = candidates.length - toInsert.length;
+
+    for (const item of toInsert) {
+      const quotationId = typeof item.id === 'number' ? item.id : parseInt(String(item.id), 10);
 
       const gestiónOpp = await this.opportunityService.findOrSyncGestiónOpportunityByHc(
         item.history,
@@ -511,20 +532,17 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
       }
 
       if (tokenSv) {
-        // Sede en SV (una llamada por historia — ya existía)
-        const results = await Promise.allSettled(
-          uniqueHistories.map((history) => this.svServices.getSedeByClinicHistory(history, tokenSv)),
+        // Sedes en UNA sola petición a SV. Antes era `getSedeByClinicHistory`
+        // por historia: 20 peticiones HTTP por página, en cada carga y en cada
+        // búsqueda, más un log por historia inundando la consola.
+        const sedes = await this.svServices.getSedesByClinicHistories(uniqueHistories, tokenSv);
+        for (const history of uniqueHistories) {
+          const name = sedes[history]?.campusName;
+          if (name) sedeByHistory.set(history, name);
+        }
+        this.logger.log(
+          `[findAll] Sedes: ${sedeByHistory.size}/${uniqueHistories.length} resueltas en SV (resto → "${defaultSede}")`,
         );
-        results.forEach((result, i) => {
-          const history = uniqueHistories[i];
-          const name = result.status === 'fulfilled' ? (result.value?.campusName ?? null) : null;
-          if (name) {
-            sedeByHistory.set(history, name);
-            this.logger.log(`[findAll] Sede por historia: ${history} -> ${name}`);
-          } else {
-            this.logger.log(`[findAll] Sede por historia: ${history} -> sin dato en SV, default "${defaultSede}"`);
-          }
-        });
       }
     }
 

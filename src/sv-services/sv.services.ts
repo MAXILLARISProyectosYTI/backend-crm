@@ -82,6 +82,38 @@ export class SvServices {
    * GET /clinic-history/sede-by-clinic-history/:clinicHistory — ver docs/sv-api-requirements.md
    * Acepta respuesta con campusName/campus_name y campusId/campus_id.
    */
+  /**
+   * Sedes de MUCHAS historias clínicas en una sola petición.
+   *
+   * Sustituye a llamar `getSedeByClinicHistory` una vez por historia: con 20
+   * filas por página eran 20 peticiones HTTP a SV en cada carga y cada
+   * búsqueda del panel de cerradoras.
+   */
+  async getSedesByClinicHistories(
+    clinicHistories: string[],
+    tokenSv: string,
+  ): Promise<Record<string, { campusId?: number; campusName?: string }>> {
+    const list = [...new Set((clinicHistories ?? []).map((h) => h?.trim()).filter(Boolean))];
+    if (!list.length) return {};
+    try {
+      const response = await axios.post(
+        `${this.URL_BACK_SV}/clinic-history/sedes-by-clinic-histories`,
+        { clinicHistories: list },
+        { headers: { Authorization: `Bearer ${tokenSv}` } },
+      );
+      const raw = response.data;
+      const data = raw?.data != null ? raw.data : raw;
+      return data && typeof data === 'object' ? data : {};
+    } catch (err) {
+      // Sin sedes el llamador cae a su valor por defecto ("Lima"); no vale
+      // la pena tumbar la respuesta entera del panel por esto.
+      console.warn(
+        `[getSedesByClinicHistories] Falló el lote (${list.length} historias): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {};
+    }
+  }
+
   async getSedeByClinicHistory(
     clinicHistory: string,
     tokenSv: string,
