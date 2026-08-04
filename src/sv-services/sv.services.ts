@@ -581,6 +581,7 @@ export class SvServices {
     forceInitialFlow?: boolean,
     isOiDerivedFlow?: boolean,
     isReferralCreation?: boolean,
+    opportunityCreatedAt?: string,
   ) {
     try {
       const params: Record<string, string> = {
@@ -596,6 +597,9 @@ export class SvServices {
       }
       if (isReferralCreation === true) {
         params.isReferralCreation = 'true';
+      }
+      if (opportunityCreatedAt) {
+        params.opportunityCreatedAt = opportunityCreatedAt;
       }
       const responseRedirectByOpportunityId = await axios.get(
         `${this.URL_BACK_SV}/opportunities/redirect-by-opportunity-id/${opportunityId}`,
