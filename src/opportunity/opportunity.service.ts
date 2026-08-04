@@ -2343,6 +2343,7 @@ export class OpportunityService {
         opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL',
         opportunity.cSubCampaignId === CAMPAIGNS_IDS.OI,
         isReferralCreation,
+        opportunity.createdAt?.toISOString(),
       )) as Record<string, unknown>;
     } catch (err) {
       this.logger.warn(
@@ -3492,6 +3493,7 @@ export class OpportunityService {
       forceInitialFlow,
       effectiveOiDerived,
       isReferralCreation,
+      opportunity.createdAt?.toISOString(),
     );
 
     // SV ya conoce al paciente (clinic_history_crm) pero CRM puede no tener c_clinic_history
