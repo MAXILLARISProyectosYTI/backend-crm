@@ -2449,17 +2449,19 @@ export class CommissionsDataService {
   }> {
     const { start, end } = this.monthRange(year, month);
     const invoiceResult = await this.buildCerradorasContractsFromQuotationInvoices(start, end);
-    const { contracts, crmAdded } = await this.appendCerradorasCrmWinsMissingInvoice(
+    const { contracts: merged, crmAdded } = await this.appendCerradorasCrmWinsMissingInvoice(
       start,
       end,
       invoiceResult.contracts,
     );
+    const contracts = this.dedupeCerradorasContractsByContract(merged);
 
     this.logger.log(
       `Cerradoras sync ${year}-${month} (OS+factura, irh.service_order_creator_id): ` +
       `${invoiceResult.invoiceRows} O.S facturadas → ${invoiceResult.contracts.length} cierres, ` +
       `CRM=${invoiceResult.fromCrmAssign}, OS=${invoiceResult.fromOsCreator}, ` +
-      `billing=${invoiceResult.fromBilling}, CRM sin SV=+${crmAdded}, total=${contracts.length}`,
+      `billing=${invoiceResult.fromBilling}, CRM sin SV=+${crmAdded}, ` +
+      `dedup=-${merged.length - contracts.length}, total=${contracts.length}`,
     );
     return {
       contracts,
@@ -2469,6 +2471,27 @@ export class CommissionsDataService {
         contractsSv: invoiceResult.contracts.length,
       },
     };
+  }
+
+  /**
+   * Un mismo contrato/ejecutivo puede aparecer más de una vez (fallback HTTP sin dedup
+   * por contrato, o solape SV+CRM). Se queda solo un cierre por contrato/ejecutivo/campus
+   * — el de fecha de contrato más temprana — porque cada contrato paga comisión una sola vez.
+   */
+  private dedupeCerradorasContractsByContract(contracts: ContractSvRow[]): ContractSvRow[] {
+    const byKey = new Map<string, ContractSvRow>();
+    for (const c of contracts) {
+      const key = `${c.contractId}__${c.ejecutivo}__${c.campusId}`;
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, c);
+        continue;
+      }
+      const existingDate = existing.firstPaymentDate ?? existing.contractDate;
+      const candidateDate = c.firstPaymentDate ?? c.contractDate;
+      if (candidateDate < existingDate) byKey.set(key, c);
+    }
+    return [...byKey.values()];
   }
 
   private async loadCerradorasPresaveData(quotationIds: number[]): Promise<{
@@ -3176,9 +3199,96 @@ export class CommissionsDataService {
       cerradoraIds,
     );
     await this.ensureCierreTtoTeamRecords(period, { pruneOrphans: false });
+    await this.applyCerradorasOiBonus(period, catalog);
     await this.savePeriodSyncMeta(period, stats);
 
     return this.buildDashboard(periodId, new Date().toISOString(), undefined, undefined, stats);
+  }
+
+  /**
+   * Mapa paciente (id_clinic_history) → cerradora dueña, histórico completo (no solo el mes).
+   * Reutiliza la misma resolución de cierres OFM/MARPE/APNEA que usa el sync mensual
+   * (`fetchCerradorasInvoiceRowsByQuotation` + `buildCerradorasContractsFromSvRows`) — NO la
+   * tabla `c_oportunidad_cerradora.contract_id`, que en producción está siempre vacía y no
+   * sirve para este mapeo. Si un paciente tuvo varios cierres con distintas cerradoras, se
+   * queda con el más reciente.
+   */
+  private async buildCerradoraPatientOwnershipMap(): Promise<Map<number, string>> {
+    const historicalStart = '2020-01-01';
+    const historicalEnd = new Date().toISOString().slice(0, 10);
+    const svRows = await this.fetchCerradorasInvoiceRowsByQuotation(historicalStart, historicalEnd);
+    const allContracts = await this.buildCerradorasContractsFromSvRows(historicalStart, svRows);
+
+    const contractIds = [...new Set(allContracts.map((c) => c.contractId).filter((id) => id > 0))];
+    const clinicHistoryByContract = await this.oiSvInvoiceService.queryClinicHistoryIdByContractIds(
+      contractIds,
+    );
+
+    const ownerByPatient = new Map<number, { userId: string; date: string }>();
+    for (const contract of allContracts) {
+      const patientId = clinicHistoryByContract.get(contract.contractId);
+      if (!patientId) continue;
+      const date = contract.firstPaymentDate ?? contract.contractDate;
+      const existing = ownerByPatient.get(patientId);
+      if (!existing || date > existing.date) {
+        ownerByPatient.set(patientId, { userId: contract.ejecutivo, date });
+      }
+    }
+
+    return new Map([...ownerByPatient].map(([patientId, owner]) => [patientId, owner.userId]));
+  }
+
+  /**
+   * Bono 2% cerradoras: sobre la facturación de tratamientos OI (odontología general, no
+   * evaluación ni cuotas del propio contrato de cierre) de los pacientes que cada cerradora
+   * cerró — no un prorrateo parejo entre todas. Ver commission_record.comisionOi.
+   */
+  private async applyCerradorasOiBonus(
+    period: CommissionPeriod,
+    catalog: CerradorasEjecutivoCatalogItem[],
+  ): Promise<void> {
+    const { start, end } = this.monthRange(period.year, period.month);
+    const porcentaje = Number(period.porcentajeComisionOi ?? CERRADORAS_OI_PORCENTAJE_DEFAULT);
+
+    let ownerByPatient: Map<number, string>;
+    let facturacionRows: Array<{ id_clinic_history: number; amount_pen: number; campus_id: number }>;
+    try {
+      [ownerByPatient, facturacionRows] = await Promise.all([
+        this.buildCerradoraPatientOwnershipMap(),
+        this.oiSvInvoiceService.queryOiTratamientoFacturacionRows(start, end),
+      ]);
+    } catch (err) {
+      this.logger.warn(
+        `Bono OI cerradoras ${period.year}-${period.month} omitido: ${err instanceof Error ? err.message : err}`,
+      );
+      return;
+    }
+
+    const montoByUser = new Map<string, number>();
+    for (const row of facturacionRows) {
+      const userId = ownerByPatient.get(row.id_clinic_history);
+      if (!userId) continue;
+      montoByUser.set(userId, (montoByUser.get(userId) ?? 0) + row.amount_pen);
+    }
+    if (montoByUser.size === 0) return;
+
+    const catalogByUser = new Map(catalog.map((c) => [c.userId, c]));
+    for (const [userId, montoConIgv] of montoByUser) {
+      const eje = catalogByUser.get(userId);
+      if (!eje) continue;
+      const record = await this.recordRepo.findOne({
+        where: { period: { id: period.id }, userId, campusId: eje.campusId },
+        relations: ['period'],
+      });
+      if (!record) continue;
+      const comisionOi = Math.round(montoConIgv * porcentaje * 100) / 100;
+      record.montoFacturadoOiConIgv = Math.round(montoConIgv * 100) / 100;
+      record.comisionOi = comisionOi;
+      record.comisionTotal = Math.round(
+        (Number(record.comisionTtos) + Number(record.comisionBono) + comisionOi) * 100,
+      ) / 100;
+      await this.recordRepo.save(record);
+    }
   }
 
 
