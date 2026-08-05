@@ -3203,59 +3203,96 @@ export class OpportunityService {
         message: 'Oportunidad actualizada (reprogramación de cita)',
       });
 
-      let updateActivity: Meeting | null = null;
+      // Sync Meeting (actividad): no debe tumbar la reprogramación si falla.
+      // Preferir parentId; si no hay meeting, crear (p. ej. alta inicial no sincronizó CRM).
+      let activity: Meeting | null = null;
       try {
-        const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
-        if (meeting) {
-          let dateStart = opportunityEspo.cDateReservation;
-          let dateEnd = opportunityEspo.cDateReservation;
-
-          const [startTime, endTime] = opportunityEspo.cAppointment!
+        if (!opportunityEspo.cAppointment || !opportunityEspo.cDateReservation) {
+          this.logger.warn(
+            `[reprograminReservation] Opp ${opportunityId} sin fecha/hora de cita — se omite sync de actividad`,
+          );
+        } else {
+          const [startTime, endTime] = opportunityEspo.cAppointment
             .split('-')
             .map((s) => s.trim());
-          dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
-          dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
+          const dateStart = new Date(`${opportunityEspo.cDateReservation} ${startTime}:00`);
+          const dateEnd = new Date(`${opportunityEspo.cDateReservation} ${endTime}:00`);
 
           const payloadUpdateMetting: UpdateMeetingDto = {
-            dateStart: new Date(dateStart),
-            dateEnd: new Date(dateEnd),
+            dateStart,
+            dateEnd,
             description: 'Reprogramación de reserva',
           };
 
-          updateActivity = await this.meetingService.updateByParentName(
-            opportunityEspo.name!,
-            payloadUpdateMetting,
-          );
+          const meetingsByParent = await this.meetingService.getByParentId(opportunityId);
+          const meeting =
+            meetingsByParent[0] ??
+            (opportunityEspo.name
+              ? await this.meetingService.getByParentName(opportunityEspo.name)
+              : null);
 
-          await this.actionHistoryService.addRecord({
-            targetId: updateActivity.id,
-            target_type: ENUM_TARGET_TYPE.MEETING,
-            userId: userId,
-            message: 'Actividad actualizada (reprogramación de cita)',
-          });
-        } else {
-          this.logger.warn(
-            `[reprograminReservation] Sin actividad Meeting para opp ${opportunityId} (${opportunityEspo.name}) — cita y oportunidad ya actualizadas`,
-          );
+          if (meeting) {
+            activity = meeting.parentId
+              ? await this.meetingService.updateByParentId(meeting.parentId, payloadUpdateMetting)
+              : await this.meetingService.updateByParentName(meeting.name!, payloadUpdateMetting);
+
+            await this.actionHistoryService.addRecord({
+              targetId: activity.id,
+              target_type: ENUM_TARGET_TYPE.MEETING,
+              userId,
+              message: 'Actividad actualizada (reprogramación de cita)',
+            });
+          } else {
+            const assignedUserId =
+              opportunityEspo.assignedUserId &&
+              typeof opportunityEspo.assignedUserId === 'object'
+                ? opportunityEspo.assignedUserId.id
+                : (opportunityEspo.assignedUserId as unknown as string | undefined);
+
+            activity = await this.meetingService.create({
+              id: this.idGeneratorService.generateId(),
+              name: opportunityEspo.name,
+              status: 'Planned',
+              description: 'Reprogramación de reserva',
+              parentId: opportunityId,
+              parentType: 'Opportunity',
+              dateStart,
+              dateEnd,
+              assignedUserId,
+            });
+
+            this.logger.warn(
+              `reprograminReservation: sin actividad previa para ${opportunityId}; meeting ${activity.id} creado`,
+            );
+
+            await this.actionHistoryService.addRecord({
+              targetId: activity.id,
+              target_type: ENUM_TARGET_TYPE.MEETING,
+              userId,
+              message: 'Actividad creada (reprogramación)',
+            });
+          }
         }
       } catch (meetingErr) {
         this.logger.warn(
-          `[reprograminReservation] Actividad no actualizada para ${opportunityId}: ${meetingErr instanceof Error ? meetingErr.message : meetingErr}`,
+          `[reprograminReservation] Actividad no sincronizada para ${opportunityId}: ${meetingErr instanceof Error ? meetingErr.message : meetingErr}`,
         );
       }
 
       return {
         message: 'Reserva reprogramada exitosamente',
-        newMeeting: updateActivity,
+        newMeeting: activity,
         newOpportunity: opportunityEspo,
       };
       
     } catch (error) {
-      console.error('Error en reprogramingReservation:', error);
-      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+      this.logger.error('Error en reprogramingReservation', error instanceof Error ? error.stack : error);
+      if (error instanceof NotFoundException || error instanceof BadRequestException || error instanceof ForbiddenException) {
         throw error;
       }
-      throw new BadRequestException('Error al reprogramar la reserva');
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Error al reprogramar la reserva',
+      );
     }
   }
 

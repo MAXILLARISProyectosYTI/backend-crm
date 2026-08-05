@@ -84,15 +84,44 @@ export class CrmAgendaTransactionSvService implements OnModuleDestroy {
     );
 
     if (existing.rows[0]) {
-      return this.handleExisting(existing.rows[0], correlationId, idempotencyKey, requestHash);
+      const row = existing.rows[0] as Record<string, unknown>;
+      const status = String(row.status);
+      // Reintento seguro tras fallo: reclaim del PENDING y re-ejecutar handler.
+      // Sin esto, un SYNC_CRM FAILED (p. ej. colisión de key con SV) bloquea
+      // todos los reintentos con el mismo payload.
+      if (
+        status === CrmAgendaTransactionStatus.FAILED &&
+        row.retry_safe !== false
+      ) {
+        const claimed = await pg.query(
+          `UPDATE crm_agenda_transaction SET
+             status = $2,
+             error_code = NULL,
+             error_message = NULL,
+             updated_at = NOW()
+           WHERE idempotency_key = $1 AND status = $3
+           RETURNING idempotency_key`,
+          [
+            idempotencyKey,
+            CrmAgendaTransactionStatus.PENDING,
+            CrmAgendaTransactionStatus.FAILED,
+          ],
+        );
+        if (!claimed.rows[0]) {
+          return this.handleExisting(row, correlationId, idempotencyKey, requestHash);
+        }
+        // cae al try/handler de abajo
+      } else {
+        return this.handleExisting(row, correlationId, idempotencyKey, requestHash);
+      }
+    } else {
+      await pg.query(
+        `INSERT INTO crm_agenda_transaction
+          (correlation_id, idempotency_key, espo_id, step, status, request_hash, retry_safe)
+         VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
+        [correlationId, idempotencyKey, espoId ?? null, step, CrmAgendaTransactionStatus.PENDING, requestHash],
+      );
     }
-
-    await pg.query(
-      `INSERT INTO crm_agenda_transaction
-        (correlation_id, idempotency_key, espo_id, step, status, request_hash, retry_safe)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
-      [correlationId, idempotencyKey, espoId ?? null, step, CrmAgendaTransactionStatus.PENDING, requestHash],
-    );
 
     try {
       const data = await handler();

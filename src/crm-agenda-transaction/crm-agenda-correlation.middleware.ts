@@ -40,9 +40,16 @@ export function buildOutboundCrmAgendaHeaders(
   extra?: Record<string, string>,
 ): Record<string, string> {
   const ctx = getCrmAgendaContext();
-  const headers: Record<string, string> = { ...(extra ?? {}) };
+  const headers: Record<string, string> = {};
+
+  // Contexto del request padre = defaults (correlación compartida).
   if (ctx?.correlationId) headers[CRM_AGENDA_HEADERS.CORRELATION_ID] = ctx.correlationId;
   if (ctx?.idempotencyKey) headers[CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY] = ctx.idempotencyKey;
   if (ctx?.transactionStep) headers[CRM_AGENDA_HEADERS.TRANSACTION_STEP] = ctx.transactionStep;
-  return headers;
+
+  // Extras ganan: el paso hijo (UPDATE_SV_LINK, CREATE_PATIENT_LINK, etc.)
+  // debe poder fijar su propia Idempotency-Key. Si el ctx pisa el extra,
+  // CRM y SV comparten la misma key SYNC_CRM en crm_agenda_transaction y
+  // el PUT a SV choca con el PENDING del padre → 400 genérico.
+  return { ...headers, ...(extra ?? {}) };
 }
