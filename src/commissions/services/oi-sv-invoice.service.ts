@@ -790,93 +790,12 @@ export class OiSvInvoiceService implements OnModuleInit {
   }
 
   /** Métricas Call Center desde BD SV. Atribución tto via eval SO creator (LAST) con fallback a CDN cuando no coinciden; asistencias via crmExecMap. */
-  /**
-   * Lista facturas de evaluación Call Center donde quien facturó (billing_user_id)
-   * difiere de quien creó la orden de servicio — candidatas para revisión manual
-   * por un admin, que decide si reasignar la comisión vía commission_invoice_override.
-   * No decide nada automáticamente: solo informa la discrepancia.
-   */
-  async queryCallCenterAttributionMismatches(
-    since: string,
-    until: string,
-    campusIds?: number[] | null,
-  ): Promise<Array<{
-    invoice_id: number;
-    invoice_date: string;
-    patient_history: string | null;
-    patient_name: string | null;
-    biller_login: string | null;
-    so_creator_login: string | null;
-    amount: number;
-    tariff_name: string | null;
-  }>> {
-    const client = this.createClient();
-    const params: unknown[] = [since, until];
-    let campusFilter = '';
-    if (campusIds != null && campusIds.length > 0) {
-      params.push(campusIds);
-      campusFilter = ` AND ch.campus = ANY($${params.length}::int[])`;
-    }
-
-    const sql = `
-      SELECT
-        irh.id AS invoice_id,
-        irh.invoice_date::text AS invoice_date,
-        ch.history AS patient_history,
-        NULLIF(TRIM(CONCAT(COALESCE(ch.name, ''), ' ', COALESCE(ch."lastNameFather", ''), ' ', COALESCE(ch."lastNameMother", ''))), '') AS patient_name,
-        LOWER(TRIM(u_bill.username)) AS biller_login,
-        LOWER(TRIM(u_so.username)) AS so_creator_login,
-        irb.amount,
-        t.name AS tariff_name
-      FROM invoice_result_head irh
-      INNER JOIN service_order so ON so.id = irh.id_service_order
-      INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
-      INNER JOIN invoice_result_body irb ON irb.idinvoice_result_head = irh.id
-      INNER JOIN tariff t ON t.id = irb.tariff_id
-        AND COALESCE(t.name, '') ILIKE '%Evalu%'
-        AND t.id NOT IN (58, 192, 198)
-      LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-      LEFT JOIN users u_so ON u_so.id = so.user_created
-      WHERE irh.status_invoice = 1
-        AND COALESCE(irh.credit_memo_state, false) = false
-        AND irh.invoice_date::date >= $1::date
-        AND irh.invoice_date::date <= $2::date
-        AND LOWER(TRIM(COALESCE(u_bill.username, ''))) <> LOWER(TRIM(COALESCE(u_so.username, '')))
-        AND u_bill.username IS NOT NULL
-        AND u_so.username IS NOT NULL
-        ${campusFilter}
-      ORDER BY irh.invoice_date DESC, irh.id DESC
-    `;
-
-    try {
-      await client.connect();
-      const result = await client.query(sql, params);
-      return result.rows as Array<{
-        invoice_id: number;
-        invoice_date: string;
-        patient_history: string | null;
-        patient_name: string | null;
-        biller_login: string | null;
-        so_creator_login: string | null;
-        amount: number;
-        tariff_name: string | null;
-      }>;
-    } finally {
-      try {
-        await client.end();
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
   async queryCallCenterMetricsRows(
     since: string,
     until: string,
     campusIds?: number[] | null,
     crmExecMap?: Array<{ patient_id: number; ejecutivo: string }>,
     svUserMap?: Array<{ sv_username: string; crm_username: string }>,
-    invoiceOverrides?: Array<{ invoice_id: number; assigned_user_login: string }>,
   ): Promise<Record<string, unknown>[]> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
@@ -920,26 +839,9 @@ export class OiSvInvoiceService implements OnModuleInit {
       )`;
     }
 
-    // invoice_override CTE: admin-decided reassignment por factura específica (Comisiones Controles UI).
-    let invoiceOverrideCte: string;
-    if (invoiceOverrides && invoiceOverrides.length > 0) {
-      params.push(invoiceOverrides.map((r) => r.invoice_id));
-      const idIdx = params.length;
-      params.push(invoiceOverrides.map((r) => r.assigned_user_login));
-      const loginIdx = params.length;
-      invoiceOverrideCte = `invoice_override(invoice_id, assigned_user_login) AS (
-        SELECT UNNEST($${idIdx}::int[]), UNNEST($${loginIdx}::text[])
-      )`;
-    } else {
-      invoiceOverrideCte = `invoice_override(invoice_id, assigned_user_login) AS (
-        SELECT NULL::int, NULL::text WHERE false
-      )`;
-    }
-
     const sql = `
       WITH ${crmExecCte},
       ${svUserMapCte},
-      ${invoiceOverrideCte},
       -- Step 1: LAST eval SO per patient (SV username).
       last_eval_so AS (
         SELECT DISTINCT ON (so_ev.idclinichistory)
@@ -1025,10 +927,7 @@ export class OiSvInvoiceService implements OnModuleInit {
       ),
       eva_vend AS (
         SELECT
-          -- El override manual (decidido por un admin en la UI de discrepancias)
-          -- tiene prioridad sobre quien facturó. Si no hay override, comportamiento
-          -- sin cambios (billing_user_id). No afecta a facturas sin override.
-          LOWER(TRIM(COALESCE(io.assigned_user_login, u_bill.username, ''))) AS ejecutivo,
+          LOWER(TRIM(COALESCE(u_bill.username, ''))) AS ejecutivo,
           ch.campus AS campus_id,
           COUNT(DISTINCT irh.id) FILTER (
             WHERE COALESCE(t.name, '') NOT ILIKE '%APNEA%'
@@ -1046,14 +945,13 @@ export class OiSvInvoiceService implements OnModuleInit {
           AND COALESCE(t.name, '') ILIKE '%Evalu%'
           AND t.id NOT IN (58, 192, 198)
         LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-        LEFT JOIN invoice_override io ON io.invoice_id = irh.id
         WHERE irh.status_invoice = 1
           AND COALESCE(irh.credit_memo_state, false) = false
           AND irh.invoice_date::date >= $1::date
           AND irh.invoice_date::date <= $2::date
           ${campusFilter}
         GROUP BY 1, 2
-        HAVING LOWER(TRIM(COALESCE(io.assigned_user_login, u_bill.username, ''))) <> ''
+        HAVING LOWER(TRIM(COALESCE(u_bill.username, ''))) <> ''
       ),
       eva_asist AS (
         SELECT
