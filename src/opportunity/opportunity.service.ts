@@ -2235,8 +2235,11 @@ export class OpportunityService {
     });
     if (!opportunity) return false;
 
-    if (opportunity.cIsReferralCreation === true) {
-      if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+    const isReferral =
+      opportunity.cIsReferralCreation === true ||
+      / REF-\d+$/.test(opportunity.name || '');
+
+    if (isReferral) {
       return this.isFlowCompleteForRedirect(opportunityId);
     }
 
@@ -2264,12 +2267,22 @@ export class OpportunityService {
     if (!opportunity) return false;
 
     const hasPatient = !!opportunity.cClinicHistory;
-    const hasReservation = !!(opportunity.cDateReservation && opportunity.cAppointment);
+    const oppDate = this.oppCreatedDate(opportunity);
+    const crmResDate = this.parseDateOnly(opportunity.cDateReservation);
+    const hasReservation =
+      !!(opportunity.cDateReservation && opportunity.cAppointment)
+      && crmResDate != null
+      && oppDate != null
+      && crmResDate >= oppDate;
     const hasFacturacion = opportunity.isPresaved === false;
     const osCount = await this.opportunityServiceOrderRepository.count({ where: { opportunityId } });
     const hasOS = osCount > 0;
 
-    return hasPatient && hasReservation && (hasFacturacion || hasOS);
+    const standardComplete = hasPatient && hasReservation && (hasFacturacion || hasOS);
+
+    // REF-N: mismo criterio que un lead común — completado solo con HC + cita + (factura u O.S.).
+    // Solo pago (flujo NO) debe seguir abriendo agenda al gestionar, no pantalla de completado.
+    return standardComplete;
   }
 
   /** Etapas abiertas que no deben persistir si SV/CRM ya tienen flujo facturado o completo. */
@@ -2301,6 +2314,82 @@ export class OpportunityService {
     return digits.slice(-9);
   }
 
+  private oppCreatedDate(opportunity: Opportunity): Date | null {
+    if (!opportunity.createdAt) return null;
+    const d = new Date(opportunity.createdAt);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  private parseDateOnly(value: unknown): Date | null {
+    if (value == null || value === '') return null;
+    const s = String(value).trim().slice(0, 10);
+    const d = new Date(`${s}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /**
+   * Pago/cita del redirect SV pertenecen a ESTE contacto (no a un paciente previo del mismo teléfono).
+   * Exige fechas >= creación de la oportunidad.
+   */
+  private redirectFlowBelongsToOpportunity(
+    opportunity: Opportunity,
+    redirect: Record<string, unknown> | null | undefined,
+  ): boolean {
+    const oppDate = this.oppCreatedDate(opportunity);
+    if (!oppDate || !redirect) return false;
+
+    const payment = redirect.payment as Record<string, unknown> | Record<string, unknown>[] | undefined;
+    const paymentRow = Array.isArray(payment) ? payment[0] : payment;
+    const reservation = redirect.reservation as Record<string, unknown> | undefined;
+
+    const paymentDate = this.parseDateOnly(paymentRow?.invoice_date);
+    const reservationDate = this.parseDateOnly(reservation?.date);
+
+    const paymentOk = !!paymentRow?.id && paymentDate != null && paymentDate >= oppDate;
+    const reservationOk = !!reservation?.id && reservationDate != null && reservationDate >= oppDate;
+
+    if (redirect.code === EnumCodeFlow.FLUJO_REALIZADO) {
+      return paymentOk && reservationOk;
+    }
+
+    const paymentId = this.extractPaymentIdFromRedirect(redirect);
+    const reservationId = this.extractReservationIdFromRedirect(redirect);
+
+    if (paymentId && reservationId) {
+      return paymentOk && reservationOk;
+    }
+
+    const crmResDate = this.parseDateOnly(opportunity.cDateReservation);
+    const hasCrmReservation =
+      !!(opportunity.cDateReservation && opportunity.cAppointment)
+      && crmResDate != null
+      && crmResDate >= oppDate;
+
+    if (paymentId && hasCrmReservation) {
+      return paymentOk;
+    }
+
+    return false;
+  }
+
+  /** Señales en CRM (HC + cita + factura) coherentes con la fecha de creación de la opp. */
+  private crmFlowSignalsBelongToOpportunity(opportunity: Opportunity): boolean {
+    const oppDate = this.oppCreatedDate(opportunity);
+    if (!oppDate) return false;
+
+    const hasHc = OpportunityService.isValidHcCode(opportunity.cClinicHistory);
+    if (!hasHc) return false;
+
+    const crmResDate = this.parseDateOnly(opportunity.cDateReservation);
+    const hasValidReservation =
+      !!(opportunity.cDateReservation && opportunity.cAppointment)
+      && crmResDate != null
+      && crmResDate >= oppDate;
+
+    return opportunity.isPresaved === false && hasValidReservation;
+  }
+
   private shouldAutoPromoteToCierreGanado(
     opportunity: Opportunity,
     redirect: Record<string, unknown> | null | undefined,
@@ -2308,19 +2397,11 @@ export class OpportunityService {
     if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return false;
     if (opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL') return false;
 
-    if (redirect?.code === EnumCodeFlow.FLUJO_REALIZADO) return true;
+    if (this.redirectFlowBelongsToOpportunity(opportunity, redirect)) {
+      return true;
+    }
 
-    const hasHc = OpportunityService.isValidHcCode(opportunity.cClinicHistory);
-    if (opportunity.isPresaved === false && hasHc) return true;
-
-    const paymentId = this.extractPaymentIdFromRedirect(redirect);
-    const reservationId = this.extractReservationIdFromRedirect(redirect);
-    const hasCrmReservation = !!(opportunity.cDateReservation && opportunity.cAppointment);
-
-    if (paymentId && (reservationId || hasCrmReservation)) return true;
-    if (paymentId && hasHc) return true;
-
-    return false;
+    return this.crmFlowSignalsBelongToOpportunity(opportunity);
   }
 
   private async fetchSvRedirectForOpportunity(
@@ -2403,27 +2484,36 @@ export class OpportunityService {
     }
 
     if (reservation) {
-      if (!opportunity.cDateReservation && reservation.date) {
-        patch.cDateReservation = String(reservation.date);
-      }
-      if (!opportunity.cAppointment && reservation.appointment) {
-        patch.cAppointment = String(reservation.appointment);
-      }
-      if (!opportunity.cDoctor && reservation.doctor) {
-        patch.cDoctor = String(reservation.doctor);
-      }
-      if (!opportunity.cSpecialty && reservation.specialty) {
-        patch.cSpecialty = String(reservation.specialty);
-      }
-      if (!opportunity.cTariff && reservation.tariff_id) {
-        patch.cTariff = String(reservation.specialty ?? reservation.tariff_id);
-      }
-      if (!opportunity.cFechaDeReservacion && reservation.date && reservation.since) {
-        patch.cFechaDeReservacion = new Date(`${reservation.date}T${reservation.since}:00`);
+      const resDate = this.parseDateOnly(reservation.date);
+      const oppDate = this.oppCreatedDate(opportunity);
+      const reservationBelongsToOpp = resDate != null && oppDate != null && resDate >= oppDate;
+
+      if (reservationBelongsToOpp) {
+        if (!opportunity.cDateReservation && reservation.date) {
+          patch.cDateReservation = String(reservation.date);
+        }
+        if (!opportunity.cAppointment && reservation.appointment) {
+          patch.cAppointment = String(reservation.appointment);
+        }
+        if (!opportunity.cDoctor && reservation.doctor) {
+          patch.cDoctor = String(reservation.doctor);
+        }
+        if (!opportunity.cSpecialty && reservation.specialty) {
+          patch.cSpecialty = String(reservation.specialty);
+        }
+        if (!opportunity.cTariff && reservation.tariff_id) {
+          patch.cTariff = String(reservation.specialty ?? reservation.tariff_id);
+        }
+        if (!opportunity.cFechaDeReservacion && reservation.date && reservation.since) {
+          patch.cFechaDeReservacion = new Date(`${reservation.date}T${reservation.since}:00`);
+        }
       }
     }
 
-    if (opportunity.isPresaved !== false && this.extractPaymentIdFromRedirect(redirect)) {
+    if (
+      opportunity.isPresaved !== false
+      && this.redirectFlowBelongsToOpportunity(opportunity, redirect)
+    ) {
       patch.isPresaved = false;
     }
 
@@ -2442,7 +2532,8 @@ export class OpportunityService {
       where: { id: opportunityId, deleted: false },
     });
     if (!opportunity) return false;
-    if (opportunity.stage === Enum_Stage.CIERRE_GANADO) return true;
+
+    const alreadyWon = opportunity.stage === Enum_Stage.CIERRE_GANADO;
     if (opportunity.cSeTrasfOtroServi?.trim() === 'FORCE_INITIAL') return false;
 
     const redirect = await this.fetchSvRedirectForOpportunity(opportunity);
@@ -2470,6 +2561,8 @@ export class OpportunityService {
     if (Object.keys(crmPatch).length > 0) {
       await this.opportunityRepository.update({ id: opportunityId }, { ...crmPatch, modifiedAt: new Date() });
     }
+
+    if (alreadyWon) return true;
 
     const latest = { ...refreshed, ...crmPatch } as Opportunity;
     if (!this.shouldAutoPromoteToCierreGanado(latest, redirect)) return false;
@@ -2505,10 +2598,13 @@ export class OpportunityService {
       })
       .andWhere("(o.c_se_trasf_otro_servi IS NULL OR TRIM(o.c_se_trasf_otro_servi) <> 'FORCE_INITIAL')")
       .andWhere(
-        `(o.is_presaved = false
-          OR (o.c_clinic_history IS NOT NULL AND o.c_clinic_history <> '')
-          OR o.stage IN (:...openStages))`,
-        { openStages: OpportunityService.OPEN_STAGES_FOR_AUTO_CIERRE },
+        `(
+          (o.is_presaved = false
+            AND o.c_clinic_history IS NOT NULL AND o.c_clinic_history <> ''
+            AND o.c_date_reservation IS NOT NULL AND o.c_appointment IS NOT NULL)
+          OR (o.c_date_reservation IS NOT NULL AND o.c_appointment IS NOT NULL
+            AND o.c_clinic_history IS NOT NULL AND o.c_clinic_history <> '')
+        )`,
       )
       .orderBy('o.modified_at', 'DESC')
       .limit(limit)
@@ -3104,48 +3200,62 @@ export class OpportunityService {
         targetId: opportunityEspo.id,
         target_type: ENUM_TARGET_TYPE.OPPORTUNITY,
         userId: userId,
-        message: 'Oportunidad actualizada',
+        message: 'Oportunidad actualizada (reprogramación de cita)',
       });
 
-      const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
-        
-      if(!meeting) {
-        throw new NotFoundException("No se encontró la actividad");
+      let updateActivity: Meeting | null = null;
+      try {
+        const meeting = await this.meetingService.getByParentName(opportunityEspo.name!);
+        if (meeting) {
+          let dateStart = opportunityEspo.cDateReservation;
+          let dateEnd = opportunityEspo.cDateReservation;
+
+          const [startTime, endTime] = opportunityEspo.cAppointment!
+            .split('-')
+            .map((s) => s.trim());
+          dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
+          dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
+
+          const payloadUpdateMetting: UpdateMeetingDto = {
+            dateStart: new Date(dateStart),
+            dateEnd: new Date(dateEnd),
+            description: 'Reprogramación de reserva',
+          };
+
+          updateActivity = await this.meetingService.updateByParentName(
+            opportunityEspo.name!,
+            payloadUpdateMetting,
+          );
+
+          await this.actionHistoryService.addRecord({
+            targetId: updateActivity.id,
+            target_type: ENUM_TARGET_TYPE.MEETING,
+            userId: userId,
+            message: 'Actividad actualizada (reprogramación de cita)',
+          });
+        } else {
+          this.logger.warn(
+            `[reprograminReservation] Sin actividad Meeting para opp ${opportunityId} (${opportunityEspo.name}) — cita y oportunidad ya actualizadas`,
+          );
+        }
+      } catch (meetingErr) {
+        this.logger.warn(
+          `[reprograminReservation] Actividad no actualizada para ${opportunityId}: ${meetingErr instanceof Error ? meetingErr.message : meetingErr}`,
+        );
       }
-
-      let dateStart = opportunityEspo.cDateReservation;
-      let dateEnd = opportunityEspo.cDateReservation;
-
-      const [startTime, endTime] = opportunityEspo.cAppointment!
-        .split("-")
-        .map((s) => s.trim());
-      dateStart = `${opportunityEspo.cDateReservation} ${startTime}:00`;
-      dateEnd = `${opportunityEspo.cDateReservation} ${endTime}:00`;
-
-      const payloadUpdateMetting: UpdateMeetingDto = {
-        dateStart: new Date(dateStart),
-        dateEnd: new Date(dateEnd),
-        description: "Reprogramación de reserva",
-      }
-      
-      const updateActivity = await this.meetingService.updateByParentName(opportunityEspo.name!, payloadUpdateMetting);
-
-      await this.actionHistoryService.addRecord({
-        targetId: updateActivity.id,
-        target_type: ENUM_TARGET_TYPE.MEETING,
-        userId: userId,
-        message: 'Actividad actualizada',
-      });
 
       return {
-        message: "Reserva reprogramada exitosamente",
+        message: 'Reserva reprogramada exitosamente',
         newMeeting: updateActivity,
         newOpportunity: opportunityEspo,
-      }
+      };
       
     } catch (error) {
       console.error('Error en reprogramingReservation:', error);
-      throw new Error('Error al reprogramar la reserva');
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException('Error al reprogramar la reserva');
     }
   }
 
@@ -3575,9 +3685,16 @@ export class OpportunityService {
     // Entonces actualizamos el estado a Cierre Ganado si aún no lo está.
     // REF-N: no promover por datos heredados del titular; exige flujo completo en esta opp.
     if (redirectResponse.code === 0 && opportunity.stage !== Enum_Stage.CIERRE_GANADO) {
+      const belongsToThisOpp = this.redirectFlowBelongsToOpportunity(
+        opportunity,
+        redirectResponse as Record<string, unknown>,
+      );
       const canPromoteToWon =
-        opportunity.cIsReferralCreation !== true
-        || (await this.isFlowCompleteForRedirect(opportunityId));
+        belongsToThisOpp
+        && (
+          opportunity.cIsReferralCreation !== true
+          || (await this.isFlowCompleteForRedirect(opportunityId))
+        );
       if (canPromoteToWon) {
       await this.opportunityRepository.update(
         { id: opportunityId },
