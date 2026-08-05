@@ -144,53 +144,6 @@ export class CommissionsController {
     return this.service.calculateControles(periodId, body.periodInput, body.ejecutivos);
   }
 
-  // ── Overrides manuales de atribución por factura (discrepancia facturador ≠ creador OS) ──
-
-  @Get('call-center/attribution-mismatches')
-  listCallCenterAttributionMismatches(
-    @Query('year', ParseIntPipe) year: number,
-    @Query('month', ParseIntPipe) month: number,
-  ) {
-    return this.service.listCallCenterAttributionMismatches(year, month);
-  }
-
-  @Post('invoice-overrides')
-  setCommissionInvoiceOverride(
-    @Body() body: {
-      area: 'CALL_CENTER' | 'OI' | 'CONTROLES';
-      invoiceId: number;
-      assignedUserLogin: string;
-      assignedUserName?: string | null;
-      originalBillerLogin?: string | null;
-      note?: string | null;
-    },
-    @Request() req: any,
-  ) {
-    const createdBy: string = req.user?.id ?? req.user?.userId ?? 'unknown';
-    return this.service.setCommissionInvoiceOverride(
-      body.area,
-      body.invoiceId,
-      body.assignedUserLogin,
-      body.assignedUserName ?? null,
-      body.originalBillerLogin ?? null,
-      body.note ?? null,
-      createdBy,
-    );
-  }
-
-  @Delete('invoice-overrides/:area/:invoiceId')
-  removeCommissionInvoiceOverride(
-    @Param('area') area: 'CALL_CENTER' | 'OI' | 'CONTROLES',
-    @Param('invoiceId', ParseIntPipe) invoiceId: number,
-  ) {
-    return this.service.removeCommissionInvoiceOverride(area, invoiceId);
-  }
-
-  @Get('invoice-overrides/:area')
-  listCommissionInvoiceOverrides(@Param('area') area: 'CALL_CENTER' | 'OI' | 'CONTROLES') {
-    return this.service.listCommissionInvoiceOverrides(area);
-  }
-
   // ── Etiquetas (Cerradoras) ────────────────────────────────────────────────
 
   @Post('closures/tag')

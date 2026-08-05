@@ -322,34 +322,6 @@ export class CommissionsService {
     return this.dataService.diagnoseOiSv(year, month, campusId ?? null);
   }
 
-  // ── Overrides manuales de atribución por factura ─────────────────────────
-
-  async listCallCenterAttributionMismatches(year: number, month: number) {
-    return this.dataService.listCallCenterAttributionMismatches(year, month);
-  }
-
-  async setCommissionInvoiceOverride(
-    area: 'CALL_CENTER' | 'OI' | 'CONTROLES',
-    invoiceId: number,
-    assignedUserLogin: string,
-    assignedUserName: string | null,
-    originalBillerLogin: string | null,
-    note: string | null,
-    createdById: string,
-  ) {
-    return this.dataService.setCommissionInvoiceOverride(
-      area, invoiceId, assignedUserLogin, assignedUserName, originalBillerLogin, note, createdById,
-    );
-  }
-
-  async removeCommissionInvoiceOverride(area: 'CALL_CENTER' | 'OI' | 'CONTROLES', invoiceId: number) {
-    return this.dataService.removeCommissionInvoiceOverride(area, invoiceId);
-  }
-
-  async listCommissionInvoiceOverrides(area: 'CALL_CENTER' | 'OI' | 'CONTROLES') {
-    return this.dataService.listCommissionInvoiceOverrides(area);
-  }
-
   async getDashboardByPeriodId(periodId: number) {
     const period = await this.getPeriodById(periodId);
     try {

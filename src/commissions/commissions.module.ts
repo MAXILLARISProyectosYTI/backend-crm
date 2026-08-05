@@ -7,7 +7,6 @@ import { CommissionDetail } from './commission-detail.entity';
 import { CommissionClosureTag } from './commission-closure-tag.entity';
 import { CommissionPeriodRate } from './commission-period-rate.entity';
 import { CommissionCerradoraSedeApoyo } from './commission-cerradora-sede-apoyo.entity';
-import { CommissionInvoiceOverride } from './commission-invoice-override.entity';
 import { CommissionsService } from './commissions.service';
 import { CommissionsDataService } from './commissions-data.service';
 import { CommissionsController } from './commissions.controller';
@@ -25,7 +24,6 @@ import { SvServices } from '../sv-services/sv.services';
       CommissionClosureTag,
       CommissionPeriodRate,
       CommissionCerradoraSedeApoyo,
-      CommissionInvoiceOverride,
     ]),
     forwardRef(() => CrmControlesModule),
   ],

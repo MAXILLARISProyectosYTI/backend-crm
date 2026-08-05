@@ -8,7 +8,6 @@ import { CommissionDetail } from './commission-detail.entity';
 import { CommissionClosureTag } from './commission-closure-tag.entity';
 import { CommissionPeriodRate } from './commission-period-rate.entity';
 import { CommissionCerradoraSedeApoyo } from './commission-cerradora-sede-apoyo.entity';
-import { CommissionInvoiceOverride, CommissionOverrideArea } from './commission-invoice-override.entity';
 import { CrmControlesService } from '../crm-controles/crm-controles.service';
 import { SvServices } from '../sv-services/sv.services';
 import { calculateControles, parseControlesConfig, type ControlesEjecutivoInput, type ControlesPeriodInput } from './engines/controles.engine';
@@ -343,8 +342,6 @@ export class CommissionsDataService {
     private readonly rateRepo: Repository<CommissionPeriodRate>,
     @InjectRepository(CommissionCerradoraSedeApoyo)
     private readonly sedeApoyoRepo: Repository<CommissionCerradoraSedeApoyo>,
-    @InjectRepository(CommissionInvoiceOverride)
-    private readonly invoiceOverrideRepo: Repository<CommissionInvoiceOverride>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly crmControlesService: CrmControlesService,
@@ -4364,12 +4361,6 @@ export class CommissionsDataService {
       );
     }
 
-    const overrideRows = await this.invoiceOverrideRepo.find({ where: { area: 'CALL_CENTER' } });
-    const invoiceOverrides = overrideRows.map((o) => ({
-      invoice_id: o.invoiceId,
-      assigned_user_login: o.assignedUserLogin,
-    }));
-
     try {
       const dbRows = await this.oiSvInvoiceService.queryCallCenterMetricsRows(
         start,
@@ -4377,7 +4368,6 @@ export class CommissionsDataService {
         campusIds,
         crmExecMap,
         svUserMap,
-        invoiceOverrides,
       );
       if (dbRows.length > 0) {
         return { rows: dbRows, source: 'sv-invoice-db', svError: null };
@@ -4617,82 +4607,6 @@ export class CommissionsDataService {
       merged.evaAsistidas += m.evaAsistidas;
     }
     return merged;
-  }
-
-  // ── Overrides manuales de atribución por factura (discrepancia facturador ≠ creador OS) ──
-
-  /**
-   * Lista facturas de evaluación Call Center del mes donde quien facturó difiere de
-   * quien creó la orden de servicio, junto con el override ya aplicado (si existe).
-   * Solo informa — la decisión de reasignar la toma un admin desde la UI.
-   */
-  async listCallCenterAttributionMismatches(
-    year: number,
-    month: number,
-  ): Promise<Array<{
-    invoiceId: number;
-    invoiceDate: string;
-    patientHistory: string | null;
-    patientName: string | null;
-    billerLogin: string | null;
-    soCreatorLogin: string | null;
-    amount: number;
-    tariffName: string | null;
-    currentOverride: string | null;
-  }>> {
-    const { start, end } = this.monthRange(year, month);
-    const rows = await this.oiSvInvoiceService.queryCallCenterAttributionMismatches(start, end);
-    const overrides = await this.invoiceOverrideRepo.find({ where: { area: 'CALL_CENTER' } });
-    const overrideByInvoice = new Map(overrides.map((o) => [o.invoiceId, o.assignedUserLogin]));
-
-    return rows.map((r) => ({
-      invoiceId: r.invoice_id,
-      invoiceDate: r.invoice_date,
-      patientHistory: r.patient_history,
-      patientName: r.patient_name,
-      billerLogin: r.biller_login,
-      soCreatorLogin: r.so_creator_login,
-      amount: Number(r.amount ?? 0),
-      tariffName: r.tariff_name,
-      currentOverride: overrideByInvoice.get(r.invoice_id) ?? null,
-    }));
-  }
-
-  async setCommissionInvoiceOverride(
-    area: CommissionOverrideArea,
-    invoiceId: number,
-    assignedUserLogin: string,
-    assignedUserName: string | null,
-    originalBillerLogin: string | null,
-    note: string | null,
-    createdById: string,
-  ): Promise<CommissionInvoiceOverride> {
-    let existing = await this.invoiceOverrideRepo.findOne({ where: { area, invoiceId } });
-    if (existing) {
-      existing.assignedUserLogin = assignedUserLogin.trim().toLowerCase();
-      existing.assignedUserName = assignedUserName;
-      existing.note = note;
-      existing.createdById = createdById;
-    } else {
-      existing = this.invoiceOverrideRepo.create({
-        area,
-        invoiceId,
-        assignedUserLogin: assignedUserLogin.trim().toLowerCase(),
-        assignedUserName,
-        originalBillerLogin,
-        note,
-        createdById,
-      });
-    }
-    return this.invoiceOverrideRepo.save(existing);
-  }
-
-  async removeCommissionInvoiceOverride(area: CommissionOverrideArea, invoiceId: number): Promise<void> {
-    await this.invoiceOverrideRepo.delete({ area, invoiceId });
-  }
-
-  async listCommissionInvoiceOverrides(area: CommissionOverrideArea): Promise<CommissionInvoiceOverride[]> {
-    return this.invoiceOverrideRepo.find({ where: { area }, order: { createdAt: 'DESC' } });
   }
 
   async syncAndCalculateCallCenter(periodId: number): Promise<CommissionDashboard> {
