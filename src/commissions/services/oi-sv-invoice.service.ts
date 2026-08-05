@@ -568,6 +568,10 @@ export class OiSvInvoiceService implements OnModuleInit {
       ) ej_res ON true
       WHERE r.state IN (3, 4, 5)
         AND ${OI_EVAL_TARIFF_WHERE}
+        -- tariff_id=193 "Odontologia Integral" se usa para toda sesión OI, no solo
+        -- la evaluación inicial. r.reason sí distingue: "TRATAMIENTOS OI: Evaluación
+        -- de OI" vs sesiones de tratamiento (Profilaxis, Destartaje, Obturaciones...).
+        AND r.reason ILIKE '%Evaluaci%'
         AND r.date >= $1::date
         AND r.date <= $2::date
         ${campusFilter}
@@ -786,12 +790,93 @@ export class OiSvInvoiceService implements OnModuleInit {
   }
 
   /** Métricas Call Center desde BD SV. Atribución tto via eval SO creator (LAST) con fallback a CDN cuando no coinciden; asistencias via crmExecMap. */
+  /**
+   * Lista facturas de evaluación Call Center donde quien facturó (billing_user_id)
+   * difiere de quien creó la orden de servicio — candidatas para revisión manual
+   * por un admin, que decide si reasignar la comisión vía commission_invoice_override.
+   * No decide nada automáticamente: solo informa la discrepancia.
+   */
+  async queryCallCenterAttributionMismatches(
+    since: string,
+    until: string,
+    campusIds?: number[] | null,
+  ): Promise<Array<{
+    invoice_id: number;
+    invoice_date: string;
+    patient_history: string | null;
+    patient_name: string | null;
+    biller_login: string | null;
+    so_creator_login: string | null;
+    amount: number;
+    tariff_name: string | null;
+  }>> {
+    const client = this.createClient();
+    const params: unknown[] = [since, until];
+    let campusFilter = '';
+    if (campusIds != null && campusIds.length > 0) {
+      params.push(campusIds);
+      campusFilter = ` AND ch.campus = ANY($${params.length}::int[])`;
+    }
+
+    const sql = `
+      SELECT
+        irh.id AS invoice_id,
+        irh.invoice_date::text AS invoice_date,
+        ch.history AS patient_history,
+        NULLIF(TRIM(CONCAT(COALESCE(ch.name, ''), ' ', COALESCE(ch."lastNameFather", ''), ' ', COALESCE(ch."lastNameMother", ''))), '') AS patient_name,
+        LOWER(TRIM(u_bill.username)) AS biller_login,
+        LOWER(TRIM(u_so.username)) AS so_creator_login,
+        irb.amount,
+        t.name AS tariff_name
+      FROM invoice_result_head irh
+      INNER JOIN service_order so ON so.id = irh.id_service_order
+      INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+      INNER JOIN invoice_result_body irb ON irb.idinvoice_result_head = irh.id
+      INNER JOIN tariff t ON t.id = irb.tariff_id
+        AND COALESCE(t.name, '') ILIKE '%Evalu%'
+        AND t.id NOT IN (58, 192, 198)
+      LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+      LEFT JOIN users u_so ON u_so.id = so.user_created
+      WHERE irh.status_invoice = 1
+        AND COALESCE(irh.credit_memo_state, false) = false
+        AND irh.invoice_date::date >= $1::date
+        AND irh.invoice_date::date <= $2::date
+        AND LOWER(TRIM(COALESCE(u_bill.username, ''))) <> LOWER(TRIM(COALESCE(u_so.username, '')))
+        AND u_bill.username IS NOT NULL
+        AND u_so.username IS NOT NULL
+        ${campusFilter}
+      ORDER BY irh.invoice_date DESC, irh.id DESC
+    `;
+
+    try {
+      await client.connect();
+      const result = await client.query(sql, params);
+      return result.rows as Array<{
+        invoice_id: number;
+        invoice_date: string;
+        patient_history: string | null;
+        patient_name: string | null;
+        biller_login: string | null;
+        so_creator_login: string | null;
+        amount: number;
+        tariff_name: string | null;
+      }>;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   async queryCallCenterMetricsRows(
     since: string,
     until: string,
     campusIds?: number[] | null,
     crmExecMap?: Array<{ patient_id: number; ejecutivo: string }>,
     svUserMap?: Array<{ sv_username: string; crm_username: string }>,
+    invoiceOverrides?: Array<{ invoice_id: number; assigned_user_login: string }>,
   ): Promise<Record<string, unknown>[]> {
     const client = this.createClient();
     const params: unknown[] = [since, until];
@@ -835,9 +920,26 @@ export class OiSvInvoiceService implements OnModuleInit {
       )`;
     }
 
+    // invoice_override CTE: admin-decided reassignment por factura específica (Comisiones Controles UI).
+    let invoiceOverrideCte: string;
+    if (invoiceOverrides && invoiceOverrides.length > 0) {
+      params.push(invoiceOverrides.map((r) => r.invoice_id));
+      const idIdx = params.length;
+      params.push(invoiceOverrides.map((r) => r.assigned_user_login));
+      const loginIdx = params.length;
+      invoiceOverrideCte = `invoice_override(invoice_id, assigned_user_login) AS (
+        SELECT UNNEST($${idIdx}::int[]), UNNEST($${loginIdx}::text[])
+      )`;
+    } else {
+      invoiceOverrideCte = `invoice_override(invoice_id, assigned_user_login) AS (
+        SELECT NULL::int, NULL::text WHERE false
+      )`;
+    }
+
     const sql = `
       WITH ${crmExecCte},
       ${svUserMapCte},
+      ${invoiceOverrideCte},
       -- Step 1: LAST eval SO per patient (SV username).
       last_eval_so AS (
         SELECT DISTINCT ON (so_ev.idclinichistory)
@@ -923,7 +1025,10 @@ export class OiSvInvoiceService implements OnModuleInit {
       ),
       eva_vend AS (
         SELECT
-          LOWER(TRIM(COALESCE(u_bill.username, ''))) AS ejecutivo,
+          -- El override manual (decidido por un admin en la UI de discrepancias)
+          -- tiene prioridad sobre quien facturó. Si no hay override, comportamiento
+          -- sin cambios (billing_user_id). No afecta a facturas sin override.
+          LOWER(TRIM(COALESCE(io.assigned_user_login, u_bill.username, ''))) AS ejecutivo,
           ch.campus AS campus_id,
           COUNT(DISTINCT irh.id) FILTER (
             WHERE COALESCE(t.name, '') NOT ILIKE '%APNEA%'
@@ -941,13 +1046,14 @@ export class OiSvInvoiceService implements OnModuleInit {
           AND COALESCE(t.name, '') ILIKE '%Evalu%'
           AND t.id NOT IN (58, 192, 198)
         LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
+        LEFT JOIN invoice_override io ON io.invoice_id = irh.id
         WHERE irh.status_invoice = 1
           AND COALESCE(irh.credit_memo_state, false) = false
           AND irh.invoice_date::date >= $1::date
           AND irh.invoice_date::date <= $2::date
           ${campusFilter}
         GROUP BY 1, 2
-        HAVING LOWER(TRIM(COALESCE(u_bill.username, ''))) <> ''
+        HAVING LOWER(TRIM(COALESCE(io.assigned_user_login, u_bill.username, ''))) <> ''
       ),
       eva_asist AS (
         SELECT
@@ -1251,6 +1357,9 @@ export class OiSvInvoiceService implements OnModuleInit {
             OR COALESCE(cs_direct.treatment_code, cs_patient.treatment_code) LIKE 'APNEA%'
             ${soFilter}
           )
+          -- Cerradoras comisionan solo por el cierre (Moldes/Inicial/Único Pago), nunca por
+          -- cada cuota mensual pagada de un contrato ya cerrado en un mes anterior.
+          AND (cd.description IS NULL OR cd.description NOT ILIKE 'Cuota%')
           ${campusFilter}
       ),
       dedup AS (
@@ -1281,6 +1390,29 @@ export class OiSvInvoiceService implements OnModuleInit {
           MIN(quota_priority) AS min_priority
         FROM dedup
         GROUP BY service_order_id, campus_id
+      ),
+      -- Un mismo contrato puede facturarse en varios S.O. dentro del mes (ej. moldes +
+      -- inicial + tratamiento el mismo día de un cierre al contado). Sin esto, cada S.O.
+      -- se contaba como un cierre distinto y pagaba comisión repetida por el mismo contrato.
+      por_contrato AS (
+        SELECT
+          MAX(service_order_id)::int AS service_order_id,
+          MAX(contract_id)::int AS contract_id,
+          MAX(quotation_id)::int AS quotation_id,
+          MIN(contract_date) AS contract_date,
+          MAX(contract_num) AS contract_num,
+          campus_id,
+          MAX(service_order_creator_id)::int AS service_order_creator_id,
+          MAX(billing_username) AS billing_username,
+          MAX(os_creator_username) AS os_creator_username,
+          MIN(payment_date) AS payment_date,
+          MIN(moldes_date) AS moldes_date,
+          MIN(first_payment_date) AS first_payment_date,
+          ROUND(COALESCE(SUM(amount_usd), 0)::numeric, 2) AS amount_usd,
+          MAX(treatment_code) AS treatment_code,
+          MIN(min_priority) AS min_priority
+        FROM por_os
+        GROUP BY (CASE WHEN contract_id > 0 THEN contract_id ELSE service_order_id END), campus_id
       )
       SELECT
         contract_id,
@@ -1294,7 +1426,7 @@ export class OiSvInvoiceService implements OnModuleInit {
         moldes_date,
         first_payment_date,
         amount_usd
-      FROM por_os
+      FROM por_contrato
       WHERE service_order_id > 0
         AND (billing_username <> '' OR os_creator_username NOT IN ('', 'sin_asignar'))
       ORDER BY payment_date ASC, min_priority ASC, service_order_id ASC
@@ -1328,6 +1460,117 @@ export class OiSvInvoiceService implements OnModuleInit {
         `queryCerradorasFacturacionRows fallo (${cfg.host}:${cfg.port}/${cfg.database}): ${
           err instanceof Error ? err.message : err
         }`,
+      );
+      throw err;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Paciente (clinic_history.id) por contrato — para atribuir facturación OI a la cerradora dueña. */
+  async queryClinicHistoryIdByContractIds(
+    contractIds: number[],
+  ): Promise<Map<number, number>> {
+    const ids = [...new Set(contractIds.filter((id) => id > 0))];
+    const map = new Map<number, number>();
+    if (ids.length === 0) return map;
+
+    const client = this.createClient();
+    try {
+      await client.connect();
+      const result = await client.query(
+        `SELECT id AS contract_id, idclinichistory AS id_clinic_history
+         FROM contract WHERE id = ANY($1::int[])`,
+        [ids],
+      );
+      for (const row of result.rows as Array<{ contract_id: number; id_clinic_history: number }>) {
+        map.set(Number(row.contract_id), Number(row.id_clinic_history));
+      }
+      return map;
+    } catch (err) {
+      this.logger.error(
+        `queryClinicHistoryIdByContractIds falló: ${err instanceof Error ? err.message : err}`,
+      );
+      throw err;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Facturación de tratamientos OI (odontología general: profilaxis, destartaje,
+   * obturaciones, etc.) por paciente en el mes — base del bono 2% de cerradoras.
+   * Excluye evaluaciones (tarifa 54/193 con nombre "Evalu%") y líneas ligadas a un
+   * contrato (moldes/cuotas OFM-MARPE-APNEA), que ya se comisionan aparte.
+   */
+  async queryOiTratamientoFacturacionRows(
+    since: string,
+    until: string,
+  ): Promise<Array<{ id_clinic_history: number; amount_pen: number; campus_id: number }>> {
+    const client = this.createClient();
+    const params: unknown[] = [since, until];
+
+    const sql = `
+      SELECT
+        ch.id AS id_clinic_history,
+        ch.campus AS campus_id,
+        CASE
+          WHEN UPPER(COALESCE(c2.code, 'PEN')) IN ('USD', '$', 'US', 'DOL')
+            THEN irb.amount * COALESCE(
+              (SELECT er2.value FROM exchange_rate er2
+               WHERE er2.state = 1
+                 AND er2.date <= COALESCE(irb.payment_date, irh.invoice_date::date)
+               ORDER BY er2.date DESC LIMIT 1),
+              1
+            )
+          ELSE irb.amount
+        END AS amount_pen
+      FROM invoice_result_body irb
+      INNER JOIN invoice_result_head irh ON irh.id = irb.idinvoice_result_head
+        AND irh.status_invoice = 1
+        AND COALESCE(irh.credit_memo_state, false) = false
+      INNER JOIN service_order so ON so.id = irh.id_service_order
+      INNER JOIN clinic_history ch ON ch.id = so.idclinichistory
+      LEFT JOIN tariff t ON t.id = irb.tariff_id
+      LEFT JOIN coin c2 ON c2.id = irb.id_currency
+      LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
+      LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
+      WHERE COALESCE(t.name, '') NOT ILIKE '%Evalu%'
+        AND COALESCE(t.id, 0) NOT IN (54, 193)
+        AND COALESCE(t.name, '') NOT ILIKE '%Control OFM%'
+        AND COALESCE(t.name, '') NOT ILIKE '%Control Marpe%'
+        AND cd.id IS NULL
+        AND (
+          (irb.payment_date IS NOT NULL
+            AND irb.payment_date >= $1::date AND irb.payment_date <= $2::date)
+          OR (irb.payment_date IS NULL
+            AND irh.invoice_date::date >= $1::date AND irh.invoice_date::date <= $2::date)
+        )
+    `;
+
+    try {
+      await client.connect();
+      const result = await client.query(sql, params);
+      this.logger.log(
+        `queryOiTratamientoFacturacionRows ${since}→${until}: ${result.rowCount ?? 0} filas`,
+      );
+      return (result.rows as Array<{ id_clinic_history: number; amount_pen: number; campus_id: number }>)
+        .map((r) => ({
+          id_clinic_history: Number(r.id_clinic_history),
+          amount_pen: Number(r.amount_pen ?? 0),
+          campus_id: normalizeCerradorasCampusId(Number(r.campus_id ?? 1)),
+        }));
+    } catch (err) {
+      this.logger.error(
+        `queryOiTratamientoFacturacionRows falló: ${err instanceof Error ? err.message : err}`,
       );
       throw err;
     } finally {
