@@ -5,6 +5,7 @@ import { join } from 'path';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { DateTimezoneInterceptor } from './interceptors/date-timezone.interceptor';
+import { CORS_ALLOWED_HEADERS } from './crm-agenda-transaction/crm-agenda-transaction.constants';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -33,6 +34,7 @@ async function bootstrap() {
   }));
   
   // CORS: whitelist por CORS_ORIGIN (coma-separado). Nunca origin:'*' con credentials.
+  // allowedHeaders: base + headers de traza agenda (CRM_AGENDA_HEADERS) — una sola fuente.
   const corsOrigins = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
     : process.env.NODE_ENV === 'production'
@@ -42,7 +44,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [...CORS_ALLOWED_HEADERS],
     credentials: true,
   });
   

@@ -7,7 +7,7 @@ import { PatientIsNewCrmResponse } from "./patient-is-new.types";
 import { CampusListResponse } from "./campus.types";
 import { QuotationListResponse, QuotationListItem } from "./quotation-list.types";
 import { buildOutboundCrmAgendaHeaders } from "../crm-agenda-transaction/crm-agenda-correlation.middleware";
-import { CRM_AGENDA_HEADERS } from "../crm-agenda-transaction/crm-agenda-transaction.constants";
+import { CRM_AGENDA_HEADERS, CrmAgendaTransactionStep } from "../crm-agenda-transaction/crm-agenda-transaction.constants";
 
 @Injectable()
 export class SvServices {
@@ -171,6 +171,7 @@ export class SvServices {
       const responseClinicHistory = await axios.post(`${this.URL_BACK_SV}/opportunities/create-patient-crm/`, payloadClinicHistory, {
         headers: buildOutboundCrmAgendaHeaders({
           Authorization: `Bearer ${tokenSv}`,
+          [CRM_AGENDA_HEADERS.TRANSACTION_STEP]: CrmAgendaTransactionStep.CREATE_PATIENT_LINK,
           ...(idempotencyKey
             ? { [CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey }
             : {}),
@@ -180,7 +181,10 @@ export class SvServices {
       return responseClinicHistory.data;
     } catch (error) {
       console.error('Error createClinicHistoryCrm', error);
-      throw new BadRequestException('Error al crear la historia clínica en SV');
+      const detail = axios.isAxiosError(error)
+        ? (error.response?.data as { message?: string } | undefined)?.message ?? error.message
+        : error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Error al crear la historia clínica en SV: ${detail}`);
     }
   }
 
@@ -322,6 +326,7 @@ export class SvServices {
       const responsePatientSV = await axios.put(`${this.URL_BACK_SV}/opportunities/update-clinic-history-crm/${espoId}`, payload, {
         headers: buildOutboundCrmAgendaHeaders({
           Authorization: `Bearer ${tokenSv}`,
+          [CRM_AGENDA_HEADERS.TRANSACTION_STEP]: CrmAgendaTransactionStep.UPDATE_SV_LINK,
           ...(idempotencyKey
             ? { [CRM_AGENDA_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey }
             : {}),
@@ -331,7 +336,10 @@ export class SvServices {
       return responsePatientSV.data;
     } catch (error) {
       console.error('Error updateClinicHistoryCrm', error);
-      throw new BadRequestException('Error al actualizar la historia clínica en SV');
+      const detail = axios.isAxiosError(error)
+        ? (error.response?.data as { message?: string } | undefined)?.message ?? error.message
+        : error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Error al actualizar la historia clínica en SV: ${detail}`);
     }
   }
 
