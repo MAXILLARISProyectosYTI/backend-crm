@@ -974,6 +974,17 @@ export class CommissionsDataService {
       }) ?? { modalidad: 'CONTADO' as const, cuotaNum: 1 };
       const tratamientoFromSv = mapTratamientoFromTreatmentCode(row.treatment_code);
 
+      // El soFilter de la query (service_order asignado a una cerradora en algún momento,
+      // sin límite de fecha) puede dejar pasar facturas sin ningún contrato OFM/MARPE/APNEA
+      // real. mapTratamientoFromCrm cae a 'OFM' por defecto si no encuentra nada — eso pagaba
+      // comisión de cierre sobre facturas que no son cierres. Solo se acepta el fallback CRM
+      // si hay una señal explícita real (sub-campaña o tipo de contrato), nunca el default ciego.
+      const subCampaignUpper = (subCampaignName ?? '').toUpperCase();
+      const contractTypeUpper = (presave?.contract_type ?? solicitud?.tipo_contrato ?? '').toUpperCase();
+      const hasCrmTreatmentSignal = ['APNEA', 'MARPE', 'OFM', 'OI'].includes(subCampaignUpper)
+        || ['APNEA', 'MARPE', 'OFM'].includes(contractTypeUpper);
+      if (!tratamientoFromSv && !hasCrmTreatmentSignal) continue;
+
       contracts.push({
         contractId: contractId || serviceOrderId,
         quotationId: quotationId || contractId || serviceOrderId,
