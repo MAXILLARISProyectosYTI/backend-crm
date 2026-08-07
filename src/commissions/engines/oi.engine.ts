@@ -36,7 +36,8 @@ export interface OiConfig {
   comisionPorEva: number;
   /** Mínimo evaluaciones para pasar a tarifa OFM superior (default 20) */
   minEvaParaTarifaOfm: number;
-  /** S/ por evaluación cuando supera el umbral mínimo (default 10, puede diferir) */
+  /** S/ por evaluación cuando llega a minEvaParaTarifaOfm — igual a la tarifa base de
+   *  "Evaluación OFM" de Call Center (default 15) */
   comisionPorEvaOfm: number;
   /** Bono grupal en S/ cuando el equipo alcanza ≥80% de la meta de evaluaciones (default 400) */
   bonoEvaluacionesAsistidas: number;
@@ -47,7 +48,7 @@ export interface OiConfig {
 export const DEFAULT_OI_CONFIG: OiConfig = {
   comisionPorEva: 10,
   minEvaParaTarifaOfm: 20,
-  comisionPorEvaOfm: 10,
+  comisionPorEvaOfm: 15,
   bonoEvaluacionesAsistidas: 400,
   umbralBonoGrupalEvas: 0.8,
 };

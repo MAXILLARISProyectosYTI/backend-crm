@@ -99,12 +99,16 @@ export const OI_EJECUTIVO_LOGIN_EXPR = `
   )))
 `;
 
-/** Línea de factura OI que es evaluación (ya pasó OI_FACTURACION_EVAL_OR_PT en queryFacturacionRows). */
+/**
+ * Línea de factura OI que es evaluación (ya pasó OI_FACTURACION_EVAL_OR_PT en queryFacturacionRows).
+ * Debe ser tarifa 54 ("Evaluación de OI", legacy) o 193 ("Odontologia Integral", activa desde 2023)
+ * — las mismas que OI_EVAL_TARIFF_WHERE. Antes solo miraba si el nombre contenía "evalu", lo que
+ * también hacía match con "Evaluación OFM" (tarifa 59, Call Center) y "Evaluación de APNEA",
+ * inflando el conteo de evaluaciones OI con evaluaciones de otras áreas.
+ */
 export function isOiEvalFacturacionRow(row: Record<string, unknown>): boolean {
-  const name = String(row.tipo_arancel ?? row.tipo ?? '').trim();
-  if (!name || !/evalu/i.test(name)) return false;
   const tid = Number(row.tariff_id ?? 0);
-  return tid !== 58 && tid !== 192 && tid !== 198;
+  return tid === 54 || tid === 193;
 }
 
 @Injectable()
@@ -451,22 +455,17 @@ export class OiSvInvoiceService implements OnModuleInit {
         NULLIF(LOWER(TRIM(ej.ejecutivo_oi)), '') AS asignado_oi,
         NULLIF(LOWER(TRIM(u_so.username)), '') AS os_creator_username,
         NULLIF(LOWER(TRIM(u_bill.username)), '') AS facturador_username,
-        CASE
-          WHEN COALESCE(t.name, '') ILIKE '%Evalu%' THEN
-            LOWER(TRIM(COALESCE(
-              NULLIF(TRIM(ej.ejecutivo_oi), ''),
-              NULLIF(TRIM(u_so.username), ''),
-              NULLIF(TRIM(u_bill.username), ''),
-              'sin_asignar'
-            )))
-          ELSE
-            LOWER(TRIM(COALESCE(
-              NULLIF(TRIM(ej_contract.username), ''),
-              NULLIF(TRIM(ej.ejecutivo_oi), ''),
-              NULLIF(TRIM(u_so.username), ''),
-              'sin_asignar'
-            )))
-        END                            AS ejecutivo_oi,
+        -- Atribución: cuenta si el ejecutivo creó la orden de servicio (gestionó/atendió
+        -- al paciente) O si él mismo facturó la línea. En la práctica casi nunca es la
+        -- misma persona (caja factura, no el ejecutivo), así que se prioriza creador de OS
+        -- y se usa facturador solo como respaldo cuando no hay creador de OS resoluble.
+        -- No hay forma de distinguir "tratamiento OI" por tarifa/plan — el negocio confirmó
+        -- que la atribución es por persona (creó/facturó), no por tipo de procedimiento.
+        LOWER(TRIM(COALESCE(
+          NULLIF(TRIM(u_so.username), ''),
+          NULLIF(TRIM(u_bill.username), ''),
+          'sin_asignar'
+        ))) AS ejecutivo_oi,
         irb.tariff_id,
         t.name                         AS tipo_arancel
       FROM invoice_result_body irb
@@ -480,17 +479,6 @@ export class OiSvInvoiceService implements OnModuleInit {
       LEFT JOIN ejecutivo ej ON ej.id_clinic_history = ch.id
       LEFT JOIN users u_so ON u_so.id = so.user_created
       LEFT JOIN users u_bill ON u_bill.id = irh.billing_user_id
-      LEFT JOIN service_order_payment_detail sopd ON sopd.id = irb.service_order_payment_detail_id
-      LEFT JOIN contract_detail cd ON cd.id = sopd.idcontractdetail AND cd.state = 1
-      LEFT JOIN contract c ON c.id = cd.idcontract AND c.state = 1
-      LEFT JOIN LATERAL (
-        SELECT u_c.username
-        FROM audit a_c
-        INNER JOIN users u_c ON u_c.id = a_c.iduser
-        WHERE a_c.idregister = c.id
-          AND a_c.title IN ('contract', 'Contract')
-        ORDER BY a_c.idaudit ASC LIMIT 1
-      ) ej_contract ON true
       WHERE COALESCE(t."name", '') NOT ILIKE '%Control OFM%'
         AND COALESCE(t."name", '') NOT ILIKE '%Control Marpe%'
         AND COALESCE(irb.tariff_id, 0) NOT IN (58, 192, 198)
@@ -608,7 +596,6 @@ export class OiSvInvoiceService implements OnModuleInit {
     evalRows: Record<string, unknown>[],
   ): Map<string, OiCrmUserMetrics> {
     const map = new Map<string, OiCrmUserMetrics>();
-    const evalFromFact = new Map<string, number>();
 
     const add = (username: string, patch: Partial<OiCrmUserMetrics>) => {
       const key = username.trim().toLowerCase();
@@ -616,27 +603,26 @@ export class OiSvInvoiceService implements OnModuleInit {
       mergeOiCrmMetricsRow(map, key, patch);
     };
 
+    // Monto facturado: sí viene de facturación (evaluaciones + PT), tarifa 54/193 mezclada
+    // a propósito porque el objetivo de facturación incluye todo lo de OI.
     for (const row of factRows) {
       const attrib = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const amountPen = Number(row.amount_pen ?? row.amount ?? 0);
-      if (!attrib) continue;
-      if (amountPen > 0) add(attrib, { facturadoConIgv: amountPen });
-      if (isOiEvalFacturacionRow(row)) {
-        evalFromFact.set(attrib, (evalFromFact.get(attrib) ?? 0) + 1);
-      }
+      if (!attrib || amountPen <= 0) continue;
+      add(attrib, { facturadoConIgv: amountPen });
     }
 
-    for (const [login, count] of evalFromFact) {
-      add(login, { evaluaciones: count });
-    }
-
-    // Respaldo: CRM id_payment + cita (por si alguna eval no entró en facturación).
+    // Cantidad de evaluaciones: SOLO de evalRows (reserva asistida state 3/4/5 +
+    // r.reason ILIKE '%Evaluaci%'), que es la única fuente que distingue evaluación real
+    // de sesión de tratamiento. Antes también se contaba desde facturación
+    // (isOiEvalFacturacionRow por nombre de tarifa, sin filtro de reason) y encima se
+    // SUMABA sobre este valor en vez de reemplazarlo — duplicaba el conteo y mezclaba
+    // evaluaciones de otras áreas (ej. "Evaluación OFM" de Call Center).
     for (const row of evalRows) {
       const ejecutivo = OiSvInvoiceService.resolveOiEjecutivoLogin(row);
       const evals = Number(row.evaluaciones ?? 0);
       if (!ejecutivo || evals <= 0) continue;
-      const prev = map.get(ejecutivo)?.evaluaciones ?? 0;
-      if (evals > prev) add(ejecutivo, { evaluaciones: evals });
+      add(ejecutivo, { evaluaciones: evals });
     }
 
     return map;
