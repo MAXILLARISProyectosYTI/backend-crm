@@ -2262,6 +2262,10 @@ export class CommissionsDataService {
     const svRows = allSvRows;
 
     const contracts = await this.buildCerradorasContractsFromSvRows(start, svRows);
+    // Mismo filtro que aplica buildCerradorasContractsFromSvRows (descarta filas sin tratamiento
+    // OFM/MARPE/APNEA real) — evita que el tile "Facturado SV / O.S." muestre un conteo inflado
+    // que ya no coincide con la comisión real calculada más abajo.
+    const validContractKeys = new Set(contracts.map((c) => c.contractId));
 
     let previewEjecutivos: ReturnType<typeof previewCierreTtoCommissions>['ejecutivos'] = [];
     let previewDetalle: ReturnType<typeof previewCierreTtoCommissions>['detalleLineas'] = [];
@@ -2304,6 +2308,10 @@ export class CommissionsDataService {
     }>();
 
     for (const row of svRows) {
+      const rowKey = Number(row.contract_id) > 0
+        ? Number(row.contract_id)
+        : Number(row.service_order_id) || 0;
+      if (!validContractKeys.has(rowKey)) continue;
       const campus = this.mapCommissionCampusId(row.campus_id);
       let quotationId = Number(row.quotation_id) || 0;
       const soAssign = row.service_order_id > 0
@@ -2389,14 +2397,21 @@ export class CommissionsDataService {
       }))
       .sort((a, b) => b.totalUsd - a.totalUsd || a.userName.localeCompare(b.userName, 'es'));
 
+    // totalFacturadoUsd/totalOs (de svData) son sin filtrar — incluyen las filas sin tratamiento
+    // real que buildCerradorasContractsFromSvRows ya descarta. Se usan los totales filtrados
+    // (items, ya pasados por el mismo gate que la comisión real) para que el tile de arriba no
+    // contradiga la tabla de abajo.
     const totalOsFiltrado = items.reduce((s, i) => s + i.osCount, 0);
+    const totalFacturadoUsdFiltrado = Math.round(
+      items.reduce((s, i) => s + i.totalUsd, 0) * 100,
+    ) / 100;
 
     return {
       items,
       detalleLineas,
       period: { startDate: start, endDate: end, isPartialMonth },
-      totalFacturadoUsd: totalFacturadoUsd,
-      totalOs: totalOs || totalOsFiltrado,
+      totalFacturadoUsd: totalFacturadoUsdFiltrado,
+      totalOs: totalOsFiltrado,
       svError: svError ?? null,
     };
   }
