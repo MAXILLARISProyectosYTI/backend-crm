@@ -21,6 +21,10 @@
   <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
   [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
 
+## Maxillaris CRM
+
+**Producción:** rama `main`. Documentación (cerradoras, cashback, iframe agenda, env): [`docs/README.md`](./docs/README.md). Escalamiento: Jose Jara.
+
 ## Description
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
