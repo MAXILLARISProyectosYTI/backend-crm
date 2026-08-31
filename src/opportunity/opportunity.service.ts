@@ -1375,10 +1375,11 @@ export class OpportunityService {
     const crmCampusId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? null;
 
     let crmSede = 'No especificada';
-    let tokenSv: string | null = null;
+    let tokenSv = '';
     try {
-      ({ tokenSv } = await this.svServices.getTokenSvAdmin());
-      if (crmCampusId != null) {
+      const tokenRes = await this.svServices.getTokenSvAdmin();
+      tokenSv = tokenRes.tokenSv;
+      if (crmCampusId != null && tokenSv) {
         const campuses = await this.svServices.getCampuses(tokenSv);
         const campus = campuses.find((c) => c.id === crmCampusId);
         if (campus?.name?.trim()) {
@@ -1403,9 +1404,13 @@ export class OpportunityService {
       let svResult: { campusId?: number; campusName?: string } | null = null;
       try {
         if (!tokenSv) {
-          ({ tokenSv } = await this.svServices.getTokenSvAdmin());
+          const tokenRes = await this.svServices.getTokenSvAdmin();
+          tokenSv = tokenRes.tokenSv;
         }
-        svResult = await this.svServices.getSedeByClinicHistory(opportunity.cClinicHistory.trim(), tokenSv);
+        svResult = await this.svServices.getSedeByClinicHistory(
+          opportunity.cClinicHistory.trim(),
+          tokenSv,
+        );
       } catch {
         // ignorar
       }
