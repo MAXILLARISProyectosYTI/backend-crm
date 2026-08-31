@@ -1338,9 +1338,10 @@ export class OpportunityService {
   }
 
   /**
-   * Compara solo sede CRM vs SV (por historia clínica). Devuelve si hay match y si la oportunidad
-   * provino de otra campaña (cSeTrasfOtroServi) para que el front muestre el botón flotante y el modal.
-   * No se compara campaña vs subcampaña.
+   * Compara sede de atención CRM vs sede de la HC en SV.
+   * Usa cCampusAtencionId (fallback cCampusId) y su nombre desde el catálogo SV,
+   * no cMetadata.campusName del lead — así Lima vs Trujillo se detecta aunque el
+   * metadata diga Trujillo. Devuelve también transferencia OI→OFM si aplica.
    */
   async getSedeSvMatch(id: string): Promise<{
     match: boolean;
@@ -1368,23 +1369,42 @@ export class OpportunityService {
       throw new NotFoundException(`Oportunidad con ID ${id} no encontrada`);
     }
 
+    // Sede de atención (prioridad) vs sede del lead: el modal/discrepancia debe
+    // comparar contra la sede con la que se abre Gestionar (cCampusAtencionId),
+    // no contra cMetadata.campusName (origen del lead).
+    const crmCampusId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? null;
+
     let crmSede = 'No especificada';
-    if (opportunity.cMetadata) {
+    let tokenSv: string | null = null;
+    try {
+      ({ tokenSv } = await this.svServices.getTokenSvAdmin());
+      if (crmCampusId != null) {
+        const campuses = await this.svServices.getCampuses(tokenSv);
+        const campus = campuses.find((c) => c.id === crmCampusId);
+        if (campus?.name?.trim()) {
+          crmSede = campus.name.trim();
+        }
+      }
+    } catch {
+      // Si falla el catálogo de sedes, fallback al metadata del lead.
+    }
+    if (crmSede === 'No especificada' && opportunity.cMetadata) {
       try {
         const meta = JSON.parse(opportunity.cMetadata) as { campusName?: string };
-        if (meta?.campusName) crmSede = meta.campusName;
+        if (meta?.campusName?.trim()) crmSede = meta.campusName.trim();
       } catch {
         // ignorar
       }
     }
-    const crmCampusId = opportunity.cCampusAtencionId ?? opportunity.cCampusId ?? null;
 
     let svSede: string | null = null;
     let svCampusId: number | null = null;
     if (opportunity.cClinicHistory?.trim()) {
       let svResult: { campusId?: number; campusName?: string } | null = null;
       try {
-        const { tokenSv } = await this.svServices.getTokenSvAdmin();
+        if (!tokenSv) {
+          ({ tokenSv } = await this.svServices.getTokenSvAdmin());
+        }
         svResult = await this.svServices.getSedeByClinicHistory(opportunity.cClinicHistory.trim(), tokenSv);
       } catch {
         // ignorar
@@ -1395,14 +1415,17 @@ export class OpportunityService {
       }
     }
 
-    // Si el SV no devuelve sede, no hay info suficiente para detectar discrepancia → match.
-    // Match cuando: no hay sede SV, o los IDs coinciden, o los nombres coinciden (ej. Lima = Lima con distinto ID).
+    // Match por ID de sede de atención vs HC en SV.
+    // Nombres solo como fallback si falta algún ID (evita falsos "match" cuando
+    // metadata dice Trujillo pero cCampusAtencionId es Lima).
     const namesMatch =
       (svSede ?? '').trim().toLowerCase() === (crmSede ?? '').trim().toLowerCase();
     const sedeMatch =
-      svCampusId == null ||
-      (crmCampusId != null && crmCampusId === svCampusId) ||
-      (svSede != null && namesMatch);
+      svCampusId == null
+        ? true
+        : crmCampusId != null
+          ? crmCampusId === svCampusId
+          : !!(svSede && namesMatch);
 
     const currentCampaignName =
       (opportunity.campaignId && SUB_CAMPAIGN_NAMES[opportunity.campaignId]) || null;
