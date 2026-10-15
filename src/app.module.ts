@@ -34,6 +34,7 @@ import { CrmCerradoresModule } from './crm-cerradoras/crm-cerradoras.module';
 import { CommissionsModule } from './commissions/commissions.module';
 import { ReferralCashbackModule } from './referral-cashback/referral-cashback.module';
 import { CrmAgendaTransactionModule } from './crm-agenda-transaction/crm-agenda-transaction.module';
+import { ContractGerenciaPolicyModule } from './contract-gerencia-policy/contract-gerencia-policy.module';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { CrmAgendaTransactionModule } from './crm-agenda-transaction/crm-agenda-
     CrmCerradoresModule,
     CommissionsModule,
     ReferralCashbackModule,
+    ContractGerenciaPolicyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
