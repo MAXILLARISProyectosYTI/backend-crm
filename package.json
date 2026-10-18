@@ -27,7 +27,7 @@
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
-    "@nestjs/core": "^11.0.1",
+    "@nestjs/core": "^12.1.3",
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/mapped-types": "^2.1.0",
     "@nestjs/passport": "^11.0.5",
@@ -36,20 +36,20 @@
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/typeorm": "^11.0.0",
     "@nestjs/websockets": "^11.1.6",
-    "axios": "^1.12.2",
+    "axios": "^1.20.0",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "luxon": "^3.7.2",
     "moment-timezone": "^0.6.0",
-    "multer": "^2.0.2",
+    "multer": "^2.4.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.1",
-    "typeorm": "^0.3.27"
+    "typeorm": "^0.3.31"
   },
   "devDependencies": {
     "dotenv": "^16.4.5",
