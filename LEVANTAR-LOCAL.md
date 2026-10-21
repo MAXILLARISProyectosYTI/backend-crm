@@ -18,6 +18,7 @@ Queda en `http://localhost:5432` (`PORT=5432`; sin esa variable usa el 8990). Oj
 | PostgreSQL (base `crm`) | base de datos (obligatorio) | 5432 |
 | `sv-backend-main` (Node 18, necesita Redis) | `URL_BACK_SV`, `URL_INVOICE_MIFACT_V3`, `URL_DOWNLOAD_FILES` | 5533 |
 | `wsk-schedule-backend` (Node 24) | `URL_SCHEDULE_BACKEND` (agenda) | 3606 |
+| `frontend-crm` (creation_patient) | `URL_FRONT_MANAGER_LEADS`: base de los enlaces `.../manager_leads/?usuario=...` | 3999 |
 
 Opcional: `SV_DB_*` para leer directo la base de SV.
 
@@ -27,5 +28,6 @@ Opcional: `SV_DB_*` para leer directo la base de SV.
 - `sv-backend-main`: `BACKEND_CRM_URL` (opcional).
 
 ## Notas
+- `URL_FRONT_MANAGER_LEADS` es el front del CRM (en producción `crm.maxillaris.pe`); en local, `http://localhost:3999/`. Sin esa variable el código usa `https://crm.maxillaris.pe/`.
 - `URL_FILES` no tiene versión local (en producción es un servidor de archivos aparte): las funciones de archivos no van a funcionar en local.
 - No pongas en el `.env` local URLs de `161.132.199.230` ni `api6`/`api7`: son producción.
