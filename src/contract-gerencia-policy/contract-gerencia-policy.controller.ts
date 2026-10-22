@@ -10,6 +10,7 @@ import {
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { ContractGerenciaPolicyService } from './contract-gerencia-policy.service';
 import { ConfirmGerenciaBandDto } from './dto/confirm-gerencia-band.dto';
+import { ConfirmOfmBonoDto } from './dto/confirm-ofm-bono.dto';
 
 @Controller('contract-gerencia-policy')
 @UseGuards(JwtAuthGuard)
@@ -35,5 +36,17 @@ export class ContractGerenciaPolicyController {
       throw new UnauthorizedException('Usuario no autenticado');
     }
     return this.service.confirmBandOverride(userId, dto);
+  }
+
+  @Post('confirm-bono')
+  async confirmBono(
+    @Req() req: { user?: { userId: string } },
+    @Body() dto: ConfirmOfmBonoDto,
+  ) {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new UnauthorizedException('Usuario no autenticado');
+    }
+    return this.service.confirmOfmBono(userId, dto);
   }
 }

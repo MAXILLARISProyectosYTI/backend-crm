@@ -101,6 +101,18 @@ export class CreateContractPresaveDto {
   @IsNumber()
   montoDescuentoGerencia?: number;
 
+  @IsOptional()
+  @IsBoolean()
+  ofmContratoBono?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  montoDescuentoBono?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  ofmBonoConfirmado?: boolean;
+
   // ========================================
   // CRONOGRAMA DE PAGOS (JSON string)
   // ========================================

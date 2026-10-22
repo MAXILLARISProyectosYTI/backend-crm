@@ -1,4 +1,4 @@
-import { IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class ConfirmGerenciaBandDto {
   @IsString()
@@ -21,4 +21,12 @@ export class ConfirmGerenciaBandDto {
 
   @IsNumber()
   totalAmount: number;
+
+  @IsOptional()
+  @IsBoolean()
+  ofmContratoBono?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  montoBonoOfm?: number;
 }

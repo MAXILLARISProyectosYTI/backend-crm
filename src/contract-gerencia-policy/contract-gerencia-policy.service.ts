@@ -5,7 +5,11 @@ import * as bcrypt from 'bcryptjs';
 import { UserService } from 'src/user/user.service';
 import { ContractGerenciaBandUsage } from './contract-gerencia-band-usage.entity';
 import { ConfirmGerenciaBandDto } from './dto/confirm-gerencia-band.dto';
-import { evaluarPoliticaDesgloseOFM } from './contract-gerencia-policy.utils';
+import { ConfirmOfmBonoDto } from './dto/confirm-ofm-bono.dto';
+import {
+  evaluarPoliticaDesgloseOFM,
+  OFM_BONO_MAX_USD,
+} from './contract-gerencia-policy.utils';
 
 const DEFAULT_MONTHLY_LIMIT = 5;
 
@@ -21,6 +25,12 @@ export class ContractGerenciaPolicyService {
     const raw = process.env.GERENCIA_BAND_MONTHLY_LIMIT;
     const n = raw ? parseInt(raw, 10) : DEFAULT_MONTHLY_LIMIT;
     return Number.isFinite(n) && n > 0 ? n : DEFAULT_MONTHLY_LIMIT;
+  }
+
+  /** Solo local/QA explícito: GERENCIA_DEV_BYPASS=true y NODE_ENV !== production. */
+  private isGerenciaDevBypass(): boolean {
+    if (process.env.NODE_ENV === 'production') return false;
+    return process.env.GERENCIA_DEV_BYPASS === 'true';
   }
 
   private getApproverUserNames(): string[] {
@@ -64,21 +74,46 @@ export class ContractGerenciaPolicyService {
     };
   }
 
-  private async validateApprover(userName: string, password: string) {
+  private async validateApprover(
+    userName: string,
+    password: string,
+    fallbackApproverUserId?: string,
+  ) {
+    const trimmedUser = userName.trim();
+    const trimmedPass = password.trim();
+    if (!trimmedUser || !trimmedPass) {
+      throw new BadRequestException('Credenciales de gerencia inválidas');
+    }
+
+    if (this.isGerenciaDevBypass()) {
+      const user = await this.userService.findByUserName(trimmedUser);
+      if (user && !user.deleted) {
+        return user;
+      }
+      if (fallbackApproverUserId) {
+        return { id: fallbackApproverUserId, userName: trimmedUser } as Awaited<
+          ReturnType<UserService['findByUserName']>
+        >;
+      }
+      throw new BadRequestException(
+        'Modo dev: ingrese un usuario que exista en CRM o inicie sesión en el deep link.',
+      );
+    }
+
     const allowed = this.getApproverUserNames();
-    const normalized = userName.trim().toLowerCase();
+    const normalized = trimmedUser.toLowerCase();
     if (!allowed.includes(normalized)) {
       throw new BadRequestException(
         'El usuario ingresado no está autorizado para aprobar este descuento.',
       );
     }
 
-    const user = await this.userService.findByUserName(userName.trim());
+    const user = await this.userService.findByUserName(trimmedUser);
     if (!user || user.deleted) {
       throw new BadRequestException('Credenciales de gerencia inválidas');
     }
 
-    const isMatch = await bcrypt.compare(password, user.password || '');
+    const isMatch = await bcrypt.compare(trimmedPass, user.password || '');
     if (!isMatch) {
       throw new BadRequestException('Credenciales de gerencia inválidas');
     }
@@ -102,7 +137,12 @@ export class ContractGerenciaPolicyService {
       throw new BadRequestException('Monto total inválido');
     }
 
-    const policy = evaluarPoliticaDesgloseOFM(dto.paymentMethod, total);
+    const policy = evaluarPoliticaDesgloseOFM(
+      dto.paymentMethod,
+      total,
+      dto.ofmContratoBono,
+      dto.montoBonoOfm,
+    );
     if (policy.kind === 'blocked') {
       throw new BadRequestException(
         `No es posible aplicar ese monto. El mínimo permitido es USD ${policy.policyMin.toFixed(2)} (política OFM).`,
@@ -116,7 +156,10 @@ export class ContractGerenciaPolicyService {
 
     const monthlyLimit = this.getMonthlyLimit();
     const usesThisMonth = await this.countUsesThisMonth(requestedByUserId);
-    if (usesThisMonth >= monthlyLimit) {
+    if (
+      !this.isGerenciaDevBypass() &&
+      usesThisMonth >= monthlyLimit
+    ) {
       throw new BadRequestException(
         `Has alcanzado el límite de ${monthlyLimit} autorizaciones de gerencia este mes.`,
       );
@@ -125,11 +168,12 @@ export class ContractGerenciaPolicyService {
     const approver = await this.validateApprover(
       dto.approverUserName,
       dto.approverPassword,
+      requestedByUserId,
     );
 
     const row = this.usageRepo.create({
       requestedByUserId,
-      approverUserId: approver.id,
+      approverUserId: approver!.id,
       quotationId: dto.quotationId,
       contractType,
       paymentMethod: dto.paymentMethod,
@@ -144,6 +188,34 @@ export class ContractGerenciaPolicyService {
       monthlyLimit,
       usesRemaining: Math.max(0, monthlyLimit - usesAfter),
       message: `Autorización registrada (${usesAfter}/${monthlyLimit} este mes).`,
+    };
+  }
+
+  async confirmOfmBono(
+    requestedByUserId: string,
+    dto: ConfirmOfmBonoDto,
+  ) {
+    const monto = Number(dto.montoBono);
+    if (!Number.isFinite(monto) || monto <= 0 || monto > OFM_BONO_MAX_USD) {
+      throw new BadRequestException(
+        `Monto de bono inválido (máximo USD ${OFM_BONO_MAX_USD}).`,
+      );
+    }
+
+    await this.validateApprover(
+      dto.approverUserName,
+      dto.approverPassword,
+      requestedByUserId,
+    );
+
+    // Bono OFM: sin tope mensual ni registro en contract_gerencia_band_usage
+    // (independiente de la banda de descuento 2900–3000).
+
+    return {
+      success: true,
+      ofmBonoConfirmado: true,
+      montoBono: monto,
+      message: `Bono autorizado (−USD ${monto.toFixed(2)}).`,
     };
   }
 }

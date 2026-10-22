@@ -30,6 +30,9 @@ export const CONTRACT_PRESAVE_CREATE_TABLE_SQL = `
     monto_descuento_discrecional NUMERIC(12, 2) DEFAULT 0,
     descuento_gerencia_solicitado BOOLEAN DEFAULT FALSE,
     monto_descuento_gerencia NUMERIC(12, 2) DEFAULT 0,
+    ofm_contrato_bono BOOLEAN DEFAULT FALSE,
+    monto_descuento_bono NUMERIC(12, 2) DEFAULT 0,
+    ofm_bono_confirmado BOOLEAN DEFAULT FALSE,
     payment_schedule_editable TEXT,
     registered_payments TEXT,
     current_payment_form_data TEXT,
@@ -62,6 +65,9 @@ export const CONTRACT_PRESAVE_ENSURE_COLUMNS: ReadonlyArray<{
   { name: 'monto_descuento_campana', ddl: 'NUMERIC(12, 2) DEFAULT 0' },
   { name: 'monto_descuento_hoy', ddl: 'NUMERIC(12, 2) DEFAULT 0' },
   { name: 'current_payment_form_data', ddl: 'TEXT NULL' },
+  { name: 'ofm_contrato_bono', ddl: 'BOOLEAN DEFAULT FALSE' },
+  { name: 'monto_descuento_bono', ddl: 'NUMERIC(12, 2) DEFAULT 0' },
+  { name: 'ofm_bono_confirmado', ddl: 'BOOLEAN DEFAULT FALSE' },
 ];
 
 export function buildEnsureContractPresaveColumnsSql(): string[] {
