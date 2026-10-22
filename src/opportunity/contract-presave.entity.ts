@@ -96,6 +96,21 @@ export class ContractPresave {
   @Column({ name: "monto_descuento_gerencia", type: "decimal", precision: 12, scale: 2, default: 0 })
   montoDescuentoGerencia: number;
 
+  @Column({ name: "ofm_contrato_bono", type: "boolean", default: false })
+  ofmContratoBono: boolean;
+
+  @Column({
+    name: "monto_descuento_bono",
+    type: "decimal",
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
+  montoDescuentoBono: number;
+
+  @Column({ name: "ofm_bono_confirmado", type: "boolean", default: false })
+  ofmBonoConfirmado: boolean;
+
   // ========================================
   // CRONOGRAMA DE PAGOS (JSON)
   // ========================================
