@@ -4,6 +4,7 @@ import { Repository, IsNull, Not, DataSource, In, Brackets } from 'typeorm';
 import { ContractPresave } from 'src/opportunity/contract-presave.entity';
 import { parsePresaveHasRegisteredPayments, isCloserTerminalStatus } from '../crm-cerradoras/utils/closer-commission.util';
 import { Client } from 'pg';
+import { guardPgClient } from '../config/pg-client-guard';
 import { OpportunitiesClosers } from './opportunities-closers.entity';
 import { UpdateOpCloserDto, UpdateQueueOpClosersDto } from './dto/update-op-closer.dto';
 import { DateTime } from 'luxon';
@@ -593,13 +594,13 @@ export class OpportunitiesClosersService implements OnApplicationBootstrap {
 
       // Query SV contracts
       if (contractIds.length > 0 || histories.length > 0) {
-        const svClient = new Client({
+        const svClient = guardPgClient(new Client({
           host: process.env.SV_DB_HOST || '161.132.211.235',
           port: parseInt(process.env.SV_DB_PORT || '5501', 10),
           user: process.env.SV_DB_USERNAME || 'desarrollador_dev_maxillaris',
           database: process.env.SV_DB_DATABASE || 'sv_dev',
           password: process.env.SV_DB_PASSWORD || 'hq75TCdbiJzhfr7lXt3w',
-        });
+        }), 'opportunities-closers');
 
         try {
           await svClient.connect();

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
+import { guardPgClient } from '../../config/pg-client-guard';
 import {
   mergeOiCrmMetricsRow,
   type OiCrmUserMetrics,
@@ -138,14 +139,14 @@ export class OiSvInvoiceService implements OnModuleInit {
     if (!cfg.password) {
       throw new Error('No hay password para BD SV — revisa DB_PASSWORD o SV_DB_PASSWORD');
     }
-    return new Client({
+    return guardPgClient(new Client({
       host: cfg.host,
       port: cfg.port,
       user: cfg.username,
       password: cfg.password,
       database: cfg.database,
       connectionTimeoutMillis: 15000,
-    });
+    }), 'oi-sv-invoice');
   }
 
   monthRange(year: number, month: number): { start: string; end: string } {

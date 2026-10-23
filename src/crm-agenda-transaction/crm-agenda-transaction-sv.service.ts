@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
+import { guardPgClient } from '../config/pg-client-guard';
 import { createHash, randomUUID } from 'crypto';
 import {
   CrmAgendaTransactionStatus,
@@ -247,15 +248,23 @@ export class CrmAgendaTransactionSvService implements OnModuleDestroy {
 
   private async getClient(): Promise<Client> {
     if (this.client) return this.client;
-    this.client = new Client({
-      host: this.svConfig.host,
-      port: this.svConfig.port,
-      user: this.svConfig.username,
-      password: this.svConfig.password,
-      database: this.svConfig.database,
-    });
-    await this.client.connect();
+    const client = guardPgClient(
+      new Client({
+        host: this.svConfig.host,
+        port: this.svConfig.port,
+        user: this.svConfig.username,
+        password: this.svConfig.password,
+        database: this.svConfig.database,
+      }),
+      'crm-agenda-transaction',
+      () => {
+        // Conexión muerta: descartarla para reconectar en el próximo uso
+        if (this.client === client) this.client = null;
+      },
+    );
+    await client.connect();
+    this.client = client;
     this.logger.log(`Conectado a BD SV para transacciones CRM-Agenda (${this.svConfig.database})`);
-    return this.client;
+    return client;
   }
 }

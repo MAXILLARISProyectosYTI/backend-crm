@@ -7,6 +7,14 @@ import { AppModule } from './app.module';
 import { DateTimezoneInterceptor } from './interceptors/date-timezone.interceptor';
 import { CORS_ALLOWED_HEADERS } from './crm-agenda-transaction/crm-agenda-transaction.constants';
 
+// Red de seguridad: un error asíncrono suelto (p. ej. conexión a BD cortada) no debe tumbar el proceso.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   
